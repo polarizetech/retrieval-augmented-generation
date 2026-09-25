@@ -1,0 +1,19 @@
+[project]
+name = "science-rag-domain-vestibular"
+dynamic = ["version"]
+description = "Vestibular science as a domain extension of the research pipeline."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.entry-points."science_rag.domains"]
+vestibular = "sciencerag_vestibular"
+
+[tool.hatch.version]
+path = "sciencerag_vestibular/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sciencerag_vestibular"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

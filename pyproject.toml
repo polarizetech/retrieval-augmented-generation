@@ -1,0 +1,113 @@
+[project]
+name = "kit-scientific-research-rag"
+dynamic = ["version"]
+description = "Evidence-first literature RAG for small local models: code controls search, evidence, verification and the run log."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "PolarizeTech" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Intended Audience :: Science/Research",
+]
+dependencies = [
+  "mcp>=1.10,<2",
+  "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+# Cross-encoder reranking without torch. Without it the pipeline falls back to LLM reranking.
+rerank = [
+  "onnxruntime>=1.18,<2",
+  "huggingface_hub>=0.24,<2",
+  "tokenizers>=0.19,<1",
+]
+
+[project.scripts]
+research-pipeline = "research_pipeline.__main__:main"
+research-pipeline-mcp = "research_pipeline.mcp_server:main"
+research-rag-gateway = "research_mcp.gateway:main"
+
+[project.urls]
+Repository = "https://github.com/polarizetech/kit-scientific-research-rag"
+
+[dependency-groups]
+dev = [
+  "pyright>=1.1.400",
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "research_pipeline/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["research_pipeline", "research_mcp"]
+
+# Domain extensions in domains/ are separate distributions with their own pyproject.toml, each
+# registering a "science_rag.domains" entry point. They are deliberately NOT dependencies here: the
+# engine must never depend on a field. Install them individually, e.g.
+# `uv pip install -e domains/cardiovascular`. See docs/DOMAINS.md.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["docs/domain-template"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F",  # pycodestyle, pyflakes
+  "I",            # import order
+  "UP",           # modern syntax for the minimum Python
+  "B",            # likely bugs
+  "SIM",          # simplifications
+  "C4",           # comprehensions
+  "RUF",          # ruff-specific
+  "PL",           # pylint subset
+  "S",            # security (bandit)
+  "BLE",          # blind except
+  "PT",           # pytest style
+]
+ignore = [
+  "PLR0911", "PLR0912", "PLR0913", "PLR0915",  # complexity counts: judged in review, not by a threshold
+  "PLR2004",  # magic numbers: thresholds here are documented where they are defined
+  "PLC0415",  # imports inside functions are used deliberately for optional or heavy dependencies
+  "S101",     # assert narrows types after stage ordering guarantees; tests use it too
+  "S310",     # urllib with fixed https/http endpoints configured by the operator
+  "S608",     # the one dynamic SQL string builds placeholders only, never values
+  "RUF001", "RUF002", "RUF003",  # typographic quotes and dashes in prose are intended
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PLR", "PT009", "PT027"]
+"benchmarks/**" = ["S", "T20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["research_pipeline", "research_mcp"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.pyright]
+include = ["research_pipeline", "research_mcp", "tests", "benchmarks"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportMissingImports = "warning"  # optional extras (onnxruntime, tokenizers) may be absent
+venvPath = "."
+venv = ".venv"

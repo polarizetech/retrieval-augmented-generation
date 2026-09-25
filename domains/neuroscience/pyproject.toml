@@ -1,0 +1,19 @@
+[project]
+name = "science-rag-domain-neuroscience"
+dynamic = ["version"]
+description = "Neuroscience as a domain extension of the research pipeline."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.entry-points."science_rag.domains"]
+neuroscience = "sciencerag_neuroscience"
+
+[tool.hatch.version]
+path = "sciencerag_neuroscience/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sciencerag_neuroscience"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

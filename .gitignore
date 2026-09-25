@@ -1,0 +1,26 @@
+# Local configuration and secrets
+config/rag.env
+config/mcp-gateway.json
+config/.mcp-token
+
+# Runtime state
+data/
+runs/
+run/
+logs/
+benchmarks/results/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+.DS_Store
