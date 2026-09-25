@@ -1,0 +1,22 @@
+[project]
+name = "science-rag-domain-my-domain"
+dynamic = ["version"]
+description = "One line describing the field this domain covers."
+requires-python = ">=3.11"
+
+# Usually empty. The engine is the host application, not a dependency, and CORE_REQUIRES in
+# __init__.py is the real version gate. List another domain here only if you genuinely import it.
+dependencies = []
+
+[project.entry-points."science_rag.domains"]
+my-domain = "my_domain"
+
+[tool.hatch.version]
+path = "my_domain/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["my_domain"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

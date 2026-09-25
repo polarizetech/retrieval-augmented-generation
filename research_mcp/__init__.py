@@ -1,0 +1,1 @@
+"""Federated research MCP gateway."""

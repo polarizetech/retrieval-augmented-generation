@@ -1,0 +1,39 @@
+{
+  "_comment": "An index of the domain extensions kept in this repo. Informational only: nothing loads it at runtime. The engine finds domains through the 'science_rag.domains' entry point, so a domain installed from outside this repo works identically and simply will not appear here. tests/test_domains.py keeps this file honest against the directories and their declarations.",
+  "entry_point_group": "science_rag.domains",
+  "name_prefix": "science-rag-domain-",
+  "domains": [
+    {
+      "slug": "cardiovascular",
+      "name": "science-rag-domain-cardiovascular",
+      "path": "domains/cardiovascular",
+      "module": "sciencerag_cardiovascular",
+      "job": "Research the cardiac, vascular and autonomic literature by its own evidence hierarchy.",
+      "extends": []
+    },
+    {
+      "slug": "respiratory",
+      "name": "science-rag-domain-respiratory",
+      "path": "domains/respiratory",
+      "module": "sciencerag_respiratory",
+      "job": "Research breathing, gas exchange and the chemoreflex by this field's own endpoints.",
+      "extends": []
+    },
+    {
+      "slug": "vestibular",
+      "name": "science-rag-domain-vestibular",
+      "path": "domains/vestibular",
+      "module": "sciencerag_vestibular",
+      "job": "Research balance and dizziness by a diagnostic-accuracy evidence hierarchy, not a trial one.",
+      "extends": []
+    },
+    {
+      "slug": "neuroscience",
+      "name": "science-rag-domain-neuroscience",
+      "path": "domains/neuroscience",
+      "module": "sciencerag_neuroscience",
+      "job": "Research the nervous system with the species gap and reverse inference treated as first-class failure modes.",
+      "extends": []
+    }
+  ]
+}

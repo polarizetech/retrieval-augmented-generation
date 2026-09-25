@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy to config/mcp-gateway.json (gitignored) and adjust. Each upstream is a stdio MCP server the gateway spawns and exposes as <name>__<tool>. write_tools, destructive_tools and open_world_tools set the MCP tool annotations clients use for approval prompts.",
+  "upstreams": {
+    "papers": {
+      "_comment": "The paper library: https://github.com/polarizetech/paper-library. Install it with its [mcp] extra so that paperlib-mcp is on PATH, or give an absolute path.",
+      "command": "paperlib-mcp",
+      "args": [],
+      "env": {},
+      "write_tools": ["fetch"],
+      "open_world_tools": ["search", "fetch", "citations"]
+    },
+    "pipeline": {
+      "_comment": "Optional: the full pipeline, with verifier models, as start/status/result tools.",
+      "enabled": false,
+      "command": "research-pipeline-mcp",
+      "args": [],
+      "write_tools": ["research_start"],
+      "open_world_tools": ["research_start"]
+    }
+  },
+  "web_search": {
+    "_comment": "Optional SearXNG base URL for web__search. SEARXNG_URL in the environment overrides it.",
+    "searxng_url": ""
+  },
+  "network": {
+    "_comment": "Host headers accepted in addition to loopback, for a front end that presents a different Host (e.g. a Docker bridge). The bind itself stays on 127.0.0.1.",
+    "allowed_hosts": [],
+    "allowed_origins": []
+  }
+}
