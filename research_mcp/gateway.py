@@ -32,7 +32,7 @@ from research_mcp.rag import EvidenceStore
 from research_pipeline.config import ROOT, Settings, load_env
 from research_pipeline.llm import Ollama
 
-SERVER_NAME = "kit-scientific-research-rag"
+SERVER_NAME = "scientific-research-rag"
 
 
 def _token(path: Path) -> str:
