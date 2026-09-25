@@ -1,5 +1,5 @@
 [project]
-name = "kit-scientific-research-rag"
+name = "scientific-research-rag"
 dynamic = ["version"]
 description = "Evidence-first literature RAG for small local models: code controls search, evidence, verification and the run log."
 readme = "README.md"
@@ -34,7 +34,7 @@ research-pipeline-mcp = "research_pipeline.mcp_server:main"
 research-rag-gateway = "research_mcp.gateway:main"
 
 [project.urls]
-Repository = "https://github.com/polarizetech/kit-scientific-research-rag"
+Repository = "https://github.com/polarizetech/scientific-research-rag"
 
 [dependency-groups]
 dev = [

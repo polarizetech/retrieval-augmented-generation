@@ -22,7 +22,7 @@ from typing import Any
 
 from . import __version__
 
-USER_AGENT = f"kit-scientific-research-rag/{__version__}"
+USER_AGENT = f"scientific-research-rag/{__version__}"
 
 # Notice types, most severe first. A partial retraction withdraws some of a paper's results, so it
 # is reported alongside an expression of concern rather than filed as a routine correction.

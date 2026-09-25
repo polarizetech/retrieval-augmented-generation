@@ -24,8 +24,8 @@ Use stdio: nothing listens on a port and no token is involved.
 {
   "mcpServers": {
     "research-rag": {
-      "command": "/absolute/path/to/kit-scientific-research-rag/.venv/bin/research-rag-gateway",
-      "args": ["--config", "/absolute/path/to/kit-scientific-research-rag/config/mcp-gateway.json"]
+      "command": "/absolute/path/to/scientific-research-rag/.venv/bin/research-rag-gateway",
+      "args": ["--config", "/absolute/path/to/scientific-research-rag/config/mcp-gateway.json"]
     }
   }
 }
