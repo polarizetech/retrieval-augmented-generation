@@ -200,6 +200,13 @@ class PassageIndex:
         for i in range(0, len(pieces), batch):
             vectors.extend(embed([p[2] for p in pieces[i : i + batch]]))
         with self.db:
+            # Several processes (`index`, concurrent `ask` runs) write this file. Take the write
+            # lock before reading what to replace: otherwise another writer can commit this work
+            # between `_remove`'s read and its delete, leaving that copy's vectors behind while
+            # the new passages reuse their rowids (UNIQUE constraint failed: vectors.passage_id).
+            self.db.execute("begin immediate")
+            if self.has(work, digest):
+                return 0
             self._remove(work)
             self.db.execute(
                 "insert into papers values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

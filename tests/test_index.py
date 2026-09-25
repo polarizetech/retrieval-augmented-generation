@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -88,3 +91,63 @@ class TestIndex:
     ) -> None:
         with pytest.raises(RuntimeError, match="not comparable"):
             PassageIndex(tmp_path / "passages.sqlite", "another-model")
+
+
+class _CommitsBetweenReadAndWrite:
+    """Wraps a connection so another writer runs right after `_remove` reads a work's passages."""
+
+    def __init__(self, db: Any, other_writer: threading.Thread) -> None:
+        self._db = db
+        self._other = other_writer
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._db, name)
+
+    def __enter__(self) -> Any:
+        return self._db.__enter__()
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._db.__exit__(*exc)
+
+    def execute(self, sql: str, *args: Any) -> Any:
+        cur = self._db.execute(sql, *args)
+        if sql.startswith("select id, text from passages where work=?") and not self._other.ident:
+            self._other.start()
+            # Long enough for an unblocked writer to commit; a writer that has to wait for this
+            # connection's lock just keeps waiting, and is joined below.
+            self._other.join(timeout=0.5)
+        return cur
+
+
+def test_two_processes_indexing_the_same_work_leave_one_consistent_copy(tmp_path: Path) -> None:
+    """Regression for 2026-09-25: `research-pipeline index` and a concurrent `ask` both indexed
+    the same work. The second writer read the work's passages before the first committed, then
+    deleted the first writer's passages but not their vectors, and its own passages reused those
+    rowids: UNIQUE constraint failed: vectors.passage_id."""
+    path = tmp_path / "passages.sqlite"
+    first = PassageIndex(path, "fake-embed")
+    second = PassageIndex(path, "fake-embed")
+    errors: list[sqlite3.Error] = []
+
+    def first_writes() -> None:
+        try:
+            first.add({"work": "W1"}, PAPER, fake_embed)
+        except sqlite3.Error as exc:  # surfaced in the main thread below
+            errors.append(exc)
+
+    other = threading.Thread(target=first_writes)
+    second.db = _CommitsBetweenReadAndWrite(second.db, other)  # type: ignore[assignment]
+    second.add({"work": "W1"}, PAPER, fake_embed)
+    other.join()
+    assert errors == []
+
+    db = first.db
+    n_passages = db.execute("select count(*) from passages").fetchone()[0]
+    assert n_passages == len(chunk(PAPER))
+    assert db.execute(
+        "select count(*) from vectors where passage_id not in (select id from passages)"
+    ).fetchone() == (0,)
+    assert db.execute(
+        "select count(*) from passages where id not in (select passage_id from vectors)"
+    ).fetchone() == (0,)
+    assert first.stats() == {"papers": 1, "passages": n_passages}
