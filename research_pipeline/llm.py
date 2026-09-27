@@ -11,13 +11,25 @@ import json
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Protocol
 
 from .config import Settings
 
 
 class LLMError(RuntimeError):
     pass
+
+
+class ChatModel(Protocol):
+    """What the stages need from a model: Ollama, or the MCP client (client_llm.ClientLLM)."""
+
+    calls: list[dict[str, Any]]
+
+    def chat_json(
+        self, task: str, system: str, user: str, schema: dict[str, Any], *, model: str | None = None
+    ) -> dict[str, Any]: ...
+
+    def chat_text(self, task: str, model: str, user: str) -> str: ...
 
 
 class Ollama:
@@ -55,6 +67,7 @@ class Ollama:
         body = {
             "model": model,
             "stream": True,
+            "keep_alive": self.s.ollama_keep_alive,
             "format": schema,
             "think": False,
             "options": {"temperature": temperature, "num_ctx": self.s.num_ctx, "seed": 7},
@@ -152,6 +165,7 @@ class Ollama:
             {
                 "model": model,
                 "stream": False,
+                "keep_alive": self.s.ollama_keep_alive,
                 "options": {
                     "temperature": 0.0,
                     "num_ctx": self.s.num_ctx,
@@ -176,7 +190,12 @@ class Ollama:
     def embed(self, texts: list[str], *, timeout: float = 300.0) -> list[list[float]]:
         if not texts:
             return []
-        out = self._post("/api/embed", {"model": self.s.embedding_model, "input": texts}, timeout)
+        body = {
+            "model": self.s.embedding_model,
+            "input": texts,
+            "keep_alive": self.s.ollama_keep_alive,
+        }
+        out = self._post("/api/embed", body, timeout)
         vectors = out.get("embeddings") or []
         if len(vectors) != len(texts):
             raise LLMError(f"embed: asked for {len(texts)} vectors, got {len(vectors)}")

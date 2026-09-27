@@ -61,6 +61,19 @@ class Settings:
         )
     )
     num_ctx: int = field(default_factory=lambda: _int("PIPELINE_NUM_CTX", 16384))
+    # How long Ollama keeps a model loaded after a call. Its default (5 minutes) unloads the text
+    # model during a run's network-bound stages, and every reload costs seconds.
+    ollama_keep_alive: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_OLLAMA_KEEP_ALIVE", "30m")
+    )
+    # Behind the MCP server: "client" = the calling model fills in the forms; "ollama" = local.
+    mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "client"))
+    # Seconds a pipeline tool call waits for the run to need the client again before returning.
+    client_turn_wait: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TURN_WAIT", 40))
+    # Most tasks handed to the client in one turn.
+    client_batch: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_BATCH", 12))
+    # A run whose client stops answering fails after this long instead of waiting forever.
+    client_timeout: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TIMEOUT", 1800))
     reranker: str = field(default_factory=lambda: os.environ.get("PIPELINE_RERANKER", "auto"))
     # "<hub repo>::<onnx file>". int8 bge-reranker-v2-m3 is a 571 MB download on first use.
     reranker_model: str = field(

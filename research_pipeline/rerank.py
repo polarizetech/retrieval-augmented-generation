@@ -102,7 +102,8 @@ class OnnxReranker:
         return out
 
 
-def build(settings: Settings, llm: Ollama, prompts: Prompts = DEFAULT) -> Reranker:
+def build(settings: Settings, llm: Ollama | None, prompts: Prompts = DEFAULT) -> Reranker:
+    """The configured reranker. Without a local model, a failed ONNX load keeps retrieval order."""
     choice = settings.reranker
     if choice == "none":
         return NoReranker()
@@ -117,4 +118,4 @@ def build(settings: Settings, llm: Ollama, prompts: Prompts = DEFAULT) -> Rerank
                 ) from exc
     elif choice == "onnx":
         raise RuntimeError("PIPELINE_RERANKER=onnx needs PIPELINE_RERANKER_MODEL")
-    return LLMReranker(llm, prompts=prompts)
+    return LLMReranker(llm, prompts=prompts) if llm is not None else NoReranker()
