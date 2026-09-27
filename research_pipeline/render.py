@@ -117,17 +117,34 @@ def render(
                 + "".join(f"[{n}]" for n in no)
                 + "."
             )
-    found_by_falsification = [c for c in kept if c.subquestion == "F1"]
-    if found_by_falsification:
+    # A claim found by the search for null results is opposing evidence only if its own evidence
+    # reports a null or mixed result; the search often finds supporting papers instead.
+    from_falsification = [c for c in kept if c.subquestion == "F1"]
+    opposing = [
+        c
+        for c in from_falsification
+        if any(
+            st.evidence[e].direction in ("denies", "mixed")
+            for e in c.supported_by or c.evidence_ids
+        )
+    ]
+    supporting = [c for c in from_falsification if c not in opposing]
+    if opposing:
         wrote = True
         out.append("- Found by searching specifically for null results and failed replications:")
-        out += ["  " + line for line in claim_lines(found_by_falsification)]
+        out += ["  " + line for line in claim_lines(opposing)]
     if not wrote:
         out.append(
             "- No opposing result was retrieved. Searches run to find one: "
             + "; ".join(f"“{q}”" for q in f1.queries)
             + ". An empty result is not evidence that the finding is uncontested."
         )
+    if supporting:
+        out.append(
+            "- The searches for null results and failed replications found supporting "
+            "results instead:"
+        )
+        out += ["  " + line for line in claim_lines(supporting)]
     out.append("")
 
     out += ["## Limits of this answer", ""]
