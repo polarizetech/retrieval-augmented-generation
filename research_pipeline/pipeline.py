@@ -648,7 +648,8 @@ class Pipeline:
             return
         listing = "\n".join(
             f"[{c.id}] ({c.label} evidence{', disputed' if c.verdict == 'DISPUTED' else ''}"
-            f"{', contradicting' if c.subquestion.startswith('F') else ''}) {c.text}"
+            f"{', found by the search for null results' if c.subquestion.startswith('F') else ''})"
+            f" {c.text}"
             for c in usable
         )
         got = self.llm.chat_json(
