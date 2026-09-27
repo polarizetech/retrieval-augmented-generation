@@ -18,11 +18,14 @@ rather than resolved by a vote.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+from functools import partial
+from typing import Any
 
 from .domains import GENERIC, DomainPolicy
-from .llm import Ollama
+from .llm import ChatModel
 from .prompts import DEFAULT, Prompts, wrap
 from .schema import Check, Claim, Evidence
 
@@ -208,7 +211,7 @@ def unsupported_numbers(
 
 
 def judge(
-    llm: Ollama, model: str, claim_text: str, source_text: str, prompts: Prompts = DEFAULT
+    llm: ChatModel, model: str, claim_text: str, source_text: str, prompts: Prompts = DEFAULT
 ) -> tuple[str, str]:
     if "minicheck" in model.lower():
         # Bespoke-MiniCheck is a trained grounding classifier with its own fixed prompt and a
@@ -231,24 +234,28 @@ def check_claims(
     claims: list[Claim],
     evidence: dict[str, Evidence],
     passages: dict[str, str],
-    llm: Ollama,
+    llm: ChatModel,
     verifiers: list[str],
     *,
     prompts: Prompts = DEFAULT,
+    parallel: Callable[[list[Callable[[], Any]]], list[Any]] | None = None,
 ) -> None:
     """Run every verifier over every (claim, cited passage) pair, then settle each claim.
 
     The model loop is outermost: with one model resident at a time, swapping per claim would spend
-    longer loading weights than checking.
+    longer loading weights than checking. Within one verifier, `parallel` may run the checks
+    together (a client model answers them in one turn); by default they run one at a time.
     """
     if not verifiers:
         raise ValueError("at least one verifier model is required")
+    run_all = parallel or (lambda jobs: [job() for job in jobs])
     for model in verifiers:
-        for claim in claims:
-            for eid in claim.evidence_ids:
-                if eid in evidence:
-                    verdict, reason = judge(llm, model, claim.text, passages[eid], prompts)
-                    claim.checks.append(Check(model, eid, verdict, reason))
+        pairs = [(c, eid) for c in claims for eid in c.evidence_ids if eid in evidence]
+        results = run_all(
+            [partial(judge, llm, model, c.text, passages[eid], prompts) for c, eid in pairs]
+        )
+        for (claim, eid), (verdict, reason) in zip(pairs, results, strict=True):
+            claim.checks.append(Check(model, eid, verdict, reason))
     for claim in claims:
         settle(claim, evidence, passages, verifiers, prompts.policy)
 

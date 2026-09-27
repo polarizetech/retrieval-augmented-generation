@@ -98,8 +98,10 @@ For Claude Desktop or Claude Code, run the gateway over stdio (no port, no token
 ```
 
 It exposes `rag__search`, `rag__retrieve_evidence`, `rag__check_citations`, `rag__save_report`,
-the paper library as `papers__*`, and optionally the whole pipeline as `pipeline__*`. See
-[MCP clients](docs/mcp-clients.md) for the intended workflow and the HTTP transport.
+the paper library as `papers__*`, and the whole pipeline as `pipeline__*`. Through MCP the pipeline
+uses the calling model (Claude, ChatGPT) for its model steps by default: code runs every stage and
+hands the client batches of tasks with a JSON schema to answer, and Ollama is only needed for
+embeddings. See [MCP clients](docs/mcp-clients.md) for the workflow and the HTTP transport.
 
 ## Domains
 

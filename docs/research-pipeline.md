@@ -131,6 +131,10 @@ gateway's instructions say so, so that a client model can relay it.
 
 ## Models
 
+Behind the MCP server the calling model fills in the forms by default
+([MCP clients](mcp-clients.md#the-full-pipeline-with-the-client-as-its-model)): every stage, prompt,
+schema and check is the same; only who answers changes. The command line uses a local model:
+
 | Role | Default | Note |
 |---|---|---|
 | Text | `qwen3:4b-instruct-2507` | An 8B model would be a real upgrade in multi-turn reliability [22]; the pipeline does not need it, because it never asks the model to sequence calls. |
@@ -140,6 +144,15 @@ gateway's instructions say so, so that a client model can relay it.
 
 Set the context size explicitly (`PIPELINE_NUM_CTX`). Ollama's default can be about 4K tokens and
 overflow is truncated from the start of the prompt, which removes the system prompt first.
+
+Where a local run spends its time (Qwen3-4B q4_K_M, Ollama 0.34, M2 Pro 16 GB, six runs of
+September 2026): 9 to 13 minutes per question, of which 50-70% is model time. Generation runs at
+about 50 tokens/s with every layer on the GPU. With a JSON schema, Ollama lets this model write
+several hundred tokens of hidden reasoning before the constrained answer, and ignores
+`think: false`: a verification call that returns 272 characters generates about 500 tokens (about
+10 s). Suppressing that reasoning made verification four times faster but got 5 of the 7 verifier
+cases right instead of 7, so it stays on. Models are kept loaded for 30 minutes
+(`PIPELINE_OLLAMA_KEEP_ALIVE`) so that a run's network-bound stages do not unload them.
 
 ## Alternatives considered (as of September 2026)
 
@@ -161,6 +174,9 @@ overflow is truncated from the start of the prompt, which removes the system pro
 - **Open access only.** Relevant closed papers are listed in each answer as unread.
 - **Entailment is a model's judgement**, and by default the same model's. Deterministic checks
   catch wrong quotes and wrong numbers, not a claim that overstates a correctly quoted passage.
+- **A client model is trusted to follow its instructions.** Behind MCP, answers are checked for
+  shape (JSON schema), quotes and numbers, but nothing can confirm that the client used only the
+  text it was given, or tell which model it runs. Its claims still pass the same verification.
 - **Study type is a small model's classification** of a paper's opening text, cached per paper.
 - **The second-hand and injection checks are heuristics.** The citation-marker pattern misses some
   styles and can be fooled by unusual gene names; the injection scan is an English pattern list.

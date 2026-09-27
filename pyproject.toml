@@ -16,6 +16,7 @@ classifiers = [
   "Intended Audience :: Science/Research",
 ]
 dependencies = [
+  "jsonschema>=4.20,<5",
   "mcp>=1.10,<2",
   "numpy>=1.26,<3",
 ]

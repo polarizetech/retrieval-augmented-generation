@@ -10,12 +10,11 @@
       "open_world_tools": ["search", "fetch", "citations"]
     },
     "pipeline": {
-      "_comment": "Optional: the full pipeline, with verifier models, as start/status/result tools.",
-      "enabled": false,
+      "_comment": "The full pipeline as start/continue tools. By default the calling model answers its model steps (PIPELINE_MCP_LLM=client); Ollama is still used for embeddings. Give an absolute path if research-pipeline-mcp is not on PATH.",
       "command": "research-pipeline-mcp",
       "args": [],
-      "write_tools": ["research_start"],
-      "open_world_tools": ["research_start"]
+      "write_tools": ["research_start", "research_continue"],
+      "open_world_tools": ["research_start", "research_continue"]
     }
   },
   "web_search": {

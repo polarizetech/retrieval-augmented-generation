@@ -1,9 +1,7 @@
-"""Entry points and pluggable parts: the CLI, the pipeline MCP server, rerankers, eval scoring."""
+"""Entry points and pluggable parts: the CLI, rerankers, eval scoring."""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,7 +10,7 @@ import pytest
 
 from benchmarks.research.eval_pipeline import score
 from research_pipeline import __main__ as cli
-from research_pipeline import mcp_server, rerank
+from research_pipeline import rerank
 from research_pipeline.config import Settings
 from research_pipeline.index import Passage
 
@@ -83,63 +81,6 @@ class TestCli:
         monkeypatch.setattr(cli.domain_registry, "discover", lambda: [])
         assert self.run(monkeypatch, tmp_path, "domains") == 0
         assert "generic policy" in capsys.readouterr().out
-
-
-class TestPipelineServer:
-    def test_start_status_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        class Finished:
-            def __init__(self, settings: Settings, progress: Any, offline: bool) -> None:
-                self.progress = progress
-
-            async def run(self, question: str) -> dict[str, Any]:
-                self.progress("plan", "planning")
-                return {
-                    "run_dir": "runs/x",
-                    "answer": f"# {question}",
-                    "seconds": 1.0,
-                    "searches": [],
-                    "evidence": [],
-                    "claims": [{"verdict": "SUPPORTED"}, {"verdict": "NOT_SUPPORTED"}],
-                }
-
-        monkeypatch.setattr(mcp_server, "Pipeline", Finished)
-
-        async def scenario() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-            started = json.loads(await mcp_server.research_start("Does X affect Y?"))
-            busy = json.loads(await mcp_server.research_start("another"))
-            assert "already in progress" in busy["error"]
-            assert mcp_server._active is not None
-            await mcp_server._active
-            status = json.loads(await mcp_server.research_status(started["run_id"]))
-            result = json.loads(await mcp_server.research_result(started["run_id"]))
-            return started, status, result
-
-        started, status, result = asyncio.run(scenario())
-        assert status["done"] is True
-        assert result["answer"] == "# Does X affect Y?"
-        assert result["stats"]["claims_kept"] == 1
-        assert (
-            "unknown run_id" in json.loads(asyncio.run(mcp_server.research_status("nope")))["error"]
-        )
-        assert started["run_id"] in mcp_server.RUNS
-
-    def test_a_failed_run_is_reported_not_lost(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        class Broken:
-            def __init__(self, *_: Any, **__: Any) -> None:
-                pass
-
-            async def run(self, question: str) -> dict[str, Any]:
-                raise RuntimeError("ollama unreachable")
-
-        monkeypatch.setattr(mcp_server, "Pipeline", Broken)
-
-        async def scenario() -> dict[str, Any]:
-            started = json.loads(await mcp_server.research_start("q"))
-            assert mcp_server._active is not None
-            await mcp_server._active
-            return json.loads(await mcp_server.research_result(started["run_id"]))
-
-        assert "ollama unreachable" in asyncio.run(scenario())["error"]
 
 
 class TestEvalScoring:

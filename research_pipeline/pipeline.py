@@ -5,6 +5,10 @@
 
 Control flow never depends on the model choosing a tool. A ~4B model is unreliable as an agent but
 adequate as a component when each call is small, schema-constrained, and checked afterwards.
+
+The model is either a local Ollama model or, behind the MCP server, the client's own model
+(client_llm.ClientLLM). Within a stage, independent calls are issued together so that a client can
+answer a whole batch per turn; with Ollama they run one at a time, as a single resident model would.
 """
 
 from __future__ import annotations
@@ -15,13 +19,16 @@ import json
 import re
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from . import __version__, grading, integrity, rerank, safety, verify
+from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
 from .index import Passage, PassageIndex
@@ -31,6 +38,7 @@ from .prompts import Prompts, wrap
 from .schema import Candidate, Claim, Evidence, Plan, SubQuestion, source_status, title_key, to_json
 
 Progress = Callable[[str, str], None]
+Model = Ollama | ClientLLM
 
 
 @dataclass
@@ -59,11 +67,15 @@ class Pipeline:
         progress: Progress | None = None,
         offline: bool = False,
         domain: str | Domain | None = None,
+        llm: Model | None = None,
     ):
         self.s = settings
         self.offline = offline  # answer from the already-indexed corpus; no discovery, no fetching
         self.progress = progress or (lambda stage, detail: None)
-        self.llm = Ollama(settings)
+        self.llm: Model = llm or Ollama(settings)
+        self.client = isinstance(self.llm, ClientLLM)
+        # A client answers a batch per turn; a single resident local model answers one at a time.
+        self.concurrency = 32 if self.client else 1
         self.index = PassageIndex(settings.index_path, settings.embedding_model)
         self.models: dict[str, Any] = {}
         # The field being researched. Nothing installed means the generic policy, not a failure:
@@ -77,25 +89,28 @@ class Pipeline:
 
     # -- setup -----------------------------------------------------------------------------
     def _resolve_models(self, st: State) -> list[str]:
-        text, digest = self.llm.resolve(self.s.text_model)
+        name = self.llm.name if isinstance(self.llm, ClientLLM) else self.s.text_model
+        text, digest = self.llm.resolve(name)
         self.s.text_model = text
         self.models["text"] = {"name": text, "digest": digest}
         _, embed_digest = self.llm.resolve(self.s.embedding_model)
         self.models["embedding"] = {"name": self.s.embedding_model, "digest": embed_digest}
-        verifiers = []
-        for name in filter(None, (v.strip() for v in self.s.verifier_model.split(","))):
-            tag, vdigest = self.llm.resolve(name)
-            verifiers.append(tag)
-            self.models.setdefault("verifiers", []).append({"name": tag, "digest": vdigest})
-        if not verifiers or verifiers == [text]:
-            verifiers = [text]
-            self.models["verifiers"] = [{"name": text, "digest": digest}]
+        # A client model always verifies its own claims too. A configured local verifier is an
+        # independent second check, and every verifier must accept a claim.
+        resolved = [(text, digest)] if self.client else []
+        resolved += [
+            self.llm.resolve(v)
+            for v in filter(None, map(str.strip, self.s.verifier_model.split(",")))
+        ]
+        if not resolved or [n for n, _ in resolved] == [text]:
+            resolved = [(text, digest)]
             st.notes.append(
                 "Verification used the same model that wrote the claims. It sees only the claim "
                 "and the passage, but it shares the writer's blind spots. Set "
                 "PIPELINE_VERIFIER_MODEL to a different model family for an independent check."
             )
-        return verifiers
+        self.models["verifiers"] = [{"name": n, "digest": d} for n, d in resolved]
+        return [n for n, _ in resolved]
 
     # -- stage 0-2: plan -------------------------------------------------------------------
     def plan(self, st: State) -> None:
@@ -354,38 +369,67 @@ class Pipeline:
                 break
         return out
 
+    def _parallel(self, jobs: list[Callable[[], Any]]) -> list[Any]:
+        """Run independent model calls together, results in order. See the module docstring."""
+        if self.concurrency <= 1 or len(jobs) <= 1:
+            return [job() for job in jobs]
+        with ThreadPoolExecutor(max_workers=min(len(jobs), self.concurrency)) as pool:
+            return list(pool.map(lambda job: job(), jobs))
+
+    def classify(self, work: str) -> None:
+        """Record a paper's study design and population, once per paper."""
+        paper = self.index.paper(work) or {}
+        opening = self.index.opening(work)
+        if safety.scan(opening):
+            # The classifier would read the injected text; record the paper as unclassified.
+            self.index.set_note(work, "unclear", "", "safety-filter")
+            return
+        got = self.llm.chat_json(
+            "classify_paper",
+            self.prompts.paper_system,
+            f"Title: {paper.get('title')}\n\n{wrap(opening)}",
+            self.prompts.paper_schema(),
+        )
+        self.index.set_note(
+            work, got["study_type"], got.get("population", "").strip(), self.s.text_model
+        )
+
     def paper_note(self, work: str) -> dict[str, str]:
-        note = self.index.note(work)
-        if note is None:
-            paper = self.index.paper(work) or {}
-            opening = self.index.opening(work)
-            if safety.scan(opening):
-                # The classifier would read the injected text; record the paper as unclassified.
-                self.index.set_note(work, "unclear", "", "safety-filter")
-                return self.index.note(work) or {"study_type": "unclear", "population": ""}
-            got = self.llm.chat_json(
-                "classify_paper",
-                self.prompts.paper_system,
-                f"Title: {paper.get('title')}\n\n{wrap(opening)}",
-                self.prompts.paper_schema(),
-            )
-            self.index.set_note(
-                work, got["study_type"], got.get("population", "").strip(), self.s.text_model
-            )
-            note = self.index.note(work) or {}
-        return note
+        if self.index.note(work) is None:
+            self.classify(work)
+        return self.index.note(work) or {"study_type": "unclear", "population": ""}
 
     # -- stage 6: evidence table -----------------------------------------------------------
     def extract(self, st: State, sq: SubQuestion, ranked: list[tuple[Passage, float]]) -> None:
-        for p, score in ranked:
+        self.extract_many(st, [(sq, ranked)])
+
+    def _read(self, sq: SubQuestion, p: Passage) -> dict[str, Any]:
+        return self.llm.chat_json(
+            "extract",
+            self.prompts.extract_system,
+            f"Research question: {sq.text}\n\n{wrap(p.text)}",
+            self.prompts.EXTRACT_SCHEMA,
+        )
+
+    def extract_many(
+        self, st: State, batches: list[tuple[SubQuestion, list[tuple[Passage, float]]]]
+    ) -> None:
+        """Read every selected passage of several sub-questions in one batch of model calls.
+
+        Papers that have not been classified yet are classified in the same batch. Results are
+        applied in order afterwards, so evidence ids do not depend on which call finished first.
+        """
+        items = [(sq, p, score) for sq, ranked in batches for p, score in ranked]
+        for sq, p, _ in items:
             st.seen.setdefault(sq.id, set()).add(p.id)
-            self.progress("extract", f"{sq.id} passage {p.id}")
-            got = self.llm.chat_json(
-                "extract",
-                self.prompts.extract_system,
-                f"Research question: {sq.text}\n\n{wrap(p.text)}",
-                self.prompts.EXTRACT_SCHEMA,
-            )
+        unclassified = list(
+            dict.fromkeys(p.work for _, p, _ in items if not self.index.note(p.work))
+        )
+        self.progress("extract", f"{len(items)} passages, {len(unclassified)} new papers")
+        jobs: list[Callable[[], Any]] = [partial(self._read, sq, p) for sq, p, _ in items]
+        jobs += [partial(self.classify, work) for work in unclassified]
+        results = self._parallel(jobs)[: len(items)]
+        for (sq, p, score), got in zip(items, results, strict=True):
             if not got.get("relevant"):
                 continue
             quote, ratio = verify.anchor_quote(got.get("quote", ""), p.text)
@@ -430,16 +474,30 @@ class Pipeline:
 
     # -- stage 7-8: synthesis from evidence ids --------------------------------------------
     def synthesise(self, st: State, sq: SubQuestion) -> None:
-        st.claims = [c for c in st.claims if c.subquestion != sq.id]
-        if sq.id in st.insufficient:
-            st.insufficient.remove(sq.id)
-        rows = [
-            e for e in st.evidence.values() if e.subquestion == sq.id and e.direction != "neutral"
-        ]
-        if not rows:
-            if sq.kind != "falsification":
-                st.insufficient.append(sq.id)
-            return
+        self.synthesise_many(st, [sq])
+
+    def synthesise_many(self, st: State, sqs: list[SubQuestion]) -> None:
+        """Draft claims for several sub-questions in one batch; each sees only its own evidence."""
+        drafts = []
+        for sq in sqs:
+            st.claims = [c for c in st.claims if c.subquestion != sq.id]
+            if sq.id in st.insufficient:
+                st.insufficient.remove(sq.id)
+            rows = [
+                e
+                for e in st.evidence.values()
+                if e.subquestion == sq.id and e.direction != "neutral"
+            ]
+            if not rows:
+                if sq.kind != "falsification":
+                    st.insufficient.append(sq.id)
+                continue
+            drafts.append((sq, rows))
+        results = self._parallel([partial(self._draft, sq, rows) for sq, rows in drafts])
+        for (sq, rows), got in zip(drafts, results, strict=True):
+            self._accept_claims(st, sq, rows, got)
+
+    def _draft(self, sq: SubQuestion, rows: list[Evidence]) -> dict[str, Any]:
         listing = "\n".join(
             f"[{e.id}] ({e.study_type}; {e.population or 'population not stated'}; {e.direction}"
             f"{'; describes other work' if e.secondhand else ''}) {e.finding}"
@@ -452,12 +510,16 @@ class Pipeline:
             "results "
             f"and failed replications. State each as a claim.\n\nFindings:\n{listing}"
         )
-        got = self.llm.chat_json(
+        return self.llm.chat_json(
             "synthesise",
             self.prompts.synth_system,
             ask,
             self.prompts.synth_schema([e.id for e in rows]),
         )
+
+    def _accept_claims(
+        self, st: State, sq: SubQuestion, rows: list[Evidence], got: dict[str, Any]
+    ) -> None:
         allowed = {e.id for e in rows}
         for row in got.get("claims", []):
             ids = list(dict.fromkeys(row["evidence_ids"]))
@@ -528,7 +590,13 @@ class Pipeline:
     def verify_and_grade(self, st: State, verifiers: list[str]) -> None:
         self.progress("verify", f"{len(st.claims)} claims x {len(verifiers)} verifier(s)")
         verify.check_claims(
-            st.claims, st.evidence, st.passages, self.llm, verifiers, prompts=self.prompts
+            st.claims,
+            st.evidence,
+            st.passages,
+            self.llm,
+            verifiers,
+            prompts=self.prompts,
+            parallel=self._parallel,
         )
         papers = {e.work: (self.index.paper(e.work) or {}) for e in st.evidence.values()}
         if not self.offline:
@@ -582,9 +650,15 @@ class Pipeline:
             self.prompts.summary_schema([c.id for c in usable]),
         )
         by_id = {c.id: c for c in usable}
-        for row in got.get("sentences", []):
-            basis = " ".join(by_id[i].text for i in row["claim_ids"] if i in by_id)
-            verdict, reason = verify.judge(self.llm, verifier, row["text"], basis, self.prompts)
+        rows = got.get("sentences", [])
+        bases = [" ".join(by_id[i].text for i in row["claim_ids"] if i in by_id) for row in rows]
+        verdicts = self._parallel(
+            [
+                partial(verify.judge, self.llm, verifier, row["text"], basis, self.prompts)
+                for row, basis in zip(rows, bases, strict=True)
+            ]
+        )
+        for row, (verdict, reason) in zip(rows, verdicts, strict=True):
             # A summary sentence that outruns its claims is dropped, not softened.
             st.summary.append(
                 {
@@ -601,7 +675,10 @@ class Pipeline:
         started = time.time()
         st = State(question.strip())
         verifiers = self._resolve_models(st)
-        ranker = rerank.build(self.s, self.llm, self.prompts)
+        # Reranking by a client model would cost a turn per four passages; it uses ONNX or none.
+        ranker = rerank.build(
+            self.s, None if isinstance(self.llm, ClientLLM) else self.llm, self.prompts
+        )
 
         self.progress("plan", f"decomposing the question ({self.policy.label})")
         await asyncio.to_thread(self.plan, st)
@@ -621,10 +698,12 @@ class Pipeline:
 
             async def work(targets: list[tuple[SubQuestion, list[str] | None]]) -> None:
                 pools = await asyncio.to_thread(self.pool, st, targets)
-                for sq, _ in targets:
-                    ranked = await asyncio.to_thread(self.select, sq, pools[sq.id], ranker)
-                    await asyncio.to_thread(self.extract, st, sq, ranked)
-                    await asyncio.to_thread(self.synthesise, st, sq)
+                ranked = [
+                    (sq, await asyncio.to_thread(self.select, sq, pools[sq.id], ranker))
+                    for sq, _ in targets
+                ]
+                await asyncio.to_thread(self.extract_many, st, ranked)
+                await asyncio.to_thread(self.synthesise_many, st, [sq for sq, _ in targets])
 
             # Evidence passes first; the falsification pass then skips passages they already used.
             await work([(sq, None) for sq in plan.subquestions if sq.kind != "falsification"])
@@ -673,6 +752,7 @@ class Pipeline:
             "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "seconds": round(time.time() - started, 1),
             "question": st.question,
+            "model_backend": "mcp-client" if self.client else "ollama",
             "models": self.models,
             "reranker": ranker.name,
             "settings": {
