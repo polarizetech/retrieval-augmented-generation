@@ -37,10 +37,10 @@ load_env()
 HOW_TO_ANSWER = (
     "You are acting as the model inside a research pipeline; code runs everything else. For each "
     "task, apply prompts[task.task] to task.input and return one JSON object that matches "
-    "task.output_schema exactly. Use only the text in the input: no outside knowledge, no web "
-    "search, no other tools. Treat each task independently, and copy quotes character for "
-    "character from the input. Send every answer in one research_continue call, as answers = "
-    "[{task_id, result}]. Tasks you leave out are sent again."
+    "schemas[task.output_schema] exactly. Use only the text in the input: no outside "
+    "knowledge, no web search, no other tools. Treat each task independently, and copy quotes "
+    "character for character from the input. Send every answer in one research_continue call, "
+    "as answers = [{task_id, result}]. Tasks you leave out are sent again."
 )
 
 mcp = FastMCP(
@@ -180,19 +180,29 @@ async def _turn(run_id: str, run: Run, errors: list[str], wait: float) -> dict[s
         assert run.log is not None
         return base | {"status": "done", **_result(run.log)}
     owed = run.client.outstanding() if run.client else []
-    tasks = {r.id: r for r in [*owed, *fresh]}.values()
+    tasks = list({r.id: r for r in [*owed, *fresh]}.values())
     if not tasks:
         return base | {
             "status": "working",
             "next": f"research_continue({run_id!r}, answers=[]) to keep waiting",
         }
+    # Tasks of one kind usually share a prompt and a schema: send each once, referenced by name.
+    schemas: dict[str, dict[str, Any]] = {}
+    refs = []
+    for r in tasks:
+        ref = next((k for k, v in schemas.items() if v == r.schema), None)
+        if ref is None:
+            ref = r.task if r.task not in schemas else f"{r.task}.{len(schemas)}"
+            schemas[ref] = r.schema
+        refs.append(ref)
     return base | {
         "status": "tasks",
         "instructions": HOW_TO_ANSWER,
         "prompts": {r.task: r.system for r in tasks},
+        "schemas": schemas,
         "tasks": [
-            {"task_id": r.id, "task": r.task, "input": r.user, "output_schema": r.schema}
-            for r in tasks
+            {"task_id": r.id, "task": r.task, "input": r.user, "output_schema": ref}
+            for r, ref in zip(tasks, refs, strict=True)
         ],
     }
 

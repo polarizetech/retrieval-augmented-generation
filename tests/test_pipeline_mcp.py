@@ -125,6 +125,12 @@ def test_model_calls_arrive_in_batches(env: Path) -> None:
     assert len(task_turns) <= 12
     assert handed_out > len(task_turns)
     assert all(set(t["prompts"]) == {task["task"] for task in t["tasks"]} for t in task_turns)
+    # Each distinct schema is sent once per turn and every task names one that was sent.
+    for turn in task_turns:
+        assert {task["output_schema"] for task in turn["tasks"]} == set(turn["schemas"])
+        assert len(turn["schemas"]) <= len(turn["tasks"])
+    extraction = next(t for t in task_turns if any(x["task"] == "extract" for x in t["tasks"]))
+    assert len(extraction["schemas"]) < len(extraction["tasks"])
 
 
 def test_a_wrong_answer_is_refused_and_asked_again(env: Path) -> None:
@@ -165,3 +171,39 @@ def test_one_run_at_a_time(env: Path) -> None:
 def test_unknown_runs_are_reported(env: Path) -> None:
     reply = json.loads(asyncio.run(mcp_server.research_continue("nope", [])))
     assert "unknown run_id" in reply["error"]
+
+
+def test_concurrent_model_calls_never_touch_the_index(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Model calls run concurrently; the SQLite index must not. (Found by a live run.)"""
+    import threading
+
+    from research_pipeline import index as index_module
+
+    PassageIndex(Settings().index_path, "fake-embed").add(
+        {
+            "work": "W2",
+            "doi": "10.1000/w2",
+            "title": "Another trial",
+            "year": 2021,
+            "authors": ["Grace Hopper"],
+            "route": "fixture",
+        },
+        PAPER.replace("48 adults", "52 adults"),
+        fake_embed,
+    )
+    threads: set[str] = set()
+    for name in ("paper", "opening", "note", "set_note"):
+        original = getattr(index_module.PassageIndex, name)
+
+        def spy(self: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
+            threads.add(threading.current_thread().name)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(index_module.PassageIndex, name, spy)
+    final, _ = drive(CorrectingModel())
+    assert final["status"] == "done", final
+    # Stages run one after another (in the event loop or an asyncio.to_thread worker); only the
+    # model-call pool runs concurrently, and it must never reach the index.
+    assert not any(name.startswith("ThreadPoolExecutor") for name in threads), threads

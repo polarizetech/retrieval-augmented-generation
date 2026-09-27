@@ -376,27 +376,31 @@ class Pipeline:
         with ThreadPoolExecutor(max_workers=min(len(jobs), self.concurrency)) as pool:
             return list(pool.map(lambda job: job(), jobs))
 
-    def classify(self, work: str) -> None:
-        """Record a paper's study design and population, once per paper."""
+    # Classification is split so that only the model call runs concurrently: the index is one
+    # SQLite connection, and every read and write of it stays on the stage's own thread.
+    def _classify_input(self, work: str) -> str | None:
+        """The classifier's input for a paper, or None if its text was flagged (then noted)."""
         paper = self.index.paper(work) or {}
         opening = self.index.opening(work)
         if safety.scan(opening):
             # The classifier would read the injected text; record the paper as unclassified.
             self.index.set_note(work, "unclear", "", "safety-filter")
-            return
-        got = self.llm.chat_json(
-            "classify_paper",
-            self.prompts.paper_system,
-            f"Title: {paper.get('title')}\n\n{wrap(opening)}",
-            self.prompts.paper_schema(),
+            return None
+        return f"Title: {paper.get('title')}\n\n{wrap(opening)}"
+
+    def _classify_call(self, user: str) -> dict[str, Any]:
+        return self.llm.chat_json(
+            "classify_paper", self.prompts.paper_system, user, self.prompts.paper_schema()
         )
+
+    def _classify_record(self, work: str, got: dict[str, Any]) -> None:
         self.index.set_note(
             work, got["study_type"], got.get("population", "").strip(), self.s.text_model
         )
 
     def paper_note(self, work: str) -> dict[str, str]:
-        if self.index.note(work) is None:
-            self.classify(work)
+        if self.index.note(work) is None and (user := self._classify_input(work)) is not None:
+            self._classify_record(work, self._classify_call(user))
         return self.index.note(work) or {"study_type": "unclear", "population": ""}
 
     # -- stage 6: evidence table -----------------------------------------------------------
@@ -426,9 +430,13 @@ class Pipeline:
             dict.fromkeys(p.work for _, p, _ in items if not self.index.note(p.work))
         )
         self.progress("extract", f"{len(items)} passages, {len(unclassified)} new papers")
+        to_classify = [(w, user) for w in unclassified if (user := self._classify_input(w))]
         jobs: list[Callable[[], Any]] = [partial(self._read, sq, p) for sq, p, _ in items]
-        jobs += [partial(self.classify, work) for work in unclassified]
-        results = self._parallel(jobs)[: len(items)]
+        jobs += [partial(self._classify_call, user) for _, user in to_classify]
+        answers = self._parallel(jobs)
+        results = answers[: len(items)]
+        for (work, _), got in zip(to_classify, answers[len(items) :], strict=True):
+            self._classify_record(work, got)
         for (sq, p, score), got in zip(items, results, strict=True):
             if not got.get("relevant"):
                 continue
