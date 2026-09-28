@@ -6,6 +6,7 @@
     research-pipeline index                   # index every full text the library holds
     research-pipeline domains                 # what fields are installed
     research-pipeline status
+    research-pipeline novelty --id CAND-0007 "statement" --established "term" --queries A B C D
 
 `python -m research_pipeline` works the same way.
 """
@@ -63,11 +64,45 @@ def main() -> int:
     ask.add_argument("--rounds", type=int, help="override PIPELINE_MAX_ROUNDS")
     idx = sub.add_parser("index", help="index the library's held full texts")
     idx.add_argument("--limit", type=int)
+    nov = sub.add_parser(
+        "novelty",
+        help="adversarial prior-art search that reads the nearest papers; writes a dossier "
+        "into the research repository",
+    )
+    nov.add_argument("statement", help="the candidate claim, written out in full")
+    nov.add_argument("--id", required=True, dest="cid", help="candidate id, e.g. CAND-0007")
+    nov.add_argument(
+        "--established",
+        nargs="+",
+        default=[],
+        help="the closest ESTABLISHED terminology (required; counts toward the five phrasings)",
+    )
+    nov.add_argument("--queries", nargs="+", default=[], help="further phrasings")
+    nov.add_argument("--research-dir", help="research repository checkout (default $RESEARCH_REPO)")
+    nov.add_argument("--offline", action="store_true", help="read the indexed corpus only")
+    nov.add_argument("--domain", help="field policy, as for ask")
     sub.add_parser("domains", help="installed domain extensions and their status")
     sub.add_parser("status", help="index size and configuration")
     args = parser.parse_args()
 
     settings = Settings()
+    if args.cmd == "novelty":
+        import os
+
+        from . import novelty
+
+        try:
+            novelty.check_inputs(args.cid, args.statement, args.queries, args.established)
+            research = novelty.research_dir(args.research_dir, dict(os.environ))
+        except novelty.NoveltyError as exc:
+            print(f"novelty: {exc}", file=sys.stderr)
+            return 2
+        probe = novelty.NoveltyProbe(settings, _progress, offline=args.offline, domain=args.domain)
+        log = asyncio.run(probe.run(args.cid, args.statement, args.queries, args.established))
+        out = novelty.write(log, research)
+        print(f"{log['id']}: {log['verdict']} — {log['why']}")
+        print(f"dossier: {out / 'prior-art.md'}", file=sys.stderr)
+        return 0
     if args.cmd == "index":
         return asyncio.run(_index(settings, args.limit))
     if args.cmd == "domains":
