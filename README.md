@@ -82,6 +82,38 @@ open-access papers into the paper library; `PIPELINE_MAX_FETCH` bounds how many.
 Set `PIPELINE_VERIFIER_MODEL` to a model from a different family than the text model. Without it
 the text model checks its own claims, and every answer says so.
 
+### Novelty probe: has someone already done this?
+
+```bash
+uv run research-pipeline novelty --id CAND-0007 "The candidate claim, written out in full" \
+    --established "the closest established terminology" \
+    --queries "phrasing A" "phrasing B" "phrasing C" "phrasing D" \
+    --research-dir ../research        # or set RESEARCH_REPO
+```
+
+An adversarial prior-art search. Its null hypothesis is that the claim is already published, and
+it tries to prove that:
+
+1. It searches every index the paper library federates, once per phrasing. At least five
+   phrasings are required, one of them in the field's established terms.
+2. It fetches the nearest open-access papers in full.
+3. It puts each retrieved passage to the verifier with the candidate as the claim.
+
+A search hit is not prior art; a passage that states the claim is. There are four verdicts:
+
+| Verdict | Meaning |
+|---|---|
+| `PRIOR_ART` | Every verifier accepts a passage, its quote is found in the stored text, and every number in the claim is present in it. |
+| `PARTLY_KNOWN` | A passage states a weaker or narrower version, or the verifiers disagree. |
+| `INCONCLUSIVE` | An index refused, the run was offline, or fewer than three of the nearest works could be read. |
+| `CANDIDATE` | None of the above. It describes only the works read, not the literature. |
+
+The dossier (`prior-art.md`, plus the full run log under `runs/`) is written into the **research
+repository** at `novelty/<ID>/`, next to the corpus it concerns. The command refuses any directory
+that does not carry that repository's marker files. The dossier never announces a discovery. It
+does quote the statement as given, and reports what the earlier any-hit rule would have said,
+alongside what the reading found.
+
 ### As an MCP server
 
 For Claude Desktop or Claude Code, run the gateway over stdio (no port, no token):
