@@ -112,6 +112,35 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
 
 
 @pytest.mark.anyio
+async def test_a_server_section_names_the_instance_and_can_drop_the_builtin_tools(
+    config: Path, tmp_path: Path
+) -> None:
+    cfg = json.loads(config.read_text())
+    cfg["server"] = {
+        "name": "second-instance",
+        "instructions": "Only the upstreams.",
+        "builtin_tools": False,
+    }
+    other = tmp_path / "second.json"
+    other.write_text(json.dumps(cfg))
+    server, _ = gateway.build_server(other, "127.0.0.1", 0, tmp_path / "token", http=False)
+    assert server.name == "second-instance"
+    assert server.instructions == "Only the upstreams."
+
+    async def body(session: ClientSession) -> None:
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert "gateway_status" in names
+        assert "papers__search" in names
+        assert not any(n == "web__search" or n.startswith("rag__") for n in names)
+        refused = await session.call_tool("rag__search", {"query": "x"})
+        assert refused.isError
+        status = payload(await session.call_tool("gateway_status", {}))
+        assert status["total_tools"] == 4
+
+    await with_session(other, tmp_path, body)
+
+
+@pytest.mark.anyio
 async def test_rag_tools_round_trip(config: Path, tmp_path: Path) -> None:
     async def body(session: ClientSession) -> None:
         found = payload(

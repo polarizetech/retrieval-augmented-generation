@@ -283,9 +283,15 @@ def build_server(
             *[str(o) for o in network.get("allowed_origins", [])],
         ],
     )
+    # A "server" section lets one gateway binary front a different set of upstreams under its
+    # own name, e.g. a second instance that exposes only an org-status server. Its OAuth state,
+    # port and public URL are set per instance in the environment as usual.
+    server_cfg = config.get("server", {})
+    builtin_tools = bool(server_cfg.get("builtin_tools", True))
     server = FastMCP(
-        SERVER_NAME,
-        instructions=(
+        str(server_cfg.get("name") or SERVER_NAME),
+        instructions=server_cfg.get("instructions")
+        or (
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
             "pipeline__research_start(question), then answer each batch of tasks it returns and "
@@ -456,9 +462,13 @@ def build_server(
                 ),
             ),
         ]
-        return [status, web, *rag_tools, *[entry[2] for entry in federation.tools.values()]]
+        upstream = [entry[2] for entry in federation.tools.values()]
+        if not builtin_tools:
+            return [status, *upstream]
+        return [status, web, *rag_tools, *upstream]
 
-    builtin = 7  # gateway_status, web__search and the five rag__ tools
+    # gateway_status, plus web__search and the five rag__ tools unless they are switched off
+    builtin = 7 if builtin_tools else 1
 
     async def index_papers(identifiers: list[str]) -> dict[str, Any]:
         upstream = settings.papers_upstream
@@ -528,6 +538,8 @@ def build_server(
                 "total_tools": len(federation.tools) + builtin,
                 "web_search_configured": bool(searxng),
             }
+        if not builtin_tools and (name == "web__search" or name.startswith("rag__")):
+            return _tool_error(f"unknown tool: {name}")
         if name == "web__search":
             return await _web_search(searxng, arguments)
         if name == "rag__search":
