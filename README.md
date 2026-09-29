@@ -48,7 +48,7 @@ What each rule guarantees, and what it does not:
   `qwen3:4b-instruct-2507` (about 2.5 GB) and `bge-m3` (about 1.2 GB). Sized for a machine with
   16 GB of memory running one model at a time.
 - For online runs, a paper library over MCP:
-  [paper-library](https://github.com/polarizetech/paper-library), which searches
+  [paper-fetch](https://github.com/polarizetech/paper-fetch), which searches
   open-access providers and stores legal full text with provenance.
 
 ## Install
@@ -63,7 +63,7 @@ cp config/rag.env.example config/rag.env
 cp config/mcp-gateway.example.json config/mcp-gateway.json
 ```
 
-Install the paper library so that `paperlib-mcp` is on your `PATH`, or put its absolute path in
+Install paper-fetch so that `paper-fetch-mcp` is on your `PATH`, or put its absolute path in
 `config/mcp-gateway.json`.
 
 ## Use
