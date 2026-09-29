@@ -32,7 +32,7 @@ Use stdio: nothing listens on a port and no token is involved.
 ```
 
 An app bundle does not inherit a login shell's `PATH`. If an upstream is started by name (for
-example `paperlib-mcp`), give its absolute path in the gateway config or add an `env.PATH` entry.
+example `paper-fetch-mcp`), give its absolute path in the gateway config or add an `env.PATH` entry.
 
 ## The full pipeline, with the client as its model
 
