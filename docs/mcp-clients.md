@@ -16,6 +16,19 @@ annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) from the config
 can decide what needs approval. One broken upstream is reported by `gateway_status` and does not
 take the others down.
 
+## A second instance for other upstreams
+
+The same gateway binary can front a different set of stdio servers under its own name, with its
+own OAuth state, port and public URL. Add a `server` section to that instance's config:
+
+```json
+{"server": {"name": "scientific-research-news", "instructions": "...", "builtin_tools": false},
+ "upstreams": {"news": {"command": "/abs/path/python", "args": ["/abs/path/serve.py"]}}}
+```
+
+`builtin_tools: false` drops `web__search` and the `rag__*` tools, so the instance lists only
+`gateway_status` and its upstreams. Omitting the section keeps today's behaviour.
+
 ## Claude Desktop and Claude Code
 
 Use stdio: nothing listens on a port and no token is involved.
