@@ -116,8 +116,11 @@ async def test_a_server_section_names_the_instance_and_can_drop_the_builtin_tool
     config: Path, tmp_path: Path
 ) -> None:
     cfg = json.loads(config.read_text())
-    cfg["server"] = {"name": "second-instance", "instructions": "Only the upstreams.",
-                     "builtin_tools": False}
+    cfg["server"] = {
+        "name": "second-instance",
+        "instructions": "Only the upstreams.",
+        "builtin_tools": False,
+    }
     other = tmp_path / "second.json"
     other.write_text(json.dumps(cfg))
     server, _ = gateway.build_server(other, "127.0.0.1", 0, tmp_path / "token", http=False)
