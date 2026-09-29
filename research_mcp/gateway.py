@@ -290,7 +290,8 @@ def build_server(
     builtin_tools = bool(server_cfg.get("builtin_tools", True))
     server = FastMCP(
         str(server_cfg.get("name") or SERVER_NAME),
-        instructions=server_cfg.get("instructions") or (
+        instructions=server_cfg.get("instructions")
+        or (
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
             "pipeline__research_start(question), then answer each batch of tasks it returns and "
