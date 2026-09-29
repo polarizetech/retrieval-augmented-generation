@@ -94,6 +94,7 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
             "rag__retrieve_evidence",
             "rag__check_citations",
             "rag__save_report",
+            "rag__index_paper",
             "papers__search",
             "papers__fetch",
         } <= set(tools)
@@ -103,9 +104,9 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
         assert fetch.openWorldHint is True
 
         status = payload(await session.call_tool("gateway_status", {}))
-        assert status["connected"] == {"papers": 2}
+        assert status["connected"] == {"papers": 3}
         assert set(status["errors"]) == {"broken"}
-        assert status["total_tools"] == 8
+        assert status["total_tools"] == 10
 
     await with_session(config, tmp_path, body)
 
@@ -169,7 +170,7 @@ async def test_the_pipeline_client_speaks_the_library_contract(config: Path) -> 
         found = await library.search("exercise")
         assert found["providers"] == {"fake": {"status": "ok"}}
         with pytest.raises(PapersError) as refused:
-            await library.fetch("10.1000/closed")
+            await library.fetch("10.1000/missing")
         assert refused.value.code == "not_found"
 
 
@@ -192,3 +193,38 @@ def test_the_token_file_is_created_private(tmp_path: Path, monkeypatch: pytest.M
     assert len(token) >= 40
     assert token_file.stat().st_mode & 0o777 == 0o600
     assert gateway._token(token_file) == token
+
+
+@pytest.mark.anyio
+async def test_index_paper_makes_a_fetched_paper_citable(config: Path, tmp_path: Path) -> None:
+    async def body(session: ClientSession) -> None:
+        before = payload(
+            await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
+        )
+        assert all(r["work"] != "W-open" for r in before["results"])
+
+        done = payload(
+            await session.call_tool(
+                "rag__index_paper",
+                {"identifiers": ["10.1000/open", "10.1000/closed", "10.1000/missing"]},
+            )
+        )
+        status = {r["identifier"]: r["status"] for r in done["results"]}
+        assert status == {
+            "10.1000/open": "indexed",
+            "10.1000/closed": "no_open_full_text",
+            "10.1000/missing": "not_found",
+        }
+        assert done["index"]["papers"] == 2
+
+        after = payload(
+            await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
+        )
+        assert after["results"][0]["work"] == "W-open"
+
+        again = payload(
+            await session.call_tool("rag__index_paper", {"identifiers": ["10.1000/open"]})
+        )
+        assert again["results"][0]["status"] == "already_indexed"
+
+    await with_session(config, tmp_path, body)

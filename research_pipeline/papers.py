@@ -35,6 +35,13 @@ class PaperLibrary:
         self.stack = AsyncExitStack()
         self.session: ClientSession | None = None
 
+    @classmethod
+    def over(cls, session: ClientSession) -> PaperLibrary:
+        """Speak the library contract over a session someone else already holds (the gateway)."""
+        lib = cls.__new__(cls)
+        lib.spec, lib.stack, lib.session = {}, AsyncExitStack(), session
+        return lib
+
     async def __aenter__(self) -> PaperLibrary:
         env = dict(os.environ)
         env.update({str(k): str(v) for k, v in self.spec.get("env", {}).items()})

@@ -36,8 +36,26 @@ SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9(\[])")
 NUMBER_UNIT = re.compile(
     r"(?<![A-Za-z0-9.])(\d+(?:[.,]\d+)?|\.\d+)(?:\s*-?\s*(%|[A-Za-zµΩ][A-Za-z0-9µΩ/·²³°]*))?"
 )
+# The year of an author-year citation names a paper; it is not a quantity the passage must contain.
+# "Smith et al. 2024", "Smith & Jones (2019)", "(Smith, 2019)", "Pan 2026". A capitalised word
+# only counts as a surname when it is not a function word, so "In 2019, ..." is still checked.
+_SURNAME = (
+    r"(?!(?:In|From|Since|By|Until|Before|After|During|Of|On|At|To|The|A|An|And|Or|For)\b)"
+    r"[A-Z][A-Za-z'’\-]+"
+)
+CITATION_YEAR = re.compile(
+    rf"(?:\bet al\.?|\b{_SURNAME}(?:\s+(?:&|and)\s+{_SURNAME})?),?\s*\(?\s*"
+    r"((?:18|19|20)\d{2})[a-z]?\b"
+)
 WS = re.compile(r"\s+")
 WORDS = re.compile(r"[A-Za-z0-9]+(?:'[a-z]+)?")
+
+
+def strip_citation_years(text: str) -> str:
+    """Remove the year from each author-year citation, leaving every other number in place."""
+    return CITATION_YEAR.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)], text)
+
+
 NEGATIONS = frozenset(
     [
         "no",
@@ -199,7 +217,7 @@ def unsupported_numbers(
         measured |= pairs
 
     missing = []
-    for value, unit in NUMBER_UNIT.findall(claim):
+    for value, unit in NUMBER_UNIT.findall(strip_citation_years(claim)):
         number = canonical_number(value)
         if number not in pool:
             missing.append(value)

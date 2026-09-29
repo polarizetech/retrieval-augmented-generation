@@ -320,3 +320,41 @@ def test_a_retracted_source_supports_nothing(online_log: dict[str, Any]) -> None
     assert "SUPPORTED" not in verdicts
     assert "RETRACTED_SOURCE" in verdicts
     assert "Crossref/Retraction Watch lists their source as retracted" in online_log["answer"]
+
+
+class ComponentLibrary(FakeLibrary):
+    """Lists a figure of an article as its own work, before the article itself."""
+
+    async def search(self, query: str, limit: int = 10) -> dict[str, Any]:
+        return {
+            "hits": [
+                {
+                    "title": "Simulating the influence of precision on uncertainty.",
+                    "ids": {"doi": "10.1371/journal.pcbi.1010490.g004", "openalex": "W-fig"},
+                    "work": "W-fig",
+                },
+                {
+                    "title": "In the Body's Eye",
+                    "ids": {"doi": "10.1371/journal.pcbi.1010490"},
+                    "year": 2022,
+                },
+            ],
+            "providers": {"a": {"status": "ok"}},
+        }
+
+
+def test_a_figure_doi_is_folded_into_its_article(tmp_path: Path) -> None:
+    from research_pipeline.pipeline import State
+
+    settings = Settings(
+        data_dir=tmp_path / "data", runs_dir=tmp_path / "runs", embedding_model="fake-embed"
+    )
+    pipeline = Pipeline(settings, offline=False)
+    st = State(QUESTION)
+    asyncio.run(pipeline.discover(st, ComponentLibrary(), ["precision"]))  # type: ignore[arg-type]
+    assert list(st.candidates) == ["10.1371/journal.pcbi.1010490"]
+    cand = st.candidates["10.1371/journal.pcbi.1010490"]
+    assert cand.title == "In the Body's Eye"
+    assert cand.work is None
+    assert cand.ids == {"doi": "10.1371/journal.pcbi.1010490"}
+    assert any("component" in note for note in st.notes)
