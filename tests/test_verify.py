@@ -75,6 +75,28 @@ class TestNumbers:
             "7"
         ]
 
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            "Fló et al. 2024 found it in 40 adults",
+            "Smith & Jones (2019) found it in 40 adults",
+            "as reported (Smith, 2019), 40 adults",
+            "Pan 2026: 40 adults",
+            "Wells et al. (2016a) studied 40 adults",
+        ],
+    )
+    def test_a_citation_year_is_not_a_claimed_number(self, claim: str) -> None:
+        assert verify.unsupported_numbers(claim, [PASSAGE]) == []
+
+    @pytest.mark.parametrize(
+        ("claim", "missing"),
+        [("In 2019, 40 adults were studied", ["2019"]), ("the 2024 cohort of 40 adults", ["2024"])],
+    )
+    def test_a_year_that_is_not_a_citation_is_still_checked(
+        self, claim: str, missing: list[str]
+    ) -> None:
+        assert verify.unsupported_numbers(claim, [PASSAGE]) == missing
+
     def test_identifiers_are_not_numbers(self) -> None:
         assert verify.unsupported_numbers("CA1 and Nav1.7 were studied", ["no numbers here"]) == []
 
@@ -175,3 +197,20 @@ class TestSettling:
     def test_settling_without_verifiers_is_an_error(self) -> None:
         with pytest.raises(ValueError, match="verifier"):
             verify.settle(Claim("C1", "S1", "t", ["E1"]), self.evidence, self.passages, [])
+
+
+@pytest.mark.parametrize(
+    ("doi", "parent"),
+    [
+        ("10.1371/journal.pcbi.1010490.g004", "10.1371/journal.pcbi.1010490"),
+        ("10.1371/journal.pone.0108224.t001", "10.1371/journal.pone.0108224"),
+        ("10.7717/peerj.5601/fig-2", "10.7717/peerj.5601"),
+        ("10.7554/eLife.09868.003", "10.7554/elife.09868"),
+        ("10.1038/nature17427", "10.1038/nature17427"),
+        ("10.1371/journal.pone.0108224", "10.1371/journal.pone.0108224"),
+    ],
+)
+def test_component_dois_resolve_to_their_article(doi: str, parent: str) -> None:
+    from research_pipeline.schema import parent_doi
+
+    assert parent_doi(doi) == parent

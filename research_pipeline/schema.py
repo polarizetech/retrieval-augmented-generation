@@ -47,6 +47,27 @@ def source_status(doi: str | None) -> str:
     return "preprint" if doi.lower().split("/", 1)[0] in PREPRINT_PREFIXES else "published"
 
 
+# Some publishers mint a DOI for each figure, table and supplement, and bibliographic indexes list
+# them as works of their own ("Simulating the influence of ..." for PLOS Comput Biol figure 4).
+# Fetching one returns no article text, so a component is folded into the article it belongs to.
+COMPONENT_DOI = [
+    re.compile(r"^(10\.1371/journal\.[a-z]+\.\d{7})\.[a-z]{1,2}\d{3,4}$"),  # PLOS .g004 .t001 .s002
+    re.compile(r"^(10\.7717/peerj(?:-cs)?\.\d+)/(?:fig|table|supp)-\d+$"),  # PeerJ /fig-1
+    re.compile(r"^(10\.7554/elife\.\d+)\.\d{3}$"),  # eLife figure and supplement DOIs
+]
+
+
+def parent_doi(doi: str | None) -> str | None:
+    """The article a figure, table or supplement DOI belongs to; the DOI itself otherwise."""
+    if not doi:
+        return doi
+    low = doi.strip().lower()
+    for pattern in COMPONENT_DOI:
+        if m := pattern.match(low):
+            return m.group(1)
+    return low
+
+
 def title_key(title: str | None) -> str:
     """Normalised title, used to fold a preprint and its published version into one source."""
     return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()

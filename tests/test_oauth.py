@@ -253,4 +253,4 @@ def test_the_whole_flow_through_the_http_gateway(
             },
         )
         assert call.status_code == 200, call.text
-        assert call.json()["result"]["structuredContent"]["total_tools"] == 6
+        assert call.json()["result"]["structuredContent"]["total_tools"] == 7

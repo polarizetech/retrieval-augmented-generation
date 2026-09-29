@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any
 from research_pipeline import safety
 from research_pipeline.config import Settings
 from research_pipeline.index import Passage, PassageIndex
+from research_pipeline.llm import LLMError
 from research_pipeline.verify import anchor_quote, unsupported_numbers
 
 Embed = Callable[[list[str]], list[list[float]]]
@@ -46,6 +48,10 @@ class EvidenceStore:
         self.index = index
         self.runs_dir = runs_dir
         self.embed = embed
+        # One sqlite connection serves every tool call, and the gateway runs calls on worker
+        # threads. Concurrent use of one connection raises sqlite3.InterfaceError, so every public
+        # method holds this lock for its whole body.
+        self._lock = threading.RLock()
 
     @classmethod
     def from_settings(cls, settings: Settings, embed: Embed | None = None) -> EvidenceStore:
@@ -55,6 +61,10 @@ class EvidenceStore:
 
     # -- retrieval ---------------------------------------------------------------------------
     def retrieve(self, query: str, limit: int = 8, max_chars: int = 1800) -> dict[str, Any]:
+        with self._lock:
+            return self._retrieve(query, limit, max_chars)
+
+    def _retrieve(self, query: str, limit: int, max_chars: int) -> dict[str, Any]:
         query = query.strip()
         if not query:
             raise ValueError("query is required")
@@ -110,6 +120,10 @@ class EvidenceStore:
 
     # -- checking ----------------------------------------------------------------------------
     def check_citations(self, claims: list[dict[str, Any]]) -> dict[str, Any]:
+        with self._lock:
+            return self._check_citations(claims)
+
+    def _check_citations(self, claims: list[dict[str, Any]]) -> dict[str, Any]:
         checked = [self._check_claim(number, claim) for number, claim in enumerate(claims, 1)]
         return {
             "n": len(checked),
@@ -193,6 +207,16 @@ class EvidenceStore:
         the check is stored with the report; without them the manifest says the claims were not
         checked, so a reader can tell the difference.
         """
+        with self._lock:
+            return self._save_report(title, markdown, evidence_ids, claims)
+
+    def _save_report(
+        self,
+        title: str,
+        markdown: str,
+        evidence_ids: list[str],
+        claims: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
         title, markdown = title.strip(), markdown.strip()
         if not title or not markdown:
             raise ValueError("title and markdown are required")
@@ -232,3 +256,39 @@ class EvidenceStore:
             "evidence_ids": list(cited),
             "claims_checked": check is not None,
         }
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return self.index.stats()
+
+    # -- indexing ----------------------------------------------------------------------------
+    def ingest(self, record: dict[str, Any], text: str) -> dict[str, Any]:
+        """Add one held paper's full text to the passage index, so retrieve can cite it.
+
+        Passages are embedded with the same model as the rest of the index. A paper indexed
+        without vectors would be invisible to the dense half of hybrid retrieval, so a missing
+        embedding model is an error, never a silent lexical-only insert.
+        """
+        if not record.get("work"):
+            raise ValueError("record has no work id")
+        if not text.strip():
+            raise ValueError(f"{record['work']}: no full text to index")
+        if self.embed is None:
+            raise ValueError("no embedding model is configured; cannot index")
+        hidden = safety.scan_hidden(text)
+        with self._lock:
+            try:
+                added = self.index.add(record, safety.clean(text), self.embed)
+            except (LLMError, ConnectionError, OSError, TimeoutError) as exc:
+                raise ValueError(
+                    f"embedding model unavailable ({type(exc).__name__}); nothing was indexed"
+                ) from exc
+            return {
+                "work": record["work"],
+                "doi": record.get("doi"),
+                "title": record.get("title"),
+                "passages_added": added,
+                "already_indexed": added == 0,
+                "hidden_text_stripped": hidden or None,
+                "index": self.index.stats(),
+            }

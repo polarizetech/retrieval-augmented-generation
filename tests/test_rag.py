@@ -200,3 +200,45 @@ class TestSaveReport:
     ) -> None:
         with pytest.raises(ValueError, match=error):
             store.save_report(title, markdown, ids)
+
+
+class TestConcurrency:
+    def test_parallel_calls_share_the_connection_safely(self, store: EvidenceStore) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        hit = first(store, "lowered systolic pressure")
+        body = claim("Aerobic training lowered systolic pressure by 5 mmHg.", hit)
+
+        def work(i: int) -> bool:
+            if i % 2:
+                return store.retrieve("lowered systolic pressure", limit=3)["n"] > 0
+            return store.check_citations([body])["valid"]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            assert all(pool.map(work, range(64)))
+
+
+class TestIngest:
+    TEXT = "Heart rate variability rose with paced breathing in 30 adults. " * 20
+
+    def test_an_ingested_paper_becomes_citable(self, store: EvidenceStore) -> None:
+        done = store.ingest({"work": "W9", "doi": "10.1000/w9", "title": "HRV"}, self.TEXT)
+        assert done["passages_added"] > 0
+        assert not done["already_indexed"]
+        assert store.ingest({"work": "W9"}, self.TEXT)["already_indexed"]
+        assert any(r["work"] == "W9" for r in store.retrieve("paced breathing", limit=5)["results"])
+
+    def test_no_embedder_means_no_insert(self, store: EvidenceStore) -> None:
+        store.embed = None
+        with pytest.raises(ValueError, match="no embedding model"):
+            store.ingest({"work": "W9"}, self.TEXT)
+
+    def test_an_unreachable_embedder_indexes_nothing(self, store: EvidenceStore) -> None:
+        def broken(_: list[str]) -> list[list[float]]:
+            raise ConnectionError("down")
+
+        store.embed = broken
+        before = store.stats()
+        with pytest.raises(ValueError, match="nothing was indexed"):
+            store.ingest({"work": "W9"}, self.TEXT)
+        assert store.stats() == before

@@ -35,7 +35,17 @@ from .index import Passage, PassageIndex
 from .llm import Ollama
 from .papers import PaperLibrary, PapersError
 from .prompts import Prompts, wrap
-from .schema import Candidate, Claim, Evidence, Plan, SubQuestion, source_status, title_key, to_json
+from .schema import (
+    Candidate,
+    Claim,
+    Evidence,
+    Plan,
+    SubQuestion,
+    parent_doi,
+    source_status,
+    title_key,
+    to_json,
+)
 
 Progress = Callable[[str, str], None]
 Model = Ollama | ClientLLM
@@ -175,10 +185,17 @@ class Pipeline:
                 }
             )
             for hit in res["hits"]:
-                ids = hit.get("ids") or {}
+                ids = dict(hit.get("ids") or {})
+                title, work = hit.get("title"), hit.get("work")
+                doi = (ids.get("doi") or "").lower()
+                if doi and (parent := parent_doi(doi)) != doi:
+                    # A figure or table listed as its own work: stand in for the article, and drop
+                    # the component's own title and ids, which would fetch the figure again.
+                    ids, title, work = {"doi": parent}, None, None
+                    st.notes.append(f"search listed {doi}, a component of {parent}; using {parent}")
                 key = (ids.get("doi") or "").lower() or next(
                     (f"{k}:{ids[k]}" for k in ("pmid", "pmcid", "openalex", "arxiv") if ids.get(k)),
-                    title_key(hit.get("title")),
+                    title_key(title),
                 )
                 if not key:
                     continue
@@ -186,7 +203,7 @@ class Pipeline:
                 if cand is None:
                     cand = st.candidates[key] = Candidate(
                         key,
-                        hit.get("title"),
+                        title,
                         hit.get("year"),
                         ids,
                         hit.get("authors") or [],
@@ -194,7 +211,8 @@ class Pipeline:
                         list(hit.get("providers") or []),
                     )
                 cand.queries.append(query)
-                cand.work = cand.work or hit.get("work")
+                cand.title = cand.title or title
+                cand.work = cand.work or work
                 cand.full_text_in_library = cand.full_text_in_library or bool(
                     hit.get("full_text_in_library")
                 )
