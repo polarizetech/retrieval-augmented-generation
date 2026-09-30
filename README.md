@@ -27,6 +27,11 @@ There are two ways to use it:
   answer while this repository holds it to the same deterministic rules: evidence only from the
   local index, quotes that must occur in the cited passage, and numbers that must occur in the
   cited evidence. These tools do not judge entailment; the pipeline's verifier models do.
+- **The quantity tools** (`math__*` over MCP) give a client model constants and equations to cite
+  instead of recall: `math__lookup` searches the research corpus's calculator records
+  (`projects/*/calculators/*.md`, found through `$RESEARCH_CORPUS` or a sibling `research/` checkout)
+  and returns their sections verbatim with the corpus commit; `math__bionumber` returns a BioNumbers
+  entry by BNID, verbatim, fetched once and cached. No model is involved in either.
 
 What each rule guarantees, and what it does not:
 
