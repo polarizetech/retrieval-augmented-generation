@@ -12,11 +12,9 @@ critique rules, because they belong to this field rather than to science in gene
 from __future__ import annotations
 
 from research_pipeline.domains import (
-    Anchor,
     CritiqueRule,
     DomainPolicy,
     Measure,
-    Source,
     StudyDesign,
     Taxonomy,
     declare,
@@ -73,75 +71,6 @@ TAXONOMY = Taxonomy(
     )
 )
 
-ANCHORS = (
-    Anchor(
-        "mesh",
-        "D001479",
-        "Basal Ganglia",
-        tree="A08.186.211.200.885.287.249",
-        synonyms=("striatum", "caudate nucleus", "putamen"),
-    ),
-    Anchor(
-        "mesh",
-        "D006624",
-        "Hippocampus",
-        tree="A08.186.211.180.405",
-        synonyms=("CA1", "CA3", "dentate gyrus", "hippocampal formation"),
-    ),
-    Anchor(
-        "mesh",
-        "D002540",
-        "Cerebral Cortex",
-        tree="A08.186.211.200.885.287.500",
-        synonyms=("neocortex", "cortical"),
-    ),
-    Anchor(
-        "mesh",
-        "D009415",
-        "Nerve Net",
-        tree="A08.511",
-        synonyms=("neural circuit", "neuronal network", "microcircuit"),
-    ),
-    Anchor(
-        "mesh",
-        "D017981",
-        "Receptors, Neurotransmitter",
-        tree="D12.776.543.750.720",
-        synonyms=("neurotransmitter receptor", "ion channel", "synaptic receptor"),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "neural oscillations",
-        synonyms=(
-            "delta waves",
-            "theta rhythm",
-            "alpha power",
-            "beta band",
-            "local field potential",
-            "LFP",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "synaptic plasticity",
-        synonyms=(
-            "long-term potentiation",
-            "LTP",
-            "long-term depression",
-            "LTD",
-            "spike-timing-dependent plasticity",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "optogenetics",
-        synonyms=("channelrhodopsin", "chemogenetics", "DREADD", "closed-loop stimulation"),
-    ),
-)
-
 MEASURES = (
     Measure(
         "frequency",
@@ -188,53 +117,6 @@ MEASURES = (
     ),
 )
 
-SOURCES = (
-    Source(
-        "pubmed",
-        "PubMed / MEDLINE",
-        "literature",
-        "https://pubmed.ncbi.nlm.nih.gov/",
-        "MeSH-indexed; the A08 nervous-system anatomy tree and the F02 psychological "
-        "phenomena tree.",
-    ),
-    Source(
-        "europepmc",
-        "Europe PMC",
-        "literature",
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/",
-        "Open-access full text plus MeSH terms in one record.",
-    ),
-    Source(
-        "openalex",
-        "OpenAlex",
-        "literature",
-        "https://api.openalex.org/works",
-        "Venue and open-access metadata, and the citation graph.",
-    ),
-    Source(
-        "biorxiv",
-        "bioRxiv",
-        "literature",
-        "https://api.biorxiv.org/",
-        "The Neuroscience category is among the largest on the server; much of the field "
-        "appears here first. Preprints are labelled, never excluded.",
-    ),
-    Source(
-        "openneuro",
-        "OpenNeuro",
-        "dataset",
-        "https://openneuro.org/",
-        "Whether the data behind an imaging claim are available at all.",
-    ),
-    Source(
-        "neurosynth",
-        "Neurosynth / NeuroQuery",
-        "dataset",
-        "https://neurosynth.org/",
-        "Coordinate-based meta-analytic maps, as a check on a claimed localisation.",
-    ),
-)
-
 POLICY = DomainPolicy(
     slug="neuroscience",
     label="Neuroscience",
@@ -243,16 +125,7 @@ POLICY = DomainPolicy(
         "oscillations, plasticity, neuroimaging and computational models."
     ),
     taxonomy=TAXONOMY,
-    sources=SOURCES,
-    anchors=ANCHORS,
     measures=MEASURES,
-    search_guidance=(
-        "Write queries suited to PubMed and OpenAlex. Name the structure, the signal and the "
-        "preparation separately (hippocampus, theta rhythm, freely moving rats) rather than "
-        "asking the question in prose. Expand abbreviations alongside themselves — LTP, LFP and "
-        "DREADD are each ambiguous on their own — and include one older or alternative term for "
-        "the structure, since the anatomical nomenclature has changed more than once."
-    ),
     reporting_rule=(
         "Keep the species and preparation, the brain region, the recording or imaging modality, "
         "the stimulus or manipulation and its parameters, the sample size, and any hedging."

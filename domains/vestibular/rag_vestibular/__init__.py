@@ -10,11 +10,9 @@ so the taxonomy here puts a well-conducted accuracy study near the top instead.
 from __future__ import annotations
 
 from research_pipeline.domains import (
-    Anchor,
     CritiqueRule,
     DomainPolicy,
     Measure,
-    Source,
     StudyDesign,
     Taxonomy,
     declare,
@@ -108,60 +106,6 @@ TAXONOMY = Taxonomy(
     )
 )
 
-ANCHORS = (
-    Anchor(
-        "mesh",
-        "D015837",
-        "Vestibular Diseases",
-        tree="C09.218.568.900",
-        synonyms=("vestibular disorder", "vestibulopathy", "dizziness", "vertigo"),
-    ),
-    Anchor(
-        "mesh",
-        "D014722",
-        "Vestibule, Labyrinth",
-        tree="A09.246.300.909",
-        synonyms=(
-            "vestibular apparatus",
-            "otolith organs",
-            "utricle",
-            "saccule",
-            "semicircular canals",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "vestibulo-ocular reflex",
-        synonyms=("VOR", "VOR gain", "video head impulse test", "vHIT", "caloric testing"),
-    ),
-    Anchor(
-        "free-text", "", "vestibular evoked myogenic potential", synonyms=("VEMP", "cVEMP", "oVEMP")
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "vestibulo-sympathetic reflex",
-        synonyms=(
-            "vestibulo-autonomic",
-            "vestibular autonomic interaction",
-            "orthostatic vestibular response",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "persistent postural-perceptual dizziness",
-        synonyms=(
-            "PPPD",
-            "vestibular migraine",
-            "benign paroxysmal positional vertigo",
-            "BPPV",
-            "Meniere disease",
-        ),
-    ),
-)
-
 MEASURES = (
     Measure(
         "angular",
@@ -191,42 +135,6 @@ MEASURES = (
     Measure("latency", "Response latency", ("ms", "msec"), aliases=("p13 latency", "n23 latency")),
 )
 
-SOURCES = (
-    Source(
-        "pubmed",
-        "PubMed / MEDLINE",
-        "literature",
-        "https://pubmed.ncbi.nlm.nih.gov/",
-        "MeSH-indexed; the C09 otorhinolaryngologic tree.",
-    ),
-    Source(
-        "europepmc",
-        "Europe PMC",
-        "literature",
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/",
-        "Open-access full text plus MeSH terms in one record.",
-    ),
-    Source(
-        "openalex",
-        "OpenAlex",
-        "literature",
-        "https://api.openalex.org/works",
-        "Venue and open-access metadata, and the citation graph.",
-    ),
-    Source(
-        "barany",
-        "Barany Society classification documents",
-        "guideline",
-        "https://www.jvr-web.org",
-        "This field's consensus diagnostic criteria (BPPV, vestibular migraine, PPPD, "
-        "Meniere disease) are published as papers in the Journal of Vestibular Research, "
-        "the society's venue since 2015. The society has no dedicated API or stable domain "
-        "of its own that resolved from this environment; the documents are reached through "
-        "PubMed/Europe PMC like any other paper, and jvr-web.org is recorded here as the "
-        "journal of record rather than as a scrape target.",
-    ),
-)
-
 POLICY = DomainPolicy(
     slug="vestibular",
     label="Vestibular science",
@@ -235,16 +143,7 @@ POLICY = DomainPolicy(
         "postural responses, and the disorders of dizziness and vertigo."
     ),
     taxonomy=TAXONOMY,
-    sources=SOURCES,
-    anchors=ANCHORS,
     measures=MEASURES,
-    search_guidance=(
-        "Write queries suited to PubMed/MEDLINE, Europe PMC and OpenAlex. Name the test rather "
-        "than the symptom: vHIT, caloric irrigation, VEMP, posturography and subjective visual "
-        "vertical each have their own literature, and a query for 'dizziness' returns almost none "
-        "of it. Use the consensus diagnostic label (BPPV, vestibular migraine, PPPD) where one "
-        "exists, and its expansion alongside the abbreviation."
-    ),
     reporting_rule=(
         "Keep the population (patient group, age, and whether it was a specialist or unselected "
         "sample), the test and its stimulus parameters, the reference standard, and any hedging."

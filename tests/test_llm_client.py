@@ -36,9 +36,7 @@ def body(payload: dict[str, Any]) -> mock.MagicMock:
 
 @pytest.fixture
 def ollama() -> Ollama:
-    return Ollama(
-        Settings(ollama_url="http://ollama.test", text_model="text", embedding_model="emb")
-    )
+    return Ollama(Settings(ollama_url="http://ollama.test", text_model="text"))
 
 
 def test_chat_json_returns_the_value_and_logs_the_call(ollama: Ollama) -> None:
@@ -89,16 +87,6 @@ def test_runaway_whitespace_is_retried_once_with_another_seed(ollama: Ollama) ->
     assert seeds == [7, 8]
 
 
-def test_embed_checks_the_vector_count(ollama: Ollama) -> None:
-    with mock.patch(
-        "urllib.request.urlopen", side_effect=lambda *_, **__: body({"embeddings": [[0.1, 0.2]]})
-    ):
-        assert ollama.embed(["a"]) == [[0.1, 0.2]]
-        with pytest.raises(LLMError, match="asked for 2"):
-            ollama.embed(["a", "b"])
-    assert ollama.embed([]) == []
-
-
 def test_http_errors_and_outages_become_llm_errors(ollama: Ollama) -> None:
     error = urllib.error.HTTPError("u", 500, "boom", {}, io.BytesIO(b"trace"))  # type: ignore[arg-type]
     outage = urllib.error.URLError("refused")
@@ -106,12 +94,12 @@ def test_http_errors_and_outages_become_llm_errors(ollama: Ollama) -> None:
         mock.patch("urllib.request.urlopen", side_effect=error),
         pytest.raises(LLMError, match="HTTP 500"),
     ):
-        ollama.embed(["a"])
+        ollama.chat_text("verify", "minicheck", "claim")
     with (
         mock.patch("urllib.request.urlopen", side_effect=outage),
         pytest.raises(LLMError, match="unreachable"),
     ):
-        ollama.embed(["a"])
+        ollama.chat_text("verify", "minicheck", "claim")
 
 
 @pytest.mark.parametrize(

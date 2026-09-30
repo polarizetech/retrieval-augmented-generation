@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .domains import GENERIC, DomainPolicy
-from .index import PassageIndex
 from .schema import source_status
 from .verify import VERDICT_NUMBERS
 
@@ -32,15 +31,19 @@ def _cite(paper: dict[str, Any]) -> str:
 
 
 def render(
-    st: State, index: PassageIndex, models: dict[str, Any], policy: DomainPolicy = GENERIC
+    st: State,
+    library: dict[str, dict[str, Any]],
+    models: dict[str, Any],
+    policy: DomainPolicy = GENERIC,
 ) -> str:
+    """`library`: what the paper library said about each cited work (title, year, doi, authors)."""
     assert st.plan
     papers: dict[str, dict[str, Any]] = {}
     order: list[str] = []
 
     def ref(work: str) -> int:
         if work not in papers:
-            papers[work] = index.paper(work) or {"work": work}
+            papers[work] = library.get(work) or {"work": work}
             order.append(work)
         return order.index(work) + 1
 

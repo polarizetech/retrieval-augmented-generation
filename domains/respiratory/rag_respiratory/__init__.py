@@ -10,11 +10,9 @@ them can be answered by a domain that `extends` both (see docs/DOMAINS.md).
 from __future__ import annotations
 
 from research_pipeline.domains import (
-    Anchor,
     CritiqueRule,
     DomainPolicy,
     Measure,
-    Source,
     StudyDesign,
     Taxonomy,
     declare,
@@ -101,66 +99,6 @@ TAXONOMY = Taxonomy(
     )
 )
 
-ANCHORS = (
-    Anchor(
-        "mesh",
-        "D012140",
-        "Respiratory Tract Diseases",
-        tree="C08",
-        synonyms=("respiratory disease", "pulmonary disease"),
-    ),
-    Anchor(
-        "mesh",
-        "D002628",
-        "Chemoreceptor Cells",
-        tree="A08.675.650.915.500",
-        synonyms=(
-            "carotid body",
-            "peripheral chemoreceptors",
-            "central chemoreceptors",
-            "chemoreflex",
-            "hypoxic ventilatory response",
-        ),
-    ),
-    Anchor(
-        "mesh",
-        "D065809",
-        "Respiratory Sinus Arrhythmia",
-        tree="G09.330.380.500.715",
-        synonyms=("cardiorespiratory coupling",),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "control of breathing",
-        synonyms=(
-            "respiratory rhythm generation",
-            "pre-Botzinger complex",
-            "ventilatory drive",
-            "hypercapnic ventilatory response",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "pulmonary function testing",
-        synonyms=(
-            "spirometry",
-            "FEV1",
-            "FVC",
-            "diffusing capacity",
-            "DLCO",
-            "body plethysmography",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "dyspnoea",
-        synonyms=("dyspnea", "breathlessness", "air hunger", "respiratory discomfort"),
-    ),
-)
-
 MEASURES = (
     Measure(
         "volume",
@@ -194,51 +132,6 @@ MEASURES = (
     ),
 )
 
-SOURCES = (
-    Source(
-        "pubmed",
-        "PubMed / MEDLINE",
-        "literature",
-        "https://pubmed.ncbi.nlm.nih.gov/",
-        "MeSH-indexed; the C08 disease tree and the chemoreception descriptors.",
-    ),
-    Source(
-        "europepmc",
-        "Europe PMC",
-        "literature",
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/",
-        "Open-access full text plus MeSH terms in one record.",
-    ),
-    Source(
-        "openalex",
-        "OpenAlex",
-        "literature",
-        "https://api.openalex.org/works",
-        "Venue and open-access metadata, and the citation graph.",
-    ),
-    Source(
-        "clinicaltrials",
-        "ClinicalTrials.gov",
-        "registry",
-        "https://clinicaltrials.gov/api/v2/studies",
-        "Registration and pre-specified endpoints for ventilation and inhaled-therapy trials.",
-    ),
-    Source(
-        "ats_ers",
-        "ATS / ERS official documents",
-        "guideline",
-        "https://site.thoracic.org/about-us/news/official-ats-documents",
-        "Joint statements set the technical standards this field reports against.",
-    ),
-    Source(
-        "medrxiv",
-        "medRxiv",
-        "literature",
-        "https://api.biorxiv.org/",
-        "Preprints are labelled, never excluded.",
-    ),
-)
-
 POLICY = DomainPolicy(
     slug="respiratory",
     label="Respiratory science",
@@ -247,16 +140,7 @@ POLICY = DomainPolicy(
         "ventilation, from carotid-body recordings to multicentre ventilation trials."
     ),
     taxonomy=TAXONOMY,
-    sources=SOURCES,
-    anchors=ANCHORS,
     measures=MEASURES,
-    search_guidance=(
-        "Write queries suited to PubMed/MEDLINE, Europe PMC and OpenAlex. Prefer the MeSH term "
-        "for the condition and name the ventilatory or gas-exchange variable that was actually "
-        "measured (FEV1, hypercapnic ventilatory response, PaCO2, minute ventilation) rather "
-        "than the disease alone. Control-of-breathing work is indexed under chemoreception, not "
-        "under the lung."
-    ),
     reporting_rule=(
         "Keep the population (species, patient group, disease severity), the respiratory "
         "challenge or intervention, the variable measured, the follow-up time, and any hedging."

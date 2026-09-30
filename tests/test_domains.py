@@ -19,7 +19,6 @@ from pathlib import Path
 
 from research_pipeline import domains
 from research_pipeline.domains import (
-    Anchor,
     CritiqueRule,
     DomainPolicy,
     Measure,
@@ -108,23 +107,15 @@ class VersionArithmetic(unittest.TestCase):
 
 
 class PolicyGuards(unittest.TestCase):
-    def test_mesh_anchor_needs_a_real_descriptor_id(self):
-        # The point of the guard: an invented id would be logged as provenance for a search that
-        # never happened, which is worse than admitting the term has no descriptor.
-        with self.assertRaises(ValueError):
-            Anchor("mesh", "", "Exercise Snacking")
-        with self.assertRaises(ValueError):
-            Anchor("mesh", "12345", "Something")
-        Anchor("mesh", "D006973", "Hypertension")  # a real one must still be accepted
-
-    def test_free_text_anchor_carries_no_id(self):
-        with self.assertRaises(ValueError):
-            Anchor("free-text", "D006973", "raised blood pressure")
-        Anchor("free-text", "", "exercise snacking", synonyms=("brief vigorous bouts",))
-
-    def test_anchor_needs_a_label(self):
-        with self.assertRaises(ValueError):
-            Anchor("free-text", "", "   ")
+    def test_the_search_half_is_a_library_profile_named_by_the_policy(self):
+        # Anchors, sources and search guidance live in the paper library's discipline profile;
+        # a policy names it, by default under its own slug.
+        policy = DomainPolicy("example", "Example", "A scope.", minimal_taxonomy())
+        self.assertEqual(policy.profile, "example")
+        self.assertEqual(domains.GENERIC.profile, "")
+        self.assertEqual(policy.summary()["profile"], "example")
+        for gone in ("anchors", "sources", "search_guidance"):
+            self.assertFalse(hasattr(policy, gone), gone)
 
     def test_taxonomy_requires_unclear(self):
         with self.assertRaises(ValueError):
@@ -335,6 +326,15 @@ class Catalogue(unittest.TestCase):
                 sorted(entry["extends"]),
                 f"{entry['slug']}: extends drifted from the catalogue",
             )
+
+    def test_every_domain_has_a_profile_in_the_paper_library(self):
+        """A domain's search half is paper-fetch's profile of the same slug; without it a run
+        would plan its queries without the field's indexed terms."""
+        from paper_fetch.profiles import load_profiles
+
+        known = load_profiles()
+        for entry in CATALOG["domains"]:
+            self.assertIn(entry["slug"], known, entry["slug"])
 
 
 class DependencyArrow(unittest.TestCase):

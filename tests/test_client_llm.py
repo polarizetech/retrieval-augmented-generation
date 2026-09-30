@@ -119,7 +119,6 @@ def test_calls_naming_a_local_model_go_to_ollama(client: ClientLLM) -> None:
     }
     assert client.ollama.asked == ["bespoke-minicheck"]  # type: ignore[attr-defined]
     assert client.take(wait=0.1) == []
-    assert client.embed(["a", "b"]) == [[1.0], [1.0]]
     assert client.resolve("mcp-client:x") == ("mcp-client:TestClient/1.0", None)
 
 

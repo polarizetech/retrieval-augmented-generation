@@ -13,7 +13,7 @@ Code still decides every step, and every answer is checked against its JSON sche
 pipeline sees it. Only the model changes. Stages issue independent calls concurrently, so one client
 turn answers a whole batch (every passage of an extraction pass, every claim of a verification).
 
-Embeddings still come from Ollama: a chat model cannot produce the vectors the index was built with.
+Embeddings and retrieval belong to the paper library (paper-fetch), not to either model.
 """
 
 from __future__ import annotations
@@ -103,9 +103,6 @@ class ClientLLM:
     def chat_text(self, task: str, model: str, user: str, **kwargs: Any) -> str:
         """Classifier verifiers (e.g. MiniCheck) are local models by nature."""
         return self.ollama.chat_text(task, model, user, **kwargs)
-
-    def embed(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
-        return self.ollama.embed(texts, **kwargs)
 
     def resolve(self, model: str) -> tuple[str, str | None]:
         if model.startswith(CLIENT_PREFIX):

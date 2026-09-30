@@ -2,15 +2,18 @@
 
 The engine in this package knows how to plan searches, retrieve passages, extract findings,
 synthesise claims, verify them against their sources and grade what survived. It does not know
-what a study design is in your field, which databases are authoritative for it, what a number
-with a unit means, or when a result may not be generalised. That knowledge is a *domain*, and a
+what a study design is in your field, what a number with a unit means, or when a result may not be
+generalised. That knowledge is a *domain*, and a
 domain is a separately versioned package that declares itself here.
 
-The contract is deliberately data, not behaviour. A domain hands the engine a `DomainPolicy`:
-vocabulary, ontology anchors, a study-design taxonomy, grading and generalisation rules, measures
-and their units, and critique rules. The engine reads that policy; it never calls back into the
-domain to make a decision, and it never imports a domain package. This keeps the dependency arrow
-pointing one way and keeps a run reproducible from its log, because a policy serialises.
+The contract is deliberately data, not behaviour. A domain hands the engine a `DomainPolicy`: a
+study-design taxonomy, grading and generalisation rules, measures and their units, and critique
+rules. That is the *evidence* half of a field. Its *search* half (the terms the field is indexed
+under, its authoritative sources, how to write its queries) is a discipline profile in the paper
+library, paper-fetch, named by `DomainPolicy.profile`. The engine reads that policy; it never calls
+back into the domain to make a decision, and it never imports a domain package. This keeps the
+dependency arrow pointing one way and keeps a run reproducible from its log, because a policy
+serialises.
 
     domain package __init__.py            engine
     ---------------------------           ------
@@ -170,40 +173,6 @@ class Taxonomy:
 
 
 @dataclass(frozen=True)
-class Anchor:
-    """A controlled-vocabulary term: what the field calls a thing, in a system that has an id.
-
-    Anchors do two jobs. They seed query expansion with the term a database actually indexes
-    under, and they are written into the run log, so a run states which vocabulary it searched
-    rather than leaving it to the model's memory of a subject area.
-
-    A `mesh` anchor must carry a real descriptor id. A plausible-looking one is worse than none:
-    it would be logged as provenance for a search that never happened. Terms with no descriptor —
-    for example a newly coined construct — are declared as `free-text`, which is the truth.
-    """
-
-    system: str  # "mesh", "uberon", "snomed", "loinc", "interlex", "cognitive-atlas", "free-text"
-    identifier: str
-    label: str
-    synonyms: tuple[str, ...] = ()
-    tree: str = ""  # e.g. a MeSH tree number, when the system has one
-
-    def __post_init__(self) -> None:
-        if not self.label.strip():
-            raise ValueError("an anchor needs the label the field searches under")
-        if self.system == "mesh" and not re.fullmatch(r"D\d{6,9}", self.identifier):
-            raise ValueError(
-                f"anchor {self.label!r}: a mesh anchor needs a real descriptor id (D......); "
-                f"got {self.identifier!r}. Declare it as free-text instead."
-            )
-        if self.system == "free-text" and self.identifier:
-            raise ValueError(f"anchor {self.label!r}: free-text has no identifier")
-
-    def terms(self) -> tuple[str, ...]:
-        return (self.label, *self.synonyms)
-
-
-@dataclass(frozen=True)
 class Measure:
     """A quantity the field reports, with the units it is legitimately reported in.
 
@@ -222,22 +191,6 @@ class Measure:
     def __post_init__(self) -> None:
         if not self.units:
             raise ValueError(f"measure {self.key!r} declares no units; omit it instead")
-
-
-@dataclass(frozen=True)
-class Source:
-    """A literature source the field treats as authoritative, and why.
-
-    The engine does not fetch from these itself — acquisition belongs to the paper library — but
-    it records them in the run log and tells the planner which vocabularies its queries will be
-    matched against, which is what actually changes the queries a small model writes.
-    """
-
-    key: str
-    label: str
-    role: str = "literature"  # literature | guideline | registry | dataset | standard
-    url: str = ""
-    why: str = ""
 
 
 @dataclass(frozen=True)
@@ -267,14 +220,11 @@ class DomainPolicy:
     scope: str  # one sentence, shown in the answer so a reader knows what was searched
 
     taxonomy: Taxonomy
-    sources: tuple[Source, ...] = ()
-    anchors: tuple[Anchor, ...] = ()
     measures: tuple[Measure, ...] = ()
     critique_rules: tuple[CritiqueRule, ...] = ()
 
     # Prompt fragments. Each is appended to an engine prompt; none replaces one, so a domain can
     # tighten the rules but cannot talk the engine out of them.
-    search_guidance: str = ""  # how to write queries for this field's databases
     generalisation_rule: str = ""  # what may not be carried across populations or preparations
     reporting_rule: str = ""  # what a finding must keep to stay meaningful in this field
     gap_guidance: str = ""  # what the critic should look for that is missing
@@ -283,8 +233,13 @@ class DomainPolicy:
     # claim needs before the field calls its retrieved support strong.
     min_primary_for_strong: int = 2
     examples: tuple[str, ...] = ()  # questions this domain is built to answer, for docs and evals
+    # The paper library's discipline profile for this field: its search half. None means the
+    # profile with the domain's own slug; "" means none (plan and search without one).
+    profile: str | None = None
 
     def __post_init__(self) -> None:
+        if self.profile is None:
+            object.__setattr__(self, "profile", self.slug)
         if not re.fullmatch(r"[a-z][a-z0-9-]*", self.slug):
             raise ValueError(f"domain slug {self.slug!r} must be lower kebab-case")
         if not self.scope.strip():
@@ -294,14 +249,6 @@ class DomainPolicy:
         unknown = {k for r in self.critique_rules for k in r.designs} - set(self.taxonomy.keys)
         if unknown:
             raise ValueError(f"{self.slug}: critique rules name unknown designs {sorted(unknown)}")
-
-    def terms(self) -> tuple[str, ...]:
-        """Every controlled term the field indexes under, de-duplicated, order preserved."""
-        seen: dict[str, None] = {}
-        for anchor in self.anchors:
-            for term in anchor.terms():
-                seen.setdefault(term, None)
-        return tuple(seen)
 
     def unit_words(self) -> frozenset[str]:
         return frozenset(u.lower() for m in self.measures for u in m.units)
@@ -318,10 +265,7 @@ class DomainPolicy:
             "scope": self.scope,
             "study_designs": self.taxonomy.keys,
             "primary_designs": sorted(self.taxonomy.primary),
-            "sources": [s.key for s in self.sources],
-            "anchors": [
-                {"system": a.system, "id": a.identifier, "label": a.label} for a in self.anchors
-            ],
+            "profile": self.profile,
             "measures": [m.key for m in self.measures],
             "critique_rules": [r.key for r in self.critique_rules],
             "min_primary_for_strong": self.min_primary_for_strong,
@@ -486,6 +430,7 @@ def derive(base: DomainPolicy, **changes: Any) -> DomainPolicy:
 
 GENERIC = DomainPolicy(
     slug="generic",
+    profile="",
     label="General science",
     scope="Peer-reviewed experimental and clinical literature, with no field-specific rules.",
     taxonomy=Taxonomy(
@@ -531,23 +476,6 @@ GENERIC = DomainPolicy(
             StudyDesign("unclear", "Unclear", "the text does not say", rank=0),
         )
     ),
-    sources=(
-        Source(
-            "pubmed",
-            "PubMed",
-            "literature",
-            "https://pubmed.ncbi.nlm.nih.gov/",
-            "MEDLINE indexing with MeSH.",
-        ),
-        Source(
-            "openalex",
-            "OpenAlex",
-            "literature",
-            "https://openalex.org/",
-            "Open bibliographic graph with venue and open-access metadata.",
-        ),
-    ),
-    search_guidance="Write queries suited to PubMed and OpenAlex.",
     generalisation_rule=("Do not generalise animal or in-vitro results to humans."),
     reporting_rule=("Keep the species or population, the conditions, and any hedging."),
     gap_guidance=(

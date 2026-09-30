@@ -17,9 +17,8 @@ import pytest
 
 from research_pipeline import verify
 from research_pipeline.config import Settings
-from research_pipeline.index import PassageIndex
 from research_pipeline.pipeline import Pipeline
-from tests.conftest import PAPER, fake_embed
+from tests.conftest import PAPER, LibraryAdapter, hold_w1, papers_library
 
 QUESTION = "Does aerobic training lower resting blood pressure in adults?"
 EFFECT = "Aerobic training lowered resting systolic blood pressure by 5 mmHg relative to control"
@@ -34,9 +33,6 @@ class ScriptedModel:
 
     def resolve(self, model: str) -> tuple[str, str]:
         return model, "sha256:test"
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return fake_embed(texts)
 
     def chat_text(self, task: str, model: str, user: str, **_: Any) -> str:
         raise AssertionError("no classifier verifier is configured in this test")
@@ -118,30 +114,27 @@ class ScriptedModel:
         }
 
 
-@pytest.fixture
-def run_log(tmp_path: Path) -> dict[str, Any]:
-    settings = Settings(
+def settings_for(tmp_path: Path, **overrides: Any) -> Settings:
+    return Settings(
         data_dir=tmp_path / "data",
         runs_dir=tmp_path / "runs",
-        embedding_model="fake-embed",
         reranker="none",
         verifier_model="",
         text_model="stub-model",
         max_rounds=2,
+        **overrides,
     )
-    PassageIndex(settings.index_path, settings.embedding_model).add(
-        {
-            "work": "W1",
-            "doi": "10.1000/w1",
-            "title": "Training and blood pressure",
-            "year": 2020,
-            "authors": ["Ada Lovelace"],
-            "route": "fixture",
-        },
-        PAPER,
-        fake_embed,
-    )
-    pipeline = Pipeline(settings, offline=True)
+
+
+@pytest.fixture
+def run_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from research_pipeline import pipeline as module
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    pipeline = Pipeline(settings_for(tmp_path), offline=True)
     pipeline.llm = ScriptedModel()  # type: ignore[assignment]
     return asyncio.run(pipeline.run(QUESTION))
 
@@ -199,21 +192,21 @@ def test_offline_runs_say_so_and_skip_retraction_checks(run_log: dict[str, Any])
     assert "editorial status not checked" in run_log["answer"]
 
 
-class FakeLibrary:
-    """The paper library's client interface, with one provider that never answers."""
+class FakeLibrary(LibraryAdapter):
+    """A real library whose search is scripted: one provider never answers."""
 
-    fetched: list[str]
+    def __init__(self, lib: Any) -> None:
+        super().__init__(lib)
+        self.fetched: list[str] = []
 
-    def __init__(self, *_: Any) -> None:
-        self.fetched = []
-
-    async def __aenter__(self) -> FakeLibrary:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-    async def search(self, query: str, limit: int = 10) -> dict[str, Any]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        include_closed: bool = True,
+        profile: str = "",
+        collection: str = "",
+    ) -> dict[str, Any]:
         hits = [
             {
                 "title": "Training and blood pressure",
@@ -231,22 +224,13 @@ class FakeLibrary:
         ]
         return {"hits": hits, "providers": {"a": {"status": "ok"}, "b": {"status": "unavailable"}}}
 
-    async def fetch(self, identifier: str) -> dict[str, Any]:
+    async def fetch(self, identifier: str, collection: str = "") -> dict[str, Any]:
         self.fetched.append(identifier)
         if identifier == "10.1000/closed":
             return {"work": "W2", "full_text": False}
-        return {
-            "work": "W1",
-            "doi": "10.1000/w1",
-            "title": "Training and blood pressure",
-            "year": 2020,
-            "authors": ["Ada Lovelace"],
-            "full_text": True,
-            "route": "fake",
-        }
-
-    async def full_text(self, identifier: str) -> str:
-        return PAPER.replace("Resting", "Resting\u200b\u200b\u200b\u200b", 1)
+        # The copy carries four hidden characters; the library strips and counts them.
+        hold_w1(self.lib, PAPER.replace("Resting", "Resting\u200b\u200b\u200b\u200b", 1))
+        return self.lib.fetch(identifier, collection=collection or None)
 
 
 class CriticalModel(ScriptedModel):
@@ -275,21 +259,12 @@ class CriticalModel(ScriptedModel):
 def online_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     from research_pipeline import pipeline as module
 
-    monkeypatch.setattr(module, "PaperLibrary", FakeLibrary)
+    lib = papers_library(tmp_path)
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: FakeLibrary(lib))
     monkeypatch.setattr(
         module.integrity, "check_all", lambda dois: {d: {"status": "retracted"} for d in dois}
     )
-    settings = Settings(
-        data_dir=tmp_path / "data",
-        runs_dir=tmp_path / "runs",
-        embedding_model="fake-embed",
-        reranker="none",
-        verifier_model="",
-        text_model="stub-model",
-        max_rounds=2,
-        max_fetch=5,
-    )
-    pipeline = Pipeline(settings, offline=False)
+    pipeline = Pipeline(settings_for(tmp_path, max_fetch=5), offline=False)
     pipeline.llm = CriticalModel()  # type: ignore[assignment]
     return asyncio.run(pipeline.run(QUESTION))
 
@@ -325,7 +300,14 @@ def test_a_retracted_source_supports_nothing(online_log: dict[str, Any]) -> None
 class ComponentLibrary(FakeLibrary):
     """Lists a figure of an article as its own work, before the article itself."""
 
-    async def search(self, query: str, limit: int = 10) -> dict[str, Any]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        include_closed: bool = True,
+        profile: str = "",
+        collection: str = "",
+    ) -> dict[str, Any]:
         return {
             "hits": [
                 {
@@ -346,15 +328,107 @@ class ComponentLibrary(FakeLibrary):
 def test_a_figure_doi_is_folded_into_its_article(tmp_path: Path) -> None:
     from research_pipeline.pipeline import State
 
-    settings = Settings(
-        data_dir=tmp_path / "data", runs_dir=tmp_path / "runs", embedding_model="fake-embed"
-    )
-    pipeline = Pipeline(settings, offline=False)
+    pipeline = Pipeline(settings_for(tmp_path), offline=False)
     st = State(QUESTION)
-    asyncio.run(pipeline.discover(st, ComponentLibrary(), ["precision"]))  # type: ignore[arg-type]
+    library = ComponentLibrary(papers_library(tmp_path))
+    asyncio.run(pipeline.discover(st, library, ["precision"]))  # type: ignore[arg-type]
     assert list(st.candidates) == ["10.1371/journal.pcbi.1010490"]
     cand = st.candidates["10.1371/journal.pcbi.1010490"]
     assert cand.title == "In the Body's Eye"
     assert cand.work is None
     assert cand.ids == {"doi": "10.1371/journal.pcbi.1010490"}
     assert any("component" in note for note in st.notes)
+
+
+class PlanRecorder(CriticalModel):
+    """Keeps the planner's input, to see what the field's profile added to it."""
+
+    plan_input = ""
+
+    def chat_json(
+        self, task: str, system: str, user: str, schema: dict[str, Any], **kw: Any
+    ) -> dict[str, Any]:
+        if task == "plan":
+            PlanRecorder.plan_input = system + "\n" + user
+        return super().chat_json(task, system, user, schema, **kw)
+
+
+class RecordingLibrary(FakeLibrary):
+    """Records what the pipeline tells the library: the field's profile and the collection."""
+
+    seen: list[tuple[str, str, str]] = []  # noqa: RUF012 - reset per test
+
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        include_closed: bool = True,
+        profile: str = "",
+        collection: str = "",
+    ) -> dict[str, Any]:
+        self.seen.append(("search", profile, collection))
+        return await super().search(query, limit, include_closed, profile, collection)
+
+    async def fetch(self, identifier: str, collection: str = "") -> dict[str, Any]:
+        self.seen.append(("fetch", "", collection))
+        return await super().fetch(identifier, collection)
+
+    async def retrieve(self, queries: list[str], **kw: Any) -> dict[str, Any]:
+        self.seen.append(("retrieve", "", kw.get("collection", "")))
+        return await super().retrieve(queries, **kw)
+
+
+def test_the_field_and_the_collection_reach_the_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import domains
+    from research_pipeline import pipeline as module
+
+    lib = papers_library(tmp_path)
+    lib.create_collection("review")
+    RecordingLibrary.seen = []
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: RecordingLibrary(lib))
+    monkeypatch.setattr(module.integrity, "check_all", lambda dois: {})
+    policy = domains.derive(
+        domains.GENERIC, slug="cardiology", label="Cardiology", profile="cardiovascular"
+    )
+    domain = domains.Domain("rag-domain-cardiology", "tests", "0.1.0", ">=0.1", "test", policy)
+    pipeline = Pipeline(
+        settings_for(tmp_path, max_fetch=5), offline=False, domain=domain, collection="review"
+    )
+    pipeline.llm = PlanRecorder()  # type: ignore[assignment]
+    log = asyncio.run(pipeline.run(QUESTION))
+
+    # The planner saw the library's profile: the field's indexed terms and its search advice.
+    assert "Terms this field is indexed under:" in PlanRecorder.plan_input
+    assert "heart rate variability" in PlanRecorder.plan_input
+    assert "MeSH term" in PlanRecorder.plan_input
+    assert log["domain"]["profile"]["slug"] == "cardiovascular"
+    # Every search named the profile and the collection; fetches and retrieval used the collection.
+    kinds = {kind for kind, _, _ in RecordingLibrary.seen}
+    assert kinds == {"search", "fetch", "retrieve"}
+    assert all(c == "review" for _, _, c in RecordingLibrary.seen)
+    assert all(p == "cardiovascular" for k, p, _ in RecordingLibrary.seen if k == "search")
+    assert log["collection"] == "review"
+    # The fetched paper was listed in the collection, and its passages were read from it.
+    assert [m["work"] for m in lib.collection("review")["members"]] == ["W1"]
+    assert log["evidence"]
+
+
+def test_a_profile_the_library_lacks_is_noted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import domains
+    from research_pipeline import pipeline as module
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    policy = domains.derive(domains.GENERIC, slug="nowhere", label="Nowhere", profile="nowhere")
+    domain = domains.Domain("rag-domain-nowhere", "tests", "0.1.0", ">=0.1", "test", policy)
+    pipeline = Pipeline(settings_for(tmp_path), offline=True, domain=domain)
+    pipeline.llm = ScriptedModel()  # type: ignore[assignment]
+    log = asyncio.run(pipeline.run(QUESTION))
+    assert any("no 'nowhere' profile" in note for note in log["notes"])
+    assert log["domain"]["profile"] is None
