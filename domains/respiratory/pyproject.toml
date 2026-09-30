@@ -1,18 +1,18 @@
 [project]
-name = "science-rag-domain-respiratory"
+name = "rag-domain-respiratory"
 dynamic = ["version"]
 description = "Respiratory science as a domain extension of the research pipeline."
 requires-python = ">=3.11"
 dependencies = []
 
-[project.entry-points."science_rag.domains"]
-respiratory = "sciencerag_respiratory"
+[project.entry-points."rag.domains"]
+respiratory = "rag_respiratory"
 
 [tool.hatch.version]
-path = "sciencerag_respiratory/__init__.py"
+path = "rag_respiratory/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["sciencerag_respiratory"]
+packages = ["rag_respiratory"]
 
 [build-system]
 requires = ["hatchling"]

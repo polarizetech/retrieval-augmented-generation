@@ -291,7 +291,7 @@ POLICY = DomainPolicy(
 )
 
 DOMAIN = declare(
-    name="science-rag-domain-vestibular",
+    name="rag-domain-vestibular",
     module=__name__,
     version=__version__,
     core_requires=CORE_REQUIRES,

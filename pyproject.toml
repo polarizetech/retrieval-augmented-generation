@@ -1,5 +1,5 @@
 [project]
-name = "scientific-research-rag"
+name = "retrieval-augmented-generation"
 dynamic = ["version"]
 description = "Evidence-first literature RAG for small local models: code controls search, evidence, verification and the run log."
 readme = "README.md"
@@ -35,7 +35,7 @@ research-pipeline-mcp = "research_pipeline.mcp_server:main"
 research-rag-gateway = "research_mcp.gateway:main"
 
 [project.urls]
-Repository = "https://github.com/polarizetech/scientific-research-rag"
+Repository = "https://github.com/polarizetech/retrieval-augmented-generation"
 
 [dependency-groups]
 dev = [
@@ -56,7 +56,7 @@ path = "research_pipeline/__init__.py"
 packages = ["research_pipeline", "research_mcp"]
 
 # Domain extensions in domains/ are separate distributions with their own pyproject.toml, each
-# registering a "science_rag.domains" entry point. They are deliberately NOT dependencies here: the
+# registering a "rag.domains" entry point. They are deliberately NOT dependencies here: the
 # engine must never depend on a field. Install them individually, e.g.
 # `uv pip install -e domains/cardiovascular`. See docs/DOMAINS.md.
 

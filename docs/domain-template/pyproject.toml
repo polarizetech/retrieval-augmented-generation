@@ -1,5 +1,5 @@
 [project]
-name = "science-rag-domain-my-domain"
+name = "rag-domain-my-domain"
 dynamic = ["version"]
 description = "One line describing the field this domain covers."
 requires-python = ">=3.11"
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 # __init__.py is the real version gate. List another domain here only if you genuinely import it.
 dependencies = []
 
-[project.entry-points."science_rag.domains"]
+[project.entry-points."rag.domains"]
 my-domain = "my_domain"
 
 [tool.hatch.version]

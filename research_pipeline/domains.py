@@ -15,7 +15,7 @@ pointing one way and keeps a run reproducible from its log, because a policy ser
     domain package __init__.py            engine
     ---------------------------           ------
     declare(name=..., policy=...)  ---->  _REGISTRY
-    entry point "science_rag.domains" -->  discover() / load()
+    entry point "rag.domains" -->  discover() / load()
 
 The usual plugin pattern: a distribution name prefix, import-time declaration, a version gate,
 entry-point discovery, and no core-side list of extensions.
@@ -28,8 +28,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-ENTRY_POINT_GROUP = "science_rag.domains"
-NAME_PREFIX = "science-rag-domain-"
+ENTRY_POINT_GROUP = "rag.domains"
+NAME_PREFIX = "rag-domain-"
 
 
 class DomainError(Exception):
@@ -332,7 +332,7 @@ class DomainPolicy:
 class Domain:
     """What a domain package says about itself. Declared once, in its `__init__.py`."""
 
-    name: str  # distribution-style, "science-rag-domain-<slug>"
+    name: str  # distribution-style, "rag-domain-<slug>"
     module: str
     version: str
     core_requires: str
@@ -425,7 +425,7 @@ def get(ref: str) -> Domain:
 
 
 def discover() -> list[dict[str, Any]]:
-    """Every INSTALLED domain registered under the `science_rag.domains` entry point.
+    """Every INSTALLED domain registered under the `rag.domains` entry point.
 
     An incompatible or broken domain is reported, not skipped: a run that quietly lost its field's
     grading rules would still produce an answer, and that answer would be wrong in a way nobody

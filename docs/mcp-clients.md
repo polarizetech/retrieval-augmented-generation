@@ -37,8 +37,8 @@ Use stdio: nothing listens on a port and no token is involved.
 {
   "mcpServers": {
     "research-rag": {
-      "command": "/absolute/path/to/scientific-research-rag/.venv/bin/research-rag-gateway",
-      "args": ["--config", "/absolute/path/to/scientific-research-rag/config/mcp-gateway.json"]
+      "command": "/absolute/path/to/retrieval-augmented-generation/.venv/bin/research-rag-gateway",
+      "args": ["--config", "/absolute/path/to/retrieval-augmented-generation/config/mcp-gateway.json"]
     }
   }
 }
@@ -128,7 +128,7 @@ hashed in `MCP_OAUTH_STATE` (mode 0600). Deleting that file revokes every connec
 
 | Variable | Meaning |
 |---|---|
-| `MCP_PUBLIC_URL` | the public base URL, e.g. `https://mcp.example.org/scientific-research-rag` |
+| `MCP_PUBLIC_URL` | the public base URL, e.g. `https://mcp.example.org/retrieval-augmented-generation` |
 | `MCP_RESOURCE_PATH` | where the MCP endpoint sits under it: `/mcp` (default), or empty when a front end mounts the server under a path and strips the prefix |
 | `MCP_OAUTH_ACCESS_KEY` | the consent key; keep it in a secret store, not in a file in the repo |
 | `MCP_OAUTH_STATE` | the token store (default `run/oauth.sqlite`) |

@@ -28,7 +28,7 @@ substituted.** A domain can tighten an engine rule. It cannot talk the engine ou
 ```
 domains/<slug>/
 ├── pyproject.toml            # distribution + the entry point that makes it discoverable
-└── sciencerag_<slug>/
+└── rag_<slug>/
     └── __init__.py           # the policy, and one declare() call at the bottom
 ```
 
@@ -129,7 +129,7 @@ should set 3: two concordant studies there mean less than two concordant trials 
 
 ```python
 DOMAIN = declare(
-    name="science-rag-domain-<slug>",  # the prefix is enforced
+    name="rag-domain-<slug>",  # the prefix is enforced
     module=__name__,
     version=__version__,
     core_requires=">=0.2.0,<0.3",  # checked on import, not at grading time

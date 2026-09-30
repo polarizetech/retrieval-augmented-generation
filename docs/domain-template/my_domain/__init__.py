@@ -1,7 +1,7 @@
 """A domain extension, reduced to the smallest thing that works. Copy this directory and edit.
 
 Replace `my_domain` with your field's slug everywhere: this directory name, the package directory
-name (`sciencerag_<slug>`), the distribution name in pyproject.toml, and the entry-point key.
+name (`rag_<slug>`), the distribution name in pyproject.toml, and the entry-point key.
 
 The one rule worth reading before you start: a domain is DATA, not behaviour. The engine never
 calls back into your package to make a decision. You describe your field; the engine applies its
@@ -99,11 +99,11 @@ POLICY = DomainPolicy(
 )
 
 DOMAIN = declare(
-    name="science-rag-domain-my-domain",  # must start with science-rag-domain-
+    name="rag-domain-my-domain",  # must start with rag-domain-
     module=__name__,
     version=__version__,
     core_requires=CORE_REQUIRES,
     job="One line: the single thing this domain adds that the engine could not know.",
     policy=POLICY,
-    # extends={"science-rag-domain-other": ">=0.1.0,<0.2"},  # only for a real dependency
+    # extends={"rag-domain-other": ">=0.1.0,<0.2"},  # only for a real dependency
 )
