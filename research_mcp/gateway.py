@@ -17,7 +17,7 @@ import sqlite3
 import subprocess
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -35,7 +35,6 @@ from research_mcp import oauth
 from research_mcp.quantities import QuantityStore, corpus_root
 from research_mcp.rag import EvidenceStore
 from research_pipeline.config import ROOT, Settings, load_env
-from research_pipeline.llm import Ollama
 from research_pipeline.papers import PaperLibrary, PapersError
 
 SERVER_NAME = "retrieval-augmented-generation"
@@ -217,7 +216,14 @@ def build_server(
     federation = Federation(config)
     searxng = _load_searxng(config)
     settings = Settings()
-    evidence_store = EvidenceStore.from_settings(settings, embed=Ollama(settings).embed)
+
+    def papers_library() -> PaperLibrary:
+        upstream = settings.papers_upstream
+        if upstream not in federation.sessions:
+            raise ValueError(f"the '{upstream}' upstream (the paper library) is unavailable")
+        return PaperLibrary.over(federation.sessions[upstream])
+
+    evidence_store = EvidenceStore(papers_library, settings.runs_dir)
     quantities = QuantityStore(corpus_root(), settings.data_dir)
 
     @asynccontextmanager
@@ -376,8 +382,9 @@ def build_server(
             Tool(
                 name="rag__retrieve_evidence",
                 description=(
-                    "Retrieve ranked, verbatim passages from the local passage index. Hybrid "
-                    "(lexical + embedding) when the embedding model is available, else lexical; "
+                    "Retrieve ranked, verbatim passages from the paper library's passage index. "
+                    "Hybrid (lexical + embedding) when the library has an embedding model, else "
+                    "lexical; "
                     "no generative model is used. Passages flagged by the safety scan or from "
                     "retracted papers are excluded and listed. Evidence ids name an exact passage "
                     "and become stale if its text changes. Only indexed papers are searched: "
@@ -443,9 +450,10 @@ def build_server(
             Tool(
                 name="rag__index_paper",
                 description=(
-                    "Fetch papers through the paper library and add their full text to the local "
-                    "passage index, so rag__retrieve_evidence can return and cite them. Papers "
-                    "fetched with papers__fetch are NOT indexed until this is called. Open-access "
+                    "Fetch papers through the paper library and have it index their full text, "
+                    "so rag__retrieve_evidence can return and cite them. Papers fetched with "
+                    "papers__fetch are NOT indexed until this is called (or until papers__index "
+                    "or papers__retrieve reaches them). Open-access "
                     "only; each result says whether the paper was indexed, already indexed, or why "
                     "not (closed access, retracted, no full text)."
                 ),
@@ -516,44 +524,7 @@ def build_server(
     # gateway_status, plus web__search, the five rag__ and two math__ tools unless they are off
     builtin = 9 if builtin_tools else 1
 
-    async def index_papers(identifiers: list[str]) -> dict[str, Any]:
-        upstream = settings.papers_upstream
-        if upstream not in federation.sessions:
-            raise ValueError(f"the '{upstream}' upstream is unavailable")
-        lib = PaperLibrary.over(federation.sessions[upstream])
-        results = []
-        for ident in identifiers[:10]:
-            try:
-                rec = await lib.fetch(ident)
-                if rec.get("is_retracted"):
-                    results.append({"identifier": ident, "status": "retracted"})
-                    continue
-                if not rec.get("full_text"):
-                    results.append(
-                        {
-                            "identifier": ident,
-                            "status": "no_open_full_text",
-                            "title": rec.get("title"),
-                        }
-                    )
-                    continue
-                text = await lib.full_text(rec.get("work") or ident)
-                done = await asyncio.to_thread(evidence_store.ingest, rec, text)
-                done.pop("index", None)
-                results.append(
-                    {
-                        "identifier": ident,
-                        "status": "already_indexed" if done["already_indexed"] else "indexed",
-                        **done,
-                    }
-                )
-            except PapersError as exc:
-                results.append({"identifier": ident, "status": exc.code, "error": str(exc)})
-            except ValueError as exc:
-                results.append({"identifier": ident, "status": "not_indexed", "error": str(exc)})
-        return {"results": results, "index": await asyncio.to_thread(evidence_store.stats)}
-
-    rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], dict[str, Any]]]] = {
+    rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]] = {
         "rag__retrieve_evidence": (
             "evidence retrieval",
             lambda a: evidence_store.retrieve(
@@ -570,6 +541,12 @@ def build_server(
                 a["title"], a["markdown"], a.get("evidence_ids", []), a.get("claims")
             ),
         ),
+        "rag__index_paper": (
+            "indexing",
+            lambda a: evidence_store.index_papers([str(i) for i in a.get("identifiers", [])]),
+        ),
+    }
+    math_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], dict[str, Any]]]] = {
         "math__lookup": (
             "calculator lookup",
             lambda a: quantities.lookup(a["query"], a.get("limit", 5)),
@@ -599,15 +576,16 @@ def build_server(
             return await federation.call(
                 "papers__search", {"query": arguments["query"], "limit": arguments.get("limit", 10)}
             )
-        if name == "rag__index_paper":
-            try:
-                return await index_papers([str(i) for i in arguments.get("identifiers", [])])
-            except (ValueError, OSError, sqlite3.Error) as exc:
-                return _tool_error(f"indexing failed: {type(exc).__name__}: {exc}")
         if name in rag_handlers:
             label, handler = rag_handlers[name]
             try:
-                return await asyncio.to_thread(handler, arguments)
+                return await handler(arguments)
+            except (ValueError, KeyError, OSError, PapersError) as exc:
+                return _tool_error(f"{label} failed: {type(exc).__name__}: {exc}")
+        if name in math_handlers:
+            label, sync_handler = math_handlers[name]
+            try:
+                return await asyncio.to_thread(sync_handler, arguments)
             except (ValueError, KeyError, OSError, sqlite3.Error) as exc:
                 return _tool_error(f"{label} failed: {type(exc).__name__}: {exc}")
         if name not in federation.tools:

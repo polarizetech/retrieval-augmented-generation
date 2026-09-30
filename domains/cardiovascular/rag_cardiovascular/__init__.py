@@ -2,23 +2,19 @@
 
 The engine can already retrieve, quote, verify and grade. What it cannot know is that in this
 field a blood-pressure change is a surrogate and not an outcome, that an observational cohort and
-a randomised trial are not the same kind of evidence, that "40" next to mmHg is a different fact
-from "40" next to ms, or that the baroreflex is indexed under a descriptor most people would not
-think to type. That is what this package declares.
+a randomised trial are not the same kind of evidence, or that "40" next to mmHg is a different
+fact from "40" next to ms. That is what this package declares.
 
-Every MeSH id below was checked against the live descriptor record. Terms without a descriptor
-are declared `free-text`, because saying so is cheaper than a run logging provenance it does not
-have.
+How the field is *searched* (the baroreflex is indexed under a descriptor most people would not
+think to type) is the paper library's `cardiovascular` profile, not this package.
 """
 
 from __future__ import annotations
 
 from research_pipeline.domains import (
-    Anchor,
     CritiqueRule,
     DomainPolicy,
     Measure,
-    Source,
     StudyDesign,
     Taxonomy,
     declare,
@@ -118,59 +114,6 @@ TAXONOMY = Taxonomy(
     )
 )
 
-ANCHORS = (
-    Anchor(
-        "mesh",
-        "D002318",
-        "Cardiovascular Diseases",
-        tree="C14",
-        synonyms=("cardiovascular disease", "major adverse cardiac events"),
-    ),
-    Anchor(
-        "mesh",
-        "D017704",
-        "Baroreflex",
-        tree="G09.330.380.057",
-        synonyms=("baroreceptor reflex", "baroreflex sensitivity", "arterial baroreceptors"),
-    ),
-    Anchor(
-        "mesh",
-        "D065809",
-        "Respiratory Sinus Arrhythmia",
-        tree="G09.330.380.500.715",
-        synonyms=("cardiorespiratory coupling", "vagal tone"),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "heart rate variability",
-        synonyms=("HRV", "SDNN", "RMSSD", "pNN50", "LF/HF ratio", "R-R interval variability"),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "autonomic nervous system",
-        synonyms=(
-            "sympathetic activity",
-            "parasympathetic activity",
-            "cardiac vagal control",
-            "muscle sympathetic nerve activity",
-            "MSNA",
-        ),
-    ),
-    Anchor(
-        "free-text",
-        "",
-        "orthostatic intolerance",
-        synonyms=(
-            "postural orthostatic tachycardia syndrome",
-            "POTS",
-            "orthostatic hypotension",
-            "head-up tilt test",
-        ),
-    ),
-)
-
 MEASURES = (
     Measure(
         "beat_interval",
@@ -208,59 +151,6 @@ MEASURES = (
     ),
 )
 
-SOURCES = (
-    Source(
-        "pubmed",
-        "PubMed / MEDLINE",
-        "literature",
-        "https://pubmed.ncbi.nlm.nih.gov/",
-        "MeSH-indexed; the C14 disease tree and the G09 circulatory physiology tree.",
-    ),
-    Source(
-        "europepmc",
-        "Europe PMC",
-        "literature",
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/",
-        "Open-access full text plus MeSH terms in one record.",
-    ),
-    Source(
-        "openalex",
-        "OpenAlex",
-        "literature",
-        "https://api.openalex.org/works",
-        "Venue and open-access metadata, and the citation graph.",
-    ),
-    Source(
-        "clinicaltrials",
-        "ClinicalTrials.gov",
-        "registry",
-        "https://clinicaltrials.gov/api/v2/studies",
-        "Whether a trial was registered, and whether the endpoint it reported was the "
-        "pre-specified one.",
-    ),
-    Source(
-        "aha_acc",
-        "AHA/ACC guidelines and scientific statements",
-        "guideline",
-        "https://www.ahajournals.org/journal/circ",
-        "A synthesis of a body of evidence, to be treated as such and not as one study.",
-    ),
-    Source(
-        "esc",
-        "ESC Clinical Practice Guidelines",
-        "guideline",
-        "https://www.escardio.org/Guidelines",
-        "European counterpart to AHA/ACC.",
-    ),
-    Source(
-        "medrxiv",
-        "medRxiv",
-        "literature",
-        "https://api.biorxiv.org/",
-        "Has a Cardiovascular Medicine category. Preprints are labelled, never excluded.",
-    ),
-)
-
 POLICY = DomainPolicy(
     slug="cardiovascular",
     label="Cardiovascular science",
@@ -269,16 +159,7 @@ POLICY = DomainPolicy(
         "diagnosis and clinical outcome, from isolated tissue to randomised trials."
     ),
     taxonomy=TAXONOMY,
-    sources=SOURCES,
-    anchors=ANCHORS,
     measures=MEASURES,
-    search_guidance=(
-        "Write queries suited to PubMed/MEDLINE, Europe PMC and OpenAlex. Prefer the MeSH term "
-        "for the condition and for the physiological measure, and name the specific index or "
-        "endpoint (baroreflex sensitivity, RMSSD, ejection fraction, cardiovascular mortality) "
-        "rather than the disease alone: a query for a disease returns its clinical literature "
-        "and almost none of its physiology."
-    ),
     reporting_rule=(
         "Keep the population (species, patient group, comorbidity), the intervention and its "
         "dose, the endpoint actually measured, the follow-up time, and any hedging."

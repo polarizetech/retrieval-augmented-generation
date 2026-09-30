@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,8 @@ from benchmarks.research.eval_pipeline import score
 from research_pipeline import __main__ as cli
 from research_pipeline import rerank
 from research_pipeline.config import Settings
-from research_pipeline.index import Passage
+from research_pipeline.papers import Passage
+from tests.conftest import LibraryAdapter, papers_library
 
 
 class NamedModel:
@@ -20,7 +22,7 @@ class NamedModel:
 
 
 def passages(*scores: float) -> list[Passage]:
-    return [Passage(i, "W", i, 0, 1, f"text {i}", fused=s) for i, s in enumerate(scores)]
+    return [Passage(f"W#p{i}", "W", i, 0, 1, f"text {i}", score=s) for i, s in enumerate(scores)]
 
 
 class TestRerankers:
@@ -41,39 +43,39 @@ class TestRerankers:
     def test_build_honours_the_setting(self) -> None:
         llm: Any = NamedModel()
         assert rerank.build(Settings(reranker="none"), llm).name == "none"
-        assert isinstance(
-            rerank.build(Settings(reranker="llm", reranker_model=""), llm), rerank.LLMReranker
-        )
-        with pytest.raises(RuntimeError, match="needs PIPELINE_RERANKER_MODEL"):
-            rerank.build(Settings(reranker="onnx", reranker_model=""), llm)
+        assert isinstance(rerank.build(Settings(reranker="llm"), llm), rerank.LLMReranker)
+        assert isinstance(rerank.build(Settings(reranker="auto"), llm), rerank.LLMReranker)
+        # A client model never reranks: a turn per four passages. It keeps the library's order.
+        assert rerank.build(Settings(reranker="auto"), None).name == "none"
+        with pytest.raises(ValueError, match="needs the local model"):
+            rerank.build(Settings(reranker="llm"), None)
 
-    def test_a_forced_onnx_reranker_that_cannot_load_is_an_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def unavailable(*_: Any) -> None:
-            raise ImportError("onnxruntime is not installed")
-
-        monkeypatch.setattr(rerank, "OnnxReranker", unavailable)
-        llm: Any = NamedModel()
-        settings = Settings(reranker="onnx", reranker_model="repo::model.onnx")
-        with pytest.raises(RuntimeError, match="did not load"):
-            rerank.build(settings, llm)
-        auto = rerank.build(Settings(reranker="auto", reranker_model="repo::model.onnx"), llm)
-        assert isinstance(auto, rerank.LLMReranker)
+    def test_the_cross_encoder_setting_points_to_the_library(self) -> None:
+        with pytest.raises(ValueError, match="PAPER_FETCH_RERANK_MODEL"):
+            rerank.build(Settings(reranker="onnx"), NamedModel())  # type: ignore[arg-type]
 
 
 class TestCli:
     def run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *argv: str) -> int:
         monkeypatch.setenv("PIPELINE_DATA_DIR", str(tmp_path))
-        monkeypatch.setenv("PIPELINE_EMBEDDING_MODEL", "fake-embed")
+        library = papers_library(tmp_path)
+        monkeypatch.setattr(cli, "PaperLibrary", lambda *_: LibraryAdapter(library))
         monkeypatch.setattr(sys, "argv", ["research-pipeline", *argv])
         return cli.main()
 
-    def test_status_reports_the_index(
+    def test_status_reports_the_library_index(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert self.run(monkeypatch, tmp_path, "status") == 0
-        assert "'papers': 0" in capsys.readouterr().out
+        out = json.loads(capsys.readouterr().out)
+        assert out["passage_index"]["papers"] == 0
+        assert out["passage_index"]["embedding_model"] == "fake-embed"
+
+    def test_index_asks_the_library(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert self.run(monkeypatch, tmp_path, "index") == 0
+        assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["papers"] == 0
 
     def test_domains_lists_what_is_installed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
