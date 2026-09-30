@@ -1,4 +1,4 @@
-# scientific-research-rag
+# retrieval-augmented-generation
 
 Evidence-first literature research with small local language models. Code controls search,
 evidence, verification, abstention and the run log; the model only fills in narrow,
@@ -54,8 +54,8 @@ What each rule guarantees, and what it does not:
 ## Install
 
 ```bash
-git clone https://github.com/polarizetech/scientific-research-rag.git
-cd scientific-research-rag
+git clone https://github.com/polarizetech/retrieval-augmented-generation.git
+cd retrieval-augmented-generation
 uv sync                       # add --extra rerank for the ONNX cross-encoder (no torch)
 ollama pull qwen3:4b-instruct-2507
 ollama pull bge-m3
@@ -122,8 +122,8 @@ For Claude Desktop or Claude Code, run the gateway over stdio (no port, no token
 {
   "mcpServers": {
     "research-rag": {
-      "command": "/absolute/path/to/scientific-research-rag/.venv/bin/research-rag-gateway",
-      "args": ["--config", "/absolute/path/to/scientific-research-rag/config/mcp-gateway.json"]
+      "command": "/absolute/path/to/retrieval-augmented-generation/.venv/bin/research-rag-gateway",
+      "args": ["--config", "/absolute/path/to/retrieval-augmented-generation/config/mcp-gateway.json"]
     }
   }
 }

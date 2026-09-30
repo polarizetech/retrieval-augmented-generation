@@ -194,7 +194,7 @@ cases right instead of 7, so it stays on. Models are kept loaded for 30 minutes
 ## Domains
 
 The engine is domain-neutral. What a field knows lives in a separately versioned domain package
-that declares a `DomainPolicy` and is found through the `science_rag.domains` entry point. The
+that declares a `DomainPolicy` and is found through the `rag.domains` entry point. The
 policy is data, not behaviour: it serialises into `run.json`, and its prompt fragments are appended
 to the engine's, never substituted, so a domain can tighten a rule but cannot remove one. See
 [domains](DOMAINS.md).

@@ -300,7 +300,7 @@ POLICY = DomainPolicy(
 )
 
 DOMAIN = declare(
-    name="science-rag-domain-neuroscience",
+    name="rag-domain-neuroscience",
     module=__name__,
     version=__version__,
     core_requires=CORE_REQUIRES,

@@ -215,7 +215,7 @@ class MeasureLookup(unittest.TestCase):
 class Declaration(unittest.TestCase):
     def kwargs(self, **changes):
         base = {
-            "name": "science-rag-domain-example",
+            "name": "rag-domain-example",
             "module": "tests.test_domains",
             "version": "0.1.0",
             "core_requires": ">=0.1.0",
@@ -242,7 +242,7 @@ class Declaration(unittest.TestCase):
 
     def test_extending_a_missing_domain_is_refused(self):
         with self.assertRaises(domains.MissingDomain):
-            domains.declare(**self.kwargs(extends={"science-rag-domain-does-not-exist": ">=0.1.0"}))
+            domains.declare(**self.kwargs(extends={"rag-domain-does-not-exist": ">=0.1.0"}))
 
 
 class Resolution(unittest.TestCase):
@@ -351,7 +351,7 @@ class DependencyArrow(unittest.TestCase):
                 else:
                     continue
                 for name in names:
-                    if name.startswith("sciencerag_"):
+                    if name.startswith("rag_"):
                         offenders.append(f"{path.relative_to(ROOT)} imports {name}")
         self.assertEqual(offenders, [])
 
@@ -369,7 +369,7 @@ class DependencyArrow(unittest.TestCase):
                 module = node.module or ""
                 if module.startswith("research_pipeline") and module not in allowed:
                     offenders.append(f"{entry['slug']} imports engine internals: {module}")
-                if module.startswith("sciencerag_") and module not in allowed:
+                if module.startswith("rag_") and module not in allowed:
                     offenders.append(f"{entry['slug']} imports undeclared sibling: {module}")
         self.assertEqual(offenders, [])
 

@@ -278,9 +278,9 @@ def _consent_page(request_id: str, message: str) -> str:
     safe_message = html.escape(message)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Authorize Scientific Research RAG</title></head>
+<title>Authorize Retrieval-Augmented Generation</title></head>
 <body style="font-family:system-ui;max-width:34rem;margin:4rem auto;padding:1rem">
-<h1>Authorize Scientific Research RAG</h1>
+<h1>Authorize Retrieval-Augmented Generation</h1>
 <p>Enter the private access key stored for this MCP server.</p>
 <p style="color:#b42318">{safe_message}</p>
 <form method="post">

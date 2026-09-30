@@ -289,7 +289,7 @@ class NoveltyProbe:
             "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "seconds": round(time.time() - started, 1),
             "method": {
-                "tool": "scientific-research-rag novelty",
+                "tool": "retrieval-augmented-generation novelty",
                 "pipeline_version": __version__,
                 "prompt_version": self.pipe.prompts.version,
                 "models": self.pipe.models,

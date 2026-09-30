@@ -1,5 +1,5 @@
 [project]
-name = "science-rag-domain-cardiovascular"
+name = "rag-domain-cardiovascular"
 dynamic = ["version"]
 description = "Cardiovascular science as a domain extension of the research pipeline."
 requires-python = ">=3.11"
@@ -9,14 +9,14 @@ dependencies = []
 # checkout. CORE_REQUIRES in __init__.py is the version gate, and it is checked on import, so an
 # incompatible pairing fails loudly at discovery rather than quietly at grading time.
 
-[project.entry-points."science_rag.domains"]
-cardiovascular = "sciencerag_cardiovascular"
+[project.entry-points."rag.domains"]
+cardiovascular = "rag_cardiovascular"
 
 [tool.hatch.version]
-path = "sciencerag_cardiovascular/__init__.py"
+path = "rag_cardiovascular/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["sciencerag_cardiovascular"]
+packages = ["rag_cardiovascular"]
 
 [build-system]
 requires = ["hatchling"]

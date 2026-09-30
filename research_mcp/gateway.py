@@ -37,7 +37,7 @@ from research_pipeline.config import ROOT, Settings, load_env
 from research_pipeline.llm import Ollama
 from research_pipeline.papers import PaperLibrary, PapersError
 
-SERVER_NAME = "scientific-research-rag"
+SERVER_NAME = "retrieval-augmented-generation"
 
 
 def _token(path: Path) -> str:
