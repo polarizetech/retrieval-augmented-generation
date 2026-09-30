@@ -3,7 +3,8 @@
 Here the calling model (Claude, ChatGPT, a local chat model) writes the answer, and these tools hold
 it to the same deterministic rules the pipeline applies to its own drafts:
 
-- evidence comes only from the local passage index, under ids that name an exact passage;
+- evidence comes only from the paper library's passage index (paper-fetch), under ids that name
+  an exact passage;
 - passages flagged by the safety scan, and passages from retracted papers, are never returned;
 - a claim is valid only if each quote it relies on occurs in the cited passage, it relies on at
   least one such quote, and every number it states occurs in the passages it cites.
@@ -18,19 +19,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from research_pipeline import safety
-from research_pipeline.config import Settings
-from research_pipeline.index import Passage, PassageIndex
-from research_pipeline.llm import LLMError
+from research_pipeline.papers import PaperLibrary, PapersError, Passage
 from research_pipeline.verify import anchor_quote, unsupported_numbers
 
-Embed = Callable[[list[str]], list[list[float]]]
 EVIDENCE_ID = re.compile(r"^(?P<work>.+)#p(?P<ord>\d+)\.(?P<digest>[0-9a-f]{8})$")
 
 
@@ -44,38 +41,24 @@ def _digest(text: str) -> str:
 
 
 class EvidenceStore:
-    def __init__(self, index: PassageIndex, runs_dir: Path, embed: Embed | None = None):
-        self.index = index
-        self.runs_dir = runs_dir
-        self.embed = embed
-        # One sqlite connection serves every tool call, and the gateway runs calls on worker
-        # threads. Concurrent use of one connection raises sqlite3.InterfaceError, so every public
-        # method holds this lock for its whole body.
-        self._lock = threading.RLock()
+    """The rag__ tools' logic. `library` returns a client for the paper library's MCP session."""
 
-    @classmethod
-    def from_settings(cls, settings: Settings, embed: Embed | None = None) -> EvidenceStore:
-        return cls(
-            PassageIndex(settings.index_path, settings.embedding_model), settings.runs_dir, embed
-        )
+    def __init__(self, library: Callable[[], PaperLibrary], runs_dir: Path):
+        self.library = library
+        self.runs_dir = runs_dir
 
     # -- retrieval ---------------------------------------------------------------------------
-    def retrieve(self, query: str, limit: int = 8, max_chars: int = 1800) -> dict[str, Any]:
-        with self._lock:
-            return self._retrieve(query, limit, max_chars)
-
-    def _retrieve(self, query: str, limit: int, max_chars: int) -> dict[str, Any]:
+    async def retrieve(self, query: str, limit: int = 8, max_chars: int = 1800) -> dict[str, Any]:
         query = query.strip()
         if not query:
             raise ValueError("query is required")
         limit = max(1, min(int(limit), 20))
         max_chars = max(400, min(int(max_chars), 4000))
-        vector, mode = self._query_vector(query)
         # Over-fetch so that excluded passages do not shrink the result below `limit`.
-        passages = self.index.search(query, vector, limit=limit * 3, pool=max(limit * 4, 20))
+        res = await self.library().retrieve([query], limit=limit * 3)
         results, excluded = [], []
-        for passage in passages:
-            paper = self.index.paper(passage.work) or {"work": passage.work}
+        for passage in (Passage.from_json(p) for p in res["results"][0]["passages"]):
+            paper = passage.paper
             flags = safety.scan(passage.text) + (["retracted"] if paper.get("is_retracted") else [])
             if flags:
                 excluded.append({"evidence_id": evidence_id(passage), "flags": flags})
@@ -100,38 +83,26 @@ class EvidenceStore:
                     "score": passage.fused,
                 }
             )
+        index = res.get("index") or {}
         return {
             "query": query,
-            "retrieval": mode,
+            "retrieval": "hybrid" if index.get("embedding_model") else "lexical",
             "n": len(results),
             "results": results,
             "excluded": excluded,
-            "index": self.index.stats(),
+            "index": index,
         }
 
-    def _query_vector(self, query: str) -> tuple[list[float] | None, str]:
-        """Hybrid when the index has vectors and the embedding model answers, else lexical."""
-        if self.embed is None or not self.index.has_vectors():
-            return None, "lexical"
-        try:
-            return self.embed([query])[0], "hybrid"
-        except Exception as exc:  # noqa: BLE001 - any embedding failure degrades to lexical search
-            return None, f"lexical (embedding unavailable: {type(exc).__name__})"
-
     # -- checking ----------------------------------------------------------------------------
-    def check_citations(self, claims: list[dict[str, Any]]) -> dict[str, Any]:
-        with self._lock:
-            return self._check_citations(claims)
-
-    def _check_citations(self, claims: list[dict[str, Any]]) -> dict[str, Any]:
-        checked = [self._check_claim(number, claim) for number, claim in enumerate(claims, 1)]
+    async def check_citations(self, claims: list[dict[str, Any]]) -> dict[str, Any]:
+        checked = [await self._check_claim(number, claim) for number, claim in enumerate(claims, 1)]
         return {
             "n": len(checked),
             "valid": bool(checked) and all(c["valid"] for c in checked),
             "claims": checked,
         }
 
-    def _check_claim(self, number: int, claim: dict[str, Any]) -> dict[str, Any]:
+    async def _check_claim(self, number: int, claim: dict[str, Any]) -> dict[str, Any]:
         text = str(claim.get("text", "")).strip()
         evidence_ids = [str(e) for e in claim.get("evidence_ids") or []]
         quotes = claim.get("quotes") or {}
@@ -143,7 +114,7 @@ class EvidenceStore:
         if not evidence_ids:
             errors.append({"error": "a claim must cite at least one evidence_id"})
         for eid in evidence_ids:
-            passage, problem = self._resolve(eid)
+            passage, problem = await self._resolve(eid)
             if passage is None:
                 errors.append({"evidence_id": eid, "error": problem})
                 continue
@@ -174,27 +145,33 @@ class EvidenceStore:
             "errors": errors,
         }
 
-    def _resolve(self, eid: str) -> tuple[Passage | None, str]:
+    async def _resolve(self, eid: str) -> tuple[Passage | None, str]:
         match = EVIDENCE_ID.match(eid)
         if not match:
             return (
                 None,
                 "malformed evidence_id; expected <work>#p<n>.<hash> from rag__retrieve_evidence",
             )
-        passage = self.index.passage_at(match["work"], int(match["ord"]))
+        ord_ = int(match["ord"])
+        try:
+            found = await self.library().passages(match["work"], ord_, 1)
+        except PapersError as exc:
+            if exc.code != "not_found":
+                raise ValueError(f"the paper library did not answer: {exc}") from exc
+            found = []
+        passage = next((p for p in found if p.ord == ord_), None)
         if passage is None:
             return None, "unknown evidence_id"
         if _digest(passage.text) != match["digest"]:
             return None, "stale evidence_id: the passage text changed after it was retrieved"
-        paper = self.index.paper(passage.work) or {}
-        if paper.get("is_retracted"):
+        if passage.paper.get("is_retracted"):
             return None, "the cited paper is retracted"
         if flags := safety.scan(passage.text):
             return None, f"the cited passage is excluded ({', '.join(flags)})"
         return passage, ""
 
     # -- saving ------------------------------------------------------------------------------
-    def save_report(
+    async def save_report(
         self,
         title: str,
         markdown: str,
@@ -207,22 +184,12 @@ class EvidenceStore:
         the check is stored with the report; without them the manifest says the claims were not
         checked, so a reader can tell the difference.
         """
-        with self._lock:
-            return self._save_report(title, markdown, evidence_ids, claims)
-
-    def _save_report(
-        self,
-        title: str,
-        markdown: str,
-        evidence_ids: list[str],
-        claims: list[dict[str, Any]] | None,
-    ) -> dict[str, Any]:
         title, markdown = title.strip(), markdown.strip()
         if not title or not markdown:
             raise ValueError("title and markdown are required")
         cited: dict[str, dict[str, Any]] = {}
         for eid in dict.fromkeys(evidence_ids):
-            passage, problem = self._resolve(eid)
+            passage, problem = await self._resolve(eid)
             if passage is None:
                 raise ValueError(f"{eid}: {problem}")
             cited[eid] = {
@@ -233,7 +200,7 @@ class EvidenceStore:
             }
         if not cited:
             raise ValueError("a report must cite at least one evidence_id")
-        check = self.check_citations(claims) if claims else None
+        check = await self.check_citations(claims) if claims else None
         if check is not None and not check["valid"]:
             raise ValueError("claims failed check_citations; run it and fix the reported errors")
 
@@ -257,38 +224,48 @@ class EvidenceStore:
             "claims_checked": check is not None,
         }
 
-    def stats(self) -> dict[str, Any]:
-        with self._lock:
-            return self.index.stats()
+    async def stats(self) -> dict[str, Any]:
+        return (await self.library().status()).get("passages") or {}
 
     # -- indexing ----------------------------------------------------------------------------
-    def ingest(self, record: dict[str, Any], text: str) -> dict[str, Any]:
-        """Add one held paper's full text to the passage index, so retrieve can cite it.
-
-        Passages are embedded with the same model as the rest of the index. A paper indexed
-        without vectors would be invisible to the dense half of hybrid retrieval, so a missing
-        embedding model is an error, never a silent lexical-only insert.
-        """
-        if not record.get("work"):
-            raise ValueError("record has no work id")
-        if not text.strip():
-            raise ValueError(f"{record['work']}: no full text to index")
-        if self.embed is None:
-            raise ValueError("no embedding model is configured; cannot index")
-        hidden = safety.scan_hidden(text)
-        with self._lock:
+    async def index_papers(self, identifiers: list[str]) -> dict[str, Any]:
+        """Fetch papers through the library and have it index their full text, so retrieve can
+        return and cite them. Each result says what happened, and why not when it did not."""
+        lib = self.library()
+        results, works = [], []
+        for ident in identifiers[:10]:
             try:
-                added = self.index.add(record, safety.clean(text), self.embed)
-            except (LLMError, ConnectionError, OSError, TimeoutError) as exc:
-                raise ValueError(
-                    f"embedding model unavailable ({type(exc).__name__}); nothing was indexed"
-                ) from exc
-            return {
-                "work": record["work"],
-                "doi": record.get("doi"),
-                "title": record.get("title"),
-                "passages_added": added,
-                "already_indexed": added == 0,
-                "hidden_text_stripped": hidden or None,
-                "index": self.index.stats(),
-            }
+                rec = await lib.fetch(ident)
+            except PapersError as exc:
+                results.append({"identifier": ident, "status": exc.code, "error": str(exc)})
+                continue
+            if rec.get("is_retracted"):
+                results.append({"identifier": ident, "status": "retracted"})
+            elif not rec.get("full_text"):
+                results.append(
+                    {"identifier": ident, "status": "no_open_full_text", "title": rec.get("title")}
+                )
+            else:
+                works.append(rec["work"])
+                results.append(
+                    {
+                        "identifier": ident,
+                        "work": rec["work"],
+                        "doi": rec.get("doi"),
+                        "title": rec.get("title"),
+                    }
+                )
+        if not works:
+            return {"results": results, "index": await self.stats()}
+        try:
+            report = await lib.index(works)
+        except PapersError as exc:
+            for r in results:
+                if r.get("work"):
+                    r.update(status="not_indexed", error=str(exc))
+            return {"results": results, "index": await self.stats()}
+        fresh = set(report.get("indexed") or [])
+        for r in results:
+            if r.get("work"):
+                r["status"] = "indexed" if r["work"] in fresh else "already_indexed"
+        return {"results": results, "index": report.get("index") or {}}

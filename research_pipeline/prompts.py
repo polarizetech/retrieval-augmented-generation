@@ -34,8 +34,13 @@ def _join(*parts: str) -> str:
 class Prompts:
     """Every prompt and schema for one domain policy."""
 
-    def __init__(self, policy: DomainPolicy = GENERIC) -> None:
+    def __init__(
+        self, policy: DomainPolicy = GENERIC, profile: dict[str, Any] | None = None
+    ) -> None:
         self.policy = policy
+        # The paper library's discipline profile for this field (its indexed terms, measures and
+        # search advice): the search half of the field. None: plan without it.
+        self.profile = profile or {}
 
     # -- plan ------------------------------------------------------------------------------
     @property
@@ -45,7 +50,7 @@ class Prompts:
             "the question. Break it into the few sub-questions that must be answered from "
             "published papers, and write short keyword search queries (3-8 words, no boolean "
             "operators, no quotes).",
-            self.policy.search_guidance,
+            self.profile.get("search_guidance") or "Write queries suited to PubMed and OpenAlex.",
             "Use standard terminology and one synonym or older term where it exists.",
             "Also write falsification queries: searches that would find null results, failed "
             "replications, or contradicting findings for the most likely answer.",
@@ -59,10 +64,12 @@ class Prompts:
         can see far more reliably than vocabulary it is told to recall.
         """
         lines = [f"Field: {self.policy.label}. {self.policy.scope}"]
-        terms = self.policy.terms()
+        terms = self.profile.get("terms") or []
         if terms:
             lines.append("Terms this field is indexed under: " + "; ".join(terms[:40]) + ".")
-        measures = [f"{m.label} ({'/'.join(m.units)})" for m in self.policy.measures]
+        measures = [
+            f"{m['label']} ({'/'.join(m['units'])})" for m in self.profile.get("measures") or []
+        ] or [f"{m.label} ({'/'.join(m.units)})" for m in self.policy.measures]
         if measures:
             lines.append("Quantities it reports: " + "; ".join(measures[:20]) + ".")
         return "\n".join(lines)
@@ -345,6 +352,7 @@ class Prompts:
                 self.VERIFY_SCHEMA,
                 self.paper_schema(),
                 self.policy.summary(),
+                self.profile,
             ],
             sort_keys=True,
             default=str,

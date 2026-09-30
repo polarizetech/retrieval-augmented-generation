@@ -25,13 +25,28 @@ There are two ways to use it:
   `run.json` that records every search, passage, model digest and verdict.
 - **The evidence tools** (`rag__*` over MCP) let a stronger client model (Claude, ChatGPT) write the
   answer while this repository holds it to the same deterministic rules: evidence only from the
-  local index, quotes that must occur in the cited passage, and numbers that must occur in the
+  paper library's passage index, quotes that must occur in the cited passage, and numbers that must occur in the
   cited evidence. These tools do not judge entailment; the pipeline's verifier models do.
 - **The quantity tools** (`math__*` over MCP) give a client model constants and equations to cite
   instead of recall: `math__lookup` searches the research corpus's calculator records
   (`projects/*/calculators/*.md`, found through `$RESEARCH_CORPUS` or a sibling `research/` checkout)
   and returns their sections verbatim with the corpus commit; `math__bionumber` returns a BioNumbers
   entry by BNID, verbatim, fetched once and cached. No model is involved in either.
+
+Finding and indexing papers is not done here. That is the paper library,
+[paper-fetch](https://github.com/polarizetech/paper-fetch), reached over MCP: it searches the
+open-access providers, knows how each scientific discipline is indexed (a *profile*: its MeSH
+terms and synonyms), remembers past searches, keeps project collections, stores legal full text,
+and owns the passage index that retrieval reads. This repository tells it the field and the
+concepts, then does everything that happens after a passage is found: reading it, judging it,
+and checking every claim made from it.
+
+| paper-fetch (search and indexing) | this repository (evidence) |
+|---|---|
+| provider search, discipline profiles, search memory, collections | question planning (with the profile's vocabulary) |
+| open-access fetching, storage, provenance | extraction, study-design classification |
+| passage index: chunking, BM25, embeddings, optional cross-encoder | synthesis, verification, grading, critique |
+| fetch ordering by relevance to sub-questions | quote, number and retraction checks; the answer and run log |
 
 What each rule guarantees, and what it does not:
 
@@ -49,40 +64,46 @@ What each rule guarantees, and what it does not:
 ## Requirements
 
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-- [Ollama](https://ollama.com) with a text model and an embedding model. Defaults:
-  `qwen3:4b-instruct-2507` (about 2.5 GB) and `bge-m3` (about 1.2 GB). Sized for a machine with
-  16 GB of memory running one model at a time.
-- For online runs, a paper library over MCP:
-  [paper-fetch](https://github.com/polarizetech/paper-fetch), which searches
-  open-access providers and stores legal full text with provenance.
+- The paper library, [paper-fetch](https://github.com/polarizetech/paper-fetch), over MCP.
+  Install it with its `mcp` and `retrieval` extras, and give it an embedding model for hybrid
+  retrieval (`PAPER_FETCH_EMBED_MODEL=bge-m3`, about 1.2 GB in Ollama); without one, retrieval is
+  lexical.
+- For local-model runs, [Ollama](https://ollama.com) with a text model (default
+  `qwen3:4b-instruct-2507`, about 2.5 GB). Sized for a machine with 16 GB of memory running one
+  model at a time. Behind MCP the calling model does this work instead.
 
 ## Install
 
 ```bash
 git clone https://github.com/polarizetech/retrieval-augmented-generation.git
 cd retrieval-augmented-generation
-uv sync                       # add --extra rerank for the ONNX cross-encoder (no torch)
+uv sync
 ollama pull qwen3:4b-instruct-2507
-ollama pull bge-m3
 cp config/rag.env.example config/rag.env
 cp config/mcp-gateway.example.json config/mcp-gateway.json
+
+uv tool install "paper-fetch[mcp,retrieval] @ git+https://github.com/polarizetech/paper-fetch"
+ollama pull bge-m3
+echo "PAPER_FETCH_EMBED_MODEL=bge-m3" >> ~/.config/paper-fetch/retrieval.env
 ```
 
-Install paper-fetch so that `paper-fetch-mcp` is on your `PATH`, or put its absolute path in
-`config/mcp-gateway.json`.
+`paper-fetch-mcp` must be on your `PATH`, or its absolute path in `config/mcp-gateway.json`. The
+optional cross-encoder is paper-fetch's too (`paper-fetch[rerank]`, `PAPER_FETCH_RERANK_MODEL`).
 
 ## Use
 
 ```bash
-uv run research-pipeline index        # index the full texts the paper library holds
+uv run research-pipeline index        # have the library index the full texts it holds
 uv run research-pipeline ask "Does exercise training lower resting blood pressure in adults?"
+uv run research-pipeline ask --domain cardiovascular "..."   # the field's rules and vocabulary
+uv run research-pipeline ask --collection my-review "..."    # search, fetch and read in a collection
 uv run research-pipeline ask --offline "..."   # indexed corpus only: no search, no downloads
 uv run research-pipeline status
 ```
 
 Each run writes `runs/<timestamp>-<slug>/answer.md` and `run.json`. An online run fetches
-open-access papers into the paper library; `PIPELINE_MAX_FETCH` bounds how many. With the
-`[rerank]` extra, the first run downloads a 571 MB int8 cross-encoder.
+open-access papers into the paper library; `PIPELINE_MAX_FETCH` bounds how many. Every search is
+remembered by the library, so a later run on the same concept is told what earlier ones found.
 
 Set `PIPELINE_VERIFIER_MODEL` to a model from a different family than the text model. Without it
 the text model checks its own claims, and every answer says so.

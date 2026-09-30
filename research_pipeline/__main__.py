@@ -3,7 +3,8 @@
     research-pipeline ask "Does regular aerobic exercise lower resting blood pressure in adults?"
     research-pipeline ask --domain cardiovascular "..."
     research-pipeline ask --offline "..."     # indexed corpus only: no search, no fetch
-    research-pipeline index                   # index every full text the library holds
+    research-pipeline ask --collection my-review "..."   # work in a paper-library collection
+    research-pipeline index                   # have the library index every full text it holds
     research-pipeline domains                 # what fields are installed
     research-pipeline status
     research-pipeline novelty --id CAND-0007 "statement" --established "term" --queries A B C D
@@ -20,10 +21,7 @@ import sys
 import time
 
 from . import domains as domain_registry
-from . import safety
 from .config import Settings, load_env
-from .index import PassageIndex
-from .llm import Ollama
 from .papers import PaperLibrary
 
 
@@ -32,23 +30,32 @@ def _progress(stage: str, detail: str) -> None:
 
 
 async def _index(settings: Settings, limit: int | None) -> int:
-    llm = Ollama(settings)
-    index = PassageIndex(settings.index_path, settings.embedding_model)
+    """Have the paper library index the full texts it holds (it skips what it has indexed)."""
     async with PaperLibrary(settings.gateway_config, settings.papers_upstream) as lib:
-        held = [h for h in await lib.held() if h.get("full_text")]
-        todo = [h for h in held if not index.has(h["work"])][:limit]
-        _progress("index", f"{len(held)} held with full text; {len(todo)} to index")
-        for n, rec in enumerate(todo, 1):
-            if rec.get("is_retracted"):
-                _progress("index", f"skip retracted {rec['work']}")
-                continue
-            text = await lib.full_text(rec["work"])
-            if hidden := safety.scan_hidden(text):
-                _progress("index", f"{rec['work']}: {hidden}; stripped before indexing")
-            added = await asyncio.to_thread(index.add, rec, safety.clean(text), llm.embed)
-            _progress("index", f"{n}/{len(todo)} {rec['work']}: {added} passages")
-    print(index.stats())
+        held = [h["work"] for h in await lib.held() if h.get("full_text")][:limit]
+        _progress("index", f"{len(held)} held with full text")
+        for n in range(0, len(held), 10):
+            report = await lib.index(held[n : n + 10])
+            _progress(
+                "index",
+                f"{min(n + 10, len(held))}/{len(held)}: {report['passages_added']} new passages",
+            )
+        print(json.dumps((await lib.status())["passages"]))
     return 0
+
+
+async def _status(settings: Settings) -> dict[str, object]:
+    async with PaperLibrary(settings.gateway_config, settings.papers_upstream) as lib:
+        library = await lib.status()
+    return {
+        "passage_index": library.get("passages"),
+        "library_works": library.get("works"),
+        "domain": settings.domain or "(generic)",
+        "collection": settings.collection or None,
+        "text_model": settings.text_model,
+        "verifier_model": settings.verifier_model or "(same as text)",
+        "reranker": settings.reranker,
+    }
 
 
 def main() -> int:
@@ -61,6 +68,9 @@ def main() -> int:
         "--domain", help="field to research, e.g. cardiovascular (default PIPELINE_DOMAIN)"
     )
     ask.add_argument("--offline", action="store_true", help="use the indexed corpus only")
+    ask.add_argument(
+        "--collection", help="paper-library collection to work in (default PIPELINE_COLLECTION)"
+    )
     ask.add_argument("--rounds", type=int, help="override PIPELINE_MAX_ROUNDS")
     idx = sub.add_parser("index", help="index the library's held full texts")
     idx.add_argument("--limit", type=int)
@@ -82,7 +92,7 @@ def main() -> int:
     nov.add_argument("--offline", action="store_true", help="read the indexed corpus only")
     nov.add_argument("--domain", help="field policy, as for ask")
     sub.add_parser("domains", help="installed domain extensions and their status")
-    sub.add_parser("status", help="index size and configuration")
+    sub.add_parser("status", help="the library's passage index and this configuration")
     args = parser.parse_args()
 
     settings = Settings()
@@ -115,27 +125,17 @@ def main() -> int:
         )
         return 0 if all(r["status"] == "ok" for r in rows) else 1
     if args.cmd == "status":
-        index = PassageIndex(settings.index_path, settings.embedding_model)
-        print(
-            {
-                "index": index.stats(),
-                "index_path": str(settings.index_path),
-                "domain": settings.domain or "(generic)",
-                "text_model": settings.text_model,
-                "verifier_model": settings.verifier_model or "(same as text)",
-                "embedding_model": settings.embedding_model,
-                "reranker": settings.reranker,
-            }
-        )
+        print(json.dumps(asyncio.run(_status(settings)), indent=1))
         return 0
 
     from .pipeline import Pipeline
 
     if args.rounds:
         settings.max_rounds = args.rounds
-    log = asyncio.run(
-        Pipeline(settings, _progress, offline=args.offline, domain=args.domain).run(args.question)
+    pipe = Pipeline(
+        settings, _progress, offline=args.offline, domain=args.domain, collection=args.collection
     )
+    log = asyncio.run(pipe.run(args.question))
     print(log["answer"])
     print(f"run log: {log['run_dir']}  ({log['seconds']} s)", file=sys.stderr)
     return 0

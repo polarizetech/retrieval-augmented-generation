@@ -17,8 +17,7 @@ import pytest
 
 from research_pipeline import novelty
 from research_pipeline.config import Settings
-from research_pipeline.index import PassageIndex
-from tests.conftest import PAPER, fake_embed
+from tests.conftest import PAPER, LibraryAdapter, hold_w1, papers_library
 
 EFFECT = "Aerobic training lowered resting systolic blood pressure by 5 mmHg relative to control"
 STATEMENT = "Aerobic training lowers resting systolic blood pressure in adults"
@@ -40,9 +39,6 @@ class Verifier:
     def resolve(self, model: str) -> tuple[str, str]:
         return model, "sha256:test"
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return fake_embed(texts)
-
     def chat_json(self, task: str, system: str, user: str, schema: dict, **_: Any) -> dict:
         self.calls.append({"task": task})
         assert task == "verify", task
@@ -58,25 +54,17 @@ def probe(tmp_path: Path, model: Verifier, statement: str = STATEMENT) -> dict[s
     settings = Settings(
         data_dir=tmp_path / "data",
         runs_dir=tmp_path / "runs",
-        embedding_model="fake-embed",
         reranker="none",
         verifier_model="",
         text_model="stub-model",
     )
-    PassageIndex(settings.index_path, settings.embedding_model).add(
-        {
-            "work": "W1",
-            "doi": "10.1000/w1",
-            "title": "Training and blood pressure",
-            "year": 2020,
-            "authors": ["Ada Lovelace"],
-            "route": "fixture",
-        },
-        PAPER,
-        fake_embed,
-    )
+    library = papers_library(tmp_path)
+    hold_w1(library)
+    library.index_works()
     p = novelty.NoveltyProbe(settings, offline=True, llm=model)  # type: ignore[arg-type]
-    return asyncio.run(p.run("CAND-0001", statement, PHRASES, ESTABLISHED))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(novelty, "PaperLibrary", lambda *_: LibraryAdapter(library))
+        return asyncio.run(p.run("CAND-0001", statement, PHRASES, ESTABLISHED))
 
 
 @pytest.fixture

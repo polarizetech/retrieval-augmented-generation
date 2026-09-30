@@ -17,7 +17,6 @@ from starlette.testclient import TestClient
 
 from research_mcp import gateway
 from research_mcp.oauth import SingleUserOAuthProvider
-from tests.test_gateway import OfflineOllama
 
 KEY = "correct horse battery staple access key"
 PUBLIC = "https://mcp.example.org/research"
@@ -154,12 +153,10 @@ def test_the_whole_flow_through_the_http_gateway(
 ) -> None:
     """What ChatGPT does: discover, register, authorize with PKCE, consent, token, call a tool."""
     monkeypatch.setenv("PIPELINE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("PIPELINE_EMBEDDING_MODEL", "fake-embed")
     monkeypatch.setenv("MCP_PUBLIC_URL", PUBLIC)
     monkeypatch.setenv("MCP_RESOURCE_PATH", "")
     monkeypatch.setenv("MCP_OAUTH_ACCESS_KEY", KEY)
     monkeypatch.setenv("MCP_OAUTH_STATE", str(tmp_path / "oauth.sqlite"))
-    monkeypatch.setattr(gateway, "Ollama", OfflineOllama)
     config = tmp_path / "gateway.json"
     config.write_text(json.dumps({"upstreams": {}}))
     server, _ = gateway.build_server(config, "127.0.0.1", 0, tmp_path / "token", http=True)

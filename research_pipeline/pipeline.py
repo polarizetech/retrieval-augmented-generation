@@ -3,6 +3,10 @@
     plan -> discover -> acquire+index -> retrieve -> rerank -> extract (evidence table)
          -> synthesise -> critique (new searches, not rewrites) -> verify -> grade -> render -> log
 
+Discovery, acquisition, indexing and retrieval are the paper library's (paper-fetch, over MCP):
+this module tells it the field and the concepts, and it knows how that field is indexed, what was
+searched before, and which passages answer. Everything from reading a passage on is here.
+
 Control flow never depends on the model choosing a tool. A ~4B model is unreliable as an agent but
 adequate as a component when each call is small, schema-constrained, and checked afterwards.
 
@@ -25,15 +29,13 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from . import __version__, grading, integrity, rerank, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
-from .index import Passage, PassageIndex
 from .llm import Ollama
-from .papers import PaperLibrary, PapersError
+from .notes import NoteStore
+from .papers import PaperLibrary, PapersError, Passage
 from .prompts import Prompts, wrap
 from .schema import (
     Candidate,
@@ -59,7 +61,7 @@ class State:
     candidates: dict[str, Candidate] = field(default_factory=dict)
     evidence: dict[str, Evidence] = field(default_factory=dict)
     passages: dict[str, str] = field(default_factory=dict)  # evidence id -> full passage text
-    seen: dict[str, set[int]] = field(default_factory=dict)  # subquestion id -> passage ids judged
+    seen: dict[str, set[str]] = field(default_factory=dict)  # subquestion id -> passage ids judged
     claims: list[Claim] = field(default_factory=list)
     insufficient: list[str] = field(default_factory=list)
     gaps: list[dict[str, Any]] = field(default_factory=list)
@@ -77,7 +79,9 @@ class Pipeline:
         progress: Progress | None = None,
         offline: bool = False,
         domain: str | Domain | None = None,
+        *,
         llm: Model | None = None,
+        collection: str | None = None,
     ):
         self.s = settings
         self.offline = offline  # answer from the already-indexed corpus; no discovery, no fetching
@@ -86,16 +90,20 @@ class Pipeline:
         self.client = isinstance(self.llm, ClientLLM)
         # A client answers a batch per turn; a single resident local model answers one at a time.
         self.concurrency = 32 if self.client else 1
-        self.index = PassageIndex(settings.index_path, settings.embedding_model)
+        self.notes = NoteStore(settings.notes_path)
+        self.collection = settings.collection if collection is None else collection
+        # What the library said about each paper a passage came from (title, doi, retraction,
+        # text hash, route), and the state of its passage index at the last retrieval.
+        self.papers: dict[str, dict[str, Any]] = {}
+        self.index_stats: dict[str, Any] = {}
+        self.library_reranker: str | None = None
+        self.profile: dict[str, Any] | None = None
         self.models: dict[str, Any] = {}
         # The field being researched. Nothing installed means the generic policy, not a failure:
         # the engine answers a question on its own, it just answers it without a field's rules.
         self.domain = domain if isinstance(domain, Domain) else active(domain or settings.domain)
         self.policy = self.domain.policy
         self.prompts = Prompts(self.policy)
-        # discover()/acquire() fetch and search concurrently, but only one model/DB write at a
-        # time: the embedding model is single-resident and the index is one sqlite connection.
-        self._index_lock = asyncio.Lock()
 
     # -- setup -----------------------------------------------------------------------------
     def _resolve_models(self, st: State) -> list[str]:
@@ -103,8 +111,6 @@ class Pipeline:
         text, digest = self.llm.resolve(name)
         self.s.text_model = text
         self.models["text"] = {"name": text, "digest": digest}
-        _, embed_digest = self.llm.resolve(self.s.embedding_model)
-        self.models["embedding"] = {"name": self.s.embedding_model, "digest": embed_digest}
         # A client model always verifies its own claims too. A configured local verifier is an
         # independent second check, and every verifier must accept a claim.
         resolved = [(text, digest)] if self.client else []
@@ -162,7 +168,13 @@ class Pipeline:
             self.progress("discover", query)
             async with sem:
                 try:
-                    return query, await lib.search(query, limit=self.s.hits_per_query), None
+                    res = await lib.search(
+                        query,
+                        limit=self.s.hits_per_query,
+                        profile=(self.policy.profile or "") if self.profile else "",
+                        collection=self.collection,
+                    )
+                    return query, res, None
                 except PapersError as exc:
                     return query, None, exc
 
@@ -179,9 +191,12 @@ class Pipeline:
             st.searches.append(
                 {
                     "query": query,
+                    "variants": res.get("variants", []),
                     "providers": res["providers"],
                     "n_hits": len(res["hits"]),
                     "did_not_answer": silent,
+                    "search_id": res.get("search_id"),
+                    "searched_before": [m["query"] for m in res.get("memory", [])],
                 }
             )
             for hit in res["hits"]:
@@ -237,7 +252,7 @@ class Pipeline:
                 keep.providers = sorted(set(keep.providers) | set(other.providers))
                 st.candidates.pop(other.key, None)
 
-    # -- acquire: fetch through the library, index full text -------------------------------
+    # -- acquire: fetch through the library, have it index the full texts -------------------
     async def acquire(self, st: State, lib: PaperLibrary) -> None:
         assert st.plan
         fresh = [c for c in st.candidates.values() if c.outcome in ("not_attempted", "over_budget")]
@@ -247,26 +262,20 @@ class Pipeline:
         # is spent on the most relevant candidates rather than on whatever a provider listed first.
         unscored = [c for c in fresh if not c.relevance]
         if unscored:
-            targets = [sq.text for sq in st.plan.subquestions]
-            vecs = np.asarray(
-                await asyncio.to_thread(
-                    self.llm.embed, targets + [c.title or "" for c in unscored]
-                ),
-                dtype=np.float32,
+            scores = await lib.relevance(
+                [sq.text for sq in st.plan.subquestions], [c.title or "" for c in unscored]
             )
-            vecs /= np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9
-            for cand, row in zip(
-                unscored, vecs[len(targets) :] @ vecs[: len(targets)].T, strict=True
-            ):
-                cand.relevance = round(float(row.max()), 4)
+            for cand, score in zip(unscored, scores, strict=True):
+                cand.relevance = round(float(score), 4)
         fresh.sort(key=lambda c: -c.relevance)
 
         # Decide who gets fetched, and consume the budget, before any awaiting: this keeps the
         # same priority order and the same PIPELINE_MAX_FETCH accounting as the sequential version.
+        held: list[Candidate] = []
         to_fetch: list[tuple[Candidate, str]] = []
         for cand in fresh:
-            if cand.work and self.index.has(cand.work):
-                cand.outcome = "indexed"
+            if cand.work and cand.full_text_in_library:
+                held.append(cand)
                 continue
             # PIPELINE_MAX_FETCH bounds the whole run, not each round: every fetch writes into the
             # shared paper library, and the critique round asks for more searches by design.
@@ -286,8 +295,6 @@ class Pipeline:
                 continue
             st.fetches += 1
             to_fetch.append((cand, ident))
-        if not to_fetch:
-            return
 
         sem = asyncio.Semaphore(self.s.fetch_concurrency)
 
@@ -295,43 +302,45 @@ class Pipeline:
             self.progress("fetch", f"{cand.title or ident}"[:90])
             try:
                 async with sem:
-                    rec = await lib.fetch(ident)
+                    rec = await lib.fetch(ident, collection=self.collection)
                 cand.work = rec.get("work") or cand.work or ident
                 if rec.get("is_retracted"):
                     cand.outcome = "retracted"
-                    return
-                if not rec.get("full_text"):
+                elif not rec.get("full_text"):
                     cand.outcome = "not_obtainable"
-                    return
-                async with sem:
-                    text = await lib.full_text(rec.get("work") or ident)
-                # Hidden characters are counted on the raw text: clean() removes them before
-                # indexing, so a passage-level scan afterwards could never see them.
-                if hidden := safety.scan_hidden(text):
-                    st.notes.append(f"{cand.work}: {hidden}; stripped before indexing")
-                # PassageIndex is one sqlite connection with no internal lock, and embedding shares
-                # the single resident model: serialise this part although fetch runs concurrently.
-                async with self._index_lock:
-                    n = await asyncio.to_thread(
-                        self.index.add, rec, safety.clean(text), self.llm.embed
-                    )
-                cand.outcome = "indexed"
-                self.progress("index", f"{n} passages from {cand.work}")
+                else:
+                    held.append(cand)
             except PapersError as exc:
                 cand.outcome = "not_obtainable" if exc.code == "not_found" else "fetch_failed"
                 st.notes.append(f"fetch {ident}: {exc}")
 
         await asyncio.gather(*(_fetch_one(cand, ident) for cand, ident in to_fetch))
+        if not held:
+            return
+        # The library indexes the texts (and embeds them, if it has an embedding model); papers it
+        # has already indexed cost nothing.
+        works = list(dict.fromkeys(c.work for c in held if c.work))
+        self.progress("index", f"{len(works)} paper(s)")
+        try:
+            report = await lib.index(works)
+        except PapersError as exc:
+            st.notes.append(f"indexing failed: {exc}")
+            for cand in held:
+                cand.outcome = "fetch_failed"
+            return
+        for cand in held:
+            cand.outcome = "indexed"
+        self.index_stats = report.get("index") or self.index_stats
+        self.progress("index", f"{report.get('passages_added', 0)} new passages")
 
     # -- stage 5: retrieve and rerank ------------------------------------------------------
-    def pool(
-        self, st: State, targets: list[tuple[SubQuestion, list[str] | None]]
+    async def pool(
+        self,
+        st: State,
+        lib: PaperLibrary,
+        targets: list[tuple[SubQuestion, list[str] | None]],
     ) -> dict[str, list[Passage]]:
-        """Hybrid retrieval for several sub-questions at once.
-
-        All embedding happens here in one batch, before any generation: with a single model
-        resident in memory, interleaving embedding and chat calls would reload weights every time.
-        """
+        """Retrieval for several sub-questions at once, in one library call."""
         plans = {
             sq.id: (
                 queries or ([sq.text, *sq.queries] if sq.kind != "falsification" else sq.queries)
@@ -339,15 +348,20 @@ class Pipeline:
             for sq, queries in targets
         }
         flat = list(dict.fromkeys(q for qs in plans.values() for q in qs))
-        vectors = dict(zip(flat, self.llm.embed(flat), strict=True))
+        res = await lib.retrieve(
+            flat, collection=self.collection, limit=self.s.candidates_per_subquestion
+        )
+        self.index_stats = res.get("index") or self.index_stats
+        self.library_reranker = res.get("reranker")
+        by_query = {
+            r["query"]: [Passage.from_json(p) for p in r["passages"]] for r in res["results"]
+        }
         used_elsewhere = {e.passage_id for e in st.evidence.values()}
         out: dict[str, list[Passage]] = {}
         for sq, _ in targets:
-            found: dict[int, Passage] = {}
+            found: dict[str, Passage] = {}
             for text in plans[sq.id]:
-                for p in self.index.search(
-                    text, vectors[text], limit=self.s.candidates_per_subquestion
-                ):
+                for p in by_query.get(text, []):
                     if p.id not in found or p.fused > found[p.id].fused:
                         found[p.id] = p
             judged = st.seen.setdefault(sq.id, set())
@@ -358,8 +372,12 @@ class Pipeline:
                 # The falsification pass looks for what the other passes missed, not the same text.
                 if p.id in judged or (sq.kind == "falsification" and p.id in used_elsewhere):
                     continue
-                paper = self.index.paper(p.work) or {}
-                flags = safety.scan(p.text) + (["retracted"] if paper.get("is_retracted") else [])
+                if p.work not in self.papers:
+                    self.papers[p.work] = p.paper
+                    hidden = int(p.paper.get("hidden_chars") or 0)
+                    if hidden > safety.HIDDEN_TOLERANCE:
+                        st.notes.append(f"{p.work}: {hidden} hidden characters; stripped")
+                flags = safety.scan(p.text) + (["retracted"] if p.paper.get("is_retracted") else [])
                 if flags:
                     st.dropped_passages.append({"passage_id": p.id, "work": p.work, "flags": flags})
                     continue
@@ -394,17 +412,33 @@ class Pipeline:
         with ThreadPoolExecutor(max_workers=min(len(jobs), self.concurrency)) as pool:
             return list(pool.map(lambda job: job(), jobs))
 
-    # Classification is split so that only the model call runs concurrently: the index is one
-    # SQLite connection, and every read and write of it stays on the stage's own thread.
-    def _classify_input(self, work: str) -> str | None:
+    # Classification: the openings of unclassified papers are read from the library first (async),
+    # then only the model calls run concurrently; the note store stays on the stage's own thread.
+    async def openings(self, lib: PaperLibrary, works: list[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for work in dict.fromkeys(works):
+            if self._note(work) is not None:
+                continue
+            try:
+                out[work] = "\n\n".join(p.text for p in await lib.passages(work, 0, 4))[:2500]
+            except PapersError:
+                continue  # left unclassified: graded as "unclear"
+        return out
+
+    def _note(self, work: str) -> dict[str, str] | None:
+        return self.notes.get(work, self.papers.get(work, {}).get("text_sha256"))
+
+    def _classify_input(self, work: str, opening: str) -> str | None:
         """The classifier's input for a paper, or None if its text was flagged (then noted)."""
-        paper = self.index.paper(work) or {}
-        opening = self.index.opening(work)
         if safety.scan(opening):
             # The classifier would read the injected text; record the paper as unclassified.
-            self.index.set_note(work, "unclear", "", "safety-filter")
+            self._set_note(work, "unclear", "", "safety-filter")
             return None
-        return f"Title: {paper.get('title')}\n\n{wrap(opening)}"
+        return f"Title: {self.papers.get(work, {}).get('title')}\n\n{wrap(opening)}"
+
+    def _set_note(self, work: str, study_type: str, population: str, model: str) -> None:
+        sha = self.papers.get(work, {}).get("text_sha256") or ""
+        self.notes.set(work, study_type, population, model, sha)
 
     def _classify_call(self, user: str) -> dict[str, Any]:
         return self.llm.chat_json(
@@ -412,18 +446,22 @@ class Pipeline:
         )
 
     def _classify_record(self, work: str, got: dict[str, Any]) -> None:
-        self.index.set_note(
+        self._set_note(
             work, got["study_type"], got.get("population", "").strip(), self.s.text_model
         )
 
     def paper_note(self, work: str) -> dict[str, str]:
-        if self.index.note(work) is None and (user := self._classify_input(work)) is not None:
-            self._classify_record(work, self._classify_call(user))
-        return self.index.note(work) or {"study_type": "unclear", "population": ""}
+        return self._note(work) or {"study_type": "unclear", "population": ""}
 
     # -- stage 6: evidence table -----------------------------------------------------------
-    def extract(self, st: State, sq: SubQuestion, ranked: list[tuple[Passage, float]]) -> None:
-        self.extract_many(st, [(sq, ranked)])
+    def extract(
+        self,
+        st: State,
+        sq: SubQuestion,
+        ranked: list[tuple[Passage, float]],
+        openings: dict[str, str] | None = None,
+    ) -> None:
+        self.extract_many(st, [(sq, ranked)], openings or {})
 
     def _read(self, sq: SubQuestion, p: Passage) -> dict[str, Any]:
         return self.llm.chat_json(
@@ -434,7 +472,10 @@ class Pipeline:
         )
 
     def extract_many(
-        self, st: State, batches: list[tuple[SubQuestion, list[tuple[Passage, float]]]]
+        self,
+        st: State,
+        batches: list[tuple[SubQuestion, list[tuple[Passage, float]]]],
+        openings: dict[str, str],
     ) -> None:
         """Read every selected passage of several sub-questions in one batch of model calls.
 
@@ -444,11 +485,15 @@ class Pipeline:
         items = [(sq, p, score) for sq, ranked in batches for p, score in ranked]
         for sq, p, _ in items:
             st.seen.setdefault(sq.id, set()).add(p.id)
-        unclassified = list(
-            dict.fromkeys(p.work for _, p, _ in items if not self.index.note(p.work))
-        )
+        unclassified = [
+            w for w in dict.fromkeys(p.work for _, p, _ in items) if self._note(w) is None
+        ]
         self.progress("extract", f"{len(items)} passages, {len(unclassified)} new papers")
-        to_classify = [(w, user) for w in unclassified if (user := self._classify_input(w))]
+        to_classify = [
+            (w, user)
+            for w in unclassified
+            if w in openings and (user := self._classify_input(w, openings[w]))
+        ]
         jobs: list[Callable[[], Any]] = [partial(self._read, sq, p) for sq, p, _ in items]
         jobs += [partial(self._classify_call, user) for _, user in to_classify]
         answers = self._parallel(jobs)
@@ -624,7 +669,7 @@ class Pipeline:
             prompts=self.prompts,
             parallel=self._parallel,
         )
-        papers = {e.work: (self.index.paper(e.work) or {}) for e in st.evidence.values()}
+        papers = {e.work: self.papers.get(e.work, {}) for e in st.evidence.values()}
         if not self.offline:
             cited = {st.evidence[e].work for c in st.claims for e in c.supported_by}
             self.progress("integrity", f"checking {len(cited)} cited work(s) against Crossref")
@@ -702,39 +747,60 @@ class Pipeline:
         started = time.time()
         st = State(question.strip())
         verifiers = self._resolve_models(st)
-        # Reranking by a client model would cost a turn per four passages; it uses ONNX or none.
-        ranker = rerank.build(
-            self.s, None if isinstance(self.llm, ClientLLM) else self.llm, self.prompts
-        )
+        ranker: rerank.Reranker = rerank.NoReranker()
 
-        self.progress("plan", f"decomposing the question ({self.policy.label})")
-        await asyncio.to_thread(self.plan, st)
-        plan = st.plan
-        assert plan is not None
-
-        async def gather(lib: PaperLibrary | None, queries: list[str]) -> None:
-            if lib is None:
+        async def gather(lib: PaperLibrary, queries: list[str]) -> None:
+            if self.offline:
                 return
             await self.discover(st, lib, queries)
             await self.acquire(st, lib)
 
-        async def body(lib: PaperLibrary | None) -> None:
+        async def work(
+            lib: PaperLibrary, targets: list[tuple[SubQuestion, list[str] | None]]
+        ) -> None:
+            pools = await self.pool(st, lib, targets)
+            ranked = [
+                (sq, await asyncio.to_thread(self.select, sq, pools[sq.id], ranker))
+                for sq, _ in targets
+            ]
+            works = [p.work for _, chosen in ranked for p, _ in chosen]
+            openings = await self.openings(lib, works)
+            await asyncio.to_thread(self.extract_many, st, ranked, openings)
+            await asyncio.to_thread(self.synthesise_many, st, [sq for sq, _ in targets])
+
+        async with PaperLibrary(self.s.gateway_config, self.s.papers_upstream) as lib:
+            # The field's search half (indexed terms, measures, advice) is the library's profile
+            # of the same name; the evidence half (designs, grading, critique) is this policy.
+            if self.policy.profile:
+                self.profile = await lib.profile(self.policy.profile)
+                if self.profile is None:
+                    st.notes.append(
+                        f"The paper library has no '{self.policy.profile}' profile; "
+                        "queries were planned without the field's indexed terms."
+                    )
+            self.prompts = Prompts(self.policy, self.profile)
+            # Reranking by a client model would cost a turn per four passages; it keeps the
+            # library's order (and the library's cross-encoder, if it has one) instead.
+            ranker = rerank.build(
+                self.s, None if isinstance(self.llm, ClientLLM) else self.llm, self.prompts
+            )
+
+            self.progress("plan", f"decomposing the question ({self.policy.label})")
+            await asyncio.to_thread(self.plan, st)
+            plan = st.plan
+            assert plan is not None
+            if self.offline:
+                st.notes.append(
+                    "Offline run: answered from the already-indexed corpus; no discovery or "
+                    "fetching."
+                )
+
             await gather(
                 lib, list(dict.fromkeys(q for sq in plan.subquestions for q in sq.queries))
             )
-
-            async def work(targets: list[tuple[SubQuestion, list[str] | None]]) -> None:
-                pools = await asyncio.to_thread(self.pool, st, targets)
-                ranked = [
-                    (sq, await asyncio.to_thread(self.select, sq, pools[sq.id], ranker))
-                    for sq, _ in targets
-                ]
-                await asyncio.to_thread(self.extract_many, st, ranked)
-                await asyncio.to_thread(self.synthesise_many, st, [sq for sq, _ in targets])
-
             # Evidence passes first; the falsification pass then skips passages they already used.
-            await work([(sq, None) for sq in plan.subquestions if sq.kind != "falsification"])
-            await work([(sq, None) for sq in plan.subquestions if sq.kind == "falsification"])
+            await work(lib, [(sq, None) for sq in plan.subquestions if sq.kind != "falsification"])
+            await work(lib, [(sq, None) for sq in plan.subquestions if sq.kind == "falsification"])
             by_id = {sq.id: sq for sq in plan.subquestions}
             for round_no in range(2, self.s.max_rounds + 1):
                 self.progress("critique", f"round {round_no}: looking for gaps and contradictions")
@@ -743,30 +809,31 @@ class Pipeline:
                     break
                 await gather(lib, [g["query"] for g in gaps])
                 await work(
+                    lib,
                     [
                         (by_id[sid], [g["query"] for g in gaps if g["subquestion"] == sid])
                         for sid in dict.fromkeys(g["subquestion"] for g in gaps)
                         if sid in by_id
-                    ]
+                    ],
                 )
                 # Newly fetched papers can also bear on the falsification pass.
-                await work([(by_id["F1"], None)])
-
-        if self.offline:
-            st.notes.append(
-                "Offline run: answered from the already-indexed corpus; no discovery or fetching."
-            )
-            await body(None)
-        else:
-            async with PaperLibrary(self.s.gateway_config, self.s.papers_upstream) as lib:
-                await body(lib)
+                await work(lib, [(by_id["F1"], None)])
 
         await asyncio.to_thread(self.verify_and_grade, st, verifiers)
         await asyncio.to_thread(self.summarise, st, verifiers[0])
+        self.models["embedding"] = {
+            "name": self.index_stats.get("embedding_model"),
+            "via": "paper library",
+        }
+        reranker = ranker.name
+        if self.library_reranker:
+            reranker = f"library:{self.library_reranker}" + (
+                f" + {ranker.name}" if ranker.name != "none" else ""
+            )
 
         from .render import render  # late import: render depends on this module's State
 
-        answer = render(st, self.index, self.models, self.policy)
+        answer = render(st, self.papers, self.models, self.policy)
         log = {
             "pipeline_version": __version__,
             "prompt_version": self.prompts.version,
@@ -775,17 +842,19 @@ class Pipeline:
                 "version": self.domain.version,
                 "module": self.domain.module,
                 "policy": self.policy.summary(),
+                "profile": self.profile,
             },
             "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "seconds": round(time.time() - started, 1),
             "question": st.question,
             "model_backend": "mcp-client" if self.client else "ollama",
             "models": self.models,
-            "reranker": ranker.name,
+            "reranker": reranker,
+            "collection": self.collection or None,
             "settings": {
                 k: (str(v) if not isinstance(v, (int, str)) else v) for k, v in vars(self.s).items()
             },
-            "index": self.index.stats(),
+            "index": self.index_stats,
             "plan": to_json(st.plan),
             "searches": st.searches,
             "fetches": st.fetches,
@@ -795,7 +864,7 @@ class Pipeline:
             "papers": {
                 work: {k: paper.get(k) for k in ("doi", "title", "year", "text_sha256", "route")}
                 for work in {e.work for e in st.evidence.values()}
-                if (paper := self.index.paper(work))
+                if (paper := self.papers.get(work))
             },
             "claims": to_json(st.claims),
             "insufficient_subquestions": st.insufficient,

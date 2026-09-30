@@ -116,7 +116,7 @@ class Evidence:
     id: str
     subquestion: str
     work: str
-    passage_id: int
+    passage_id: str  # the paper library's passage id, "<work>#p<ord>"
     start: int
     end: int
     direction: str

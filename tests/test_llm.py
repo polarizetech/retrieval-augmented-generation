@@ -38,9 +38,7 @@ class FakeStream:
 
 class StreamDeadlineTests(unittest.TestCase):
     def setUp(self):
-        self.ollama = Ollama(
-            Settings(ollama_url="http://fake", text_model="t", embedding_model="e", num_ctx=8192)
-        )
+        self.ollama = Ollama(Settings(ollama_url="http://fake", text_model="t", num_ctx=8192))
 
     def test_runaway_stream_hits_wall_clock_deadline(self):
         """A response that never closes the JSON object, but keeps streaming small chunks

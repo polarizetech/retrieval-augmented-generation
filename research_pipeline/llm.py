@@ -1,4 +1,4 @@
-"""Minimal Ollama client: schema-constrained JSON chat and embeddings.
+"""Minimal Ollama client: schema-constrained JSON chat.
 
 Uses the native API rather than the OpenAI-compatible surface because `format` (JSON schema
 constrained decoding) and `options.num_ctx` are only reliable there. A small model that is merely
@@ -186,20 +186,6 @@ class Ollama:
             }
         )
         return text
-
-    def embed(self, texts: list[str], *, timeout: float = 300.0) -> list[list[float]]:
-        if not texts:
-            return []
-        body = {
-            "model": self.s.embedding_model,
-            "input": texts,
-            "keep_alive": self.s.ollama_keep_alive,
-        }
-        out = self._post("/api/embed", body, timeout)
-        vectors = out.get("embeddings") or []
-        if len(vectors) != len(texts):
-            raise LLMError(f"embed: asked for {len(texts)} vectors, got {len(vectors)}")
-        return vectors
 
     def resolve(self, model: str) -> tuple[str, str | None]:
         """Map a configured model name onto an installed tag; return (tag, digest).

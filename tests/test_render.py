@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import pytest
 
-from research_pipeline.index import PassageIndex
 from research_pipeline.pipeline import State
 from research_pipeline.render import render
 from research_pipeline.schema import Claim, Plan, SubQuestion
 from tests.conftest import make_evidence
 
+# What the paper library says about the cited work (render prints the reference from it).
+LIBRARY = {
+    "W1": {
+        "doi": "10.1000/w1",
+        "title": "Training and blood pressure",
+        "year": 2020,
+        "authors": ["Ada Lovelace", "Alan Turing"],
+    }
+}
+
 MODELS = {"text": {"name": "m"}, "verifiers": [{"name": "m"}]}
 
 
-def answer(index: PassageIndex, direction: str) -> str:
+def answer(direction: str) -> str:
     st = State("Does training lower blood pressure?")
     st.plan = Plan(
         st.question,
@@ -36,7 +45,7 @@ def answer(index: PassageIndex, direction: str) -> str:
             label="moderate",
         )
     )
-    return render(st, index, MODELS)
+    return render(st, LIBRARY, MODELS)
 
 
 def conflicting_section(text: str) -> str:
@@ -44,16 +53,14 @@ def conflicting_section(text: str) -> str:
 
 
 @pytest.mark.parametrize("direction", ["denies", "mixed"])
-def test_a_null_result_is_shown_as_opposing_evidence(index: PassageIndex, direction: str) -> None:
-    section = conflicting_section(answer(index, direction))
+def test_a_null_result_is_shown_as_opposing_evidence(direction: str) -> None:
+    section = conflicting_section(answer(direction))
     assert "Found by searching specifically for null results" in section
     assert "No opposing result was retrieved" not in section
 
 
-def test_a_supporting_result_from_the_null_search_is_not_called_opposing(
-    index: PassageIndex,
-) -> None:
-    section = conflicting_section(answer(index, "affirms"))
+def test_a_supporting_result_from_the_null_search_is_not_called_opposing() -> None:
+    section = conflicting_section(answer("affirms"))
     assert "No opposing result was retrieved" in section
     assert "found supporting results instead" in section
     assert "Found by searching specifically" not in section

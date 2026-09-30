@@ -12,35 +12,55 @@ import pytest
 from mcp import ClientSession
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult, TextContent
+from paper_fetch import Library, LocalStore, OpenAlex
+from paper_fetch.passages import PassageIndex
 
 from research_mcp import gateway
-from research_pipeline.config import Settings
-from research_pipeline.index import PassageIndex
 from research_pipeline.papers import PaperLibrary, PapersError
-from tests.conftest import PAPER, fake_embed
+from tests.conftest import OfflineHttp, hold, hold_w1
 
-FAKE_SERVER = Path(__file__).parent / "fixtures" / "fake_papers_server.py"
-
-
-class OfflineOllama:
-    def __init__(self, _: Settings) -> None:
-        pass
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return fake_embed(texts)
+OPEN_TEXT = "Heart rate variability rose with paced breathing in 30 adults. " * 20
+DEAD = "http://127.0.0.1:9"  # every request through this proxy is refused at once
 
 
 @pytest.fixture
 def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The real paper-fetch MCP server as the `papers` upstream, over a local store that holds
+    W1 (indexed), an open paper not yet indexed, and a paper with no open copy. Nothing can reach
+    the network: search has one provider and every proxy points at a closed port."""
     monkeypatch.setenv("PIPELINE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("PIPELINE_RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.setenv("PIPELINE_EMBEDDING_MODEL", "fake-embed")
     monkeypatch.delenv("SEARXNG_URL", raising=False)
-    monkeypatch.setattr(gateway, "Ollama", OfflineOllama)
-    settings = Settings()
-    PassageIndex(settings.index_path, "fake-embed").add(
-        {"work": "W1", "title": "Training and blood pressure"}, PAPER, fake_embed
+    store_dir, index_file = tmp_path / "papers", tmp_path / "passages.sqlite"
+    lib = Library(
+        LocalStore(store_dir),
+        OpenAlex(http=OfflineHttp(), api_key="", email=""),  # type: ignore[arg-type]
+        providers=[],
+        search_providers=[],
     )
+    lib.passages = PassageIndex(index_file)  # lexical, as the upstream (no embedding model) is
+    hold_w1(lib)
+    lib.index_works()
+    hold(lib, "W2", OPEN_TEXT, doi="10.1000/open", title="Paced breathing and HRV")
+    hold(lib, "W3", "", doi="10.1000/closed", title="A closed trial", full_text=False)
+    lib.passages.close()
+    env = {
+        "PAPER_FETCH_STORE": "local",
+        "PAPER_FETCH_DATA_DIR": str(store_dir),
+        "PAPER_FETCH_INDEX": str(index_file),
+        "PAPER_FETCH_ENV_DIR": str(tmp_path / "no-env"),
+        "PAPER_FETCH_PROFILE_DIR": str(tmp_path / "no-profiles"),
+        "PAPER_FETCH_SEARCH_PROVIDERS": "doaj",
+        "PAPER_FETCH_WEB_FALLBACK": "0",
+        "PAPER_FETCH_EMBED_MODEL": "",
+        "PAPER_FETCH_RERANK_MODEL": "",
+        "HTTP_PROXY": DEAD,
+        "HTTPS_PROXY": DEAD,
+        "http_proxy": DEAD,
+        "https_proxy": DEAD,
+        "NO_PROXY": "",
+        "no_proxy": "",
+    }
     path = tmp_path / "gateway.json"
     path.write_text(
         json.dumps(
@@ -48,7 +68,8 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "upstreams": {
                     "papers": {
                         "command": sys.executable,
-                        "args": [str(FAKE_SERVER)],
+                        "args": ["-c", "from paper_fetch.mcp_server import main; main()"],
+                        "env": env,
                         "write_tools": ["fetch"],
                         "open_world_tools": ["search", "fetch"],
                     },
@@ -105,10 +126,12 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
         assert fetch.readOnlyHint is False
         assert fetch.openWorldHint is True
 
+        library_tools = {n for n in tools if n.startswith("papers__")}
+        assert {"papers__retrieve", "papers__recall", "papers__profiles"} <= library_tools
         status = payload(await session.call_tool("gateway_status", {}))
-        assert status["connected"] == {"papers": 3}
+        assert status["connected"] == {"papers": len(library_tools)}
         assert set(status["errors"]) == {"broken"}
-        assert status["total_tools"] == 12
+        assert status["total_tools"] == len(library_tools) + 9
 
     await with_session(config, tmp_path, body)
 
@@ -137,7 +160,7 @@ async def test_a_server_section_names_the_instance_and_can_drop_the_builtin_tool
         refused = await session.call_tool("rag__search", {"query": "x"})
         assert refused.isError
         status = payload(await session.call_tool("gateway_status", {}))
-        assert status["total_tools"] == 4
+        assert status["total_tools"] == len({n for n in names if n.startswith("papers__")}) + 1
 
     await with_session(other, tmp_path, body)
 
@@ -150,7 +173,7 @@ async def test_rag_tools_round_trip(config: Path, tmp_path: Path) -> None:
                 "rag__retrieve_evidence", {"query": "lowered systolic pressure"}
             )
         )
-        assert found["retrieval"] == "hybrid"
+        assert found["retrieval"] == "lexical"  # the upstream library has no embedding model
         hit = found["results"][0]
         claim = {
             "text": "Aerobic training lowered systolic pressure by 5 mmHg.",
@@ -186,7 +209,9 @@ async def test_search_is_forwarded_and_errors_are_reported(config: Path, tmp_pat
     async def body(session: ClientSession) -> None:
         found = payload(await session.call_tool("rag__search", {"query": "exercise"}))
         assert found["ok"] is True
-        assert found["data"]["hits"][0]["title"] == "A paper about exercise"
+        # The one provider cannot be reached: reported by name, never as "no results".
+        assert found["data"]["providers"]["doaj"]["status"] == "unavailable"
+        assert found["data"]["search_id"]  # and the library remembered the search
         web = await session.call_tool("web__search", {"query": "x"})
         assert web.isError
         unknown = await session.call_tool("nope__tool", {})
@@ -199,9 +224,17 @@ async def test_search_is_forwarded_and_errors_are_reported(config: Path, tmp_pat
 async def test_the_pipeline_client_speaks_the_library_contract(config: Path) -> None:
     async with PaperLibrary(config, "papers") as library:
         found = await library.search("exercise")
-        assert found["providers"] == {"fake": {"status": "ok"}}
+        assert found["providers"]["doaj"]["status"] == "unavailable"
+        held = await library.passages("W1", 0, 1)
+        assert held[0].id == "W1#p0"
+        assert held[0].paper["title"] == "Training and blood pressure"
+        got = await library.retrieve(["lowered systolic pressure"], limit=1)
+        assert got["results"][0]["passages"][0]["work"] == "W1"
+        assert (await library.status())["passages"]["papers"] == 1
+        assert await library.profile("no-such-field") is None
+        assert (await library.profile("cardiovascular") or {})["terms"]
         with pytest.raises(PapersError) as refused:
-            await library.fetch("10.1000/missing")
+            await library.passages("W999")
         assert refused.value.code == "not_found"
 
 
@@ -232,26 +265,21 @@ async def test_index_paper_makes_a_fetched_paper_citable(config: Path, tmp_path:
         before = payload(
             await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
         )
-        assert all(r["work"] != "W-open" for r in before["results"])
+        assert all(r["work"] != "W2" for r in before["results"])
 
         done = payload(
             await session.call_tool(
-                "rag__index_paper",
-                {"identifiers": ["10.1000/open", "10.1000/closed", "10.1000/missing"]},
+                "rag__index_paper", {"identifiers": ["10.1000/open", "10.1000/closed"]}
             )
         )
         status = {r["identifier"]: r["status"] for r in done["results"]}
-        assert status == {
-            "10.1000/open": "indexed",
-            "10.1000/closed": "no_open_full_text",
-            "10.1000/missing": "not_found",
-        }
+        assert status == {"10.1000/open": "indexed", "10.1000/closed": "no_open_full_text"}
         assert done["index"]["papers"] == 2
 
         after = payload(
             await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
         )
-        assert after["results"][0]["work"] == "W-open"
+        assert after["results"][0]["work"] == "W2"
 
         again = payload(
             await session.call_tool("rag__index_paper", {"identifiers": ["10.1000/open"]})

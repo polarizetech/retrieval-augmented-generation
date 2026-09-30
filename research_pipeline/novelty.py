@@ -7,9 +7,9 @@ always writes a prior-art dossier, most of all when nothing is found.
         --established "closest established terminology" \
         --queries "phrasing A" "phrasing B" "phrasing C" "phrasing D"
 
-What it adds to the keyword probe it replaces (`research/scripts/novelty_probe.py`): that probe
-counted ANY search hit as prior art, and a keyword search nearly always hits something, so it could
-not tell "a paper on the same topic" from "a paper that already states this". Here the nearest
+What it adds to a keyword probe: a keyword probe counts ANY search hit as prior art, and a
+keyword search nearly always hits something, so it cannot tell "a paper on the same topic" from
+"a paper that already states this". Here the nearest
 papers are fetched in full and every retrieved passage is put to the pipeline's own verifier with
 the candidate statement as the claim. The verifier's question -- does this passage state the claim
 itself, with the same population, conditions, direction and numbers -- is exactly the prior-art
@@ -114,7 +114,7 @@ def check_inputs(cid: str, statement: str, queries: list[str], established: list
 class Reading:
     """One passage put to the verifiers, with the candidate statement as the claim."""
 
-    passage_id: int
+    passage_id: str
     work: str
     title: str | None
     doi: str | None
@@ -209,7 +209,7 @@ class NoveltyProbe:
     def read(self, statement: str, passages: list[Any], verifiers: list[str]) -> list[Reading]:
         readings = []
         for p in passages:
-            paper = self.pipe.index.paper(p.work) or {}
+            paper = self.pipe.papers.get(p.work) or {}
             readings.append(
                 Reading(p.id, p.work, paper.get("title"), paper.get("doi"), paper.get("year"))
             )
@@ -248,12 +248,11 @@ class NoveltyProbe:
         sq = SubQuestion("S1", statement.strip(), "evidence", all_q)
         st.plan = Plan(statement.strip(), "novelty_probe", statement.strip(), [sq])
 
-        if not self.offline:
-            async with PaperLibrary(self.s.gateway_config, self.s.papers_upstream) as lib:
+        async with PaperLibrary(self.s.gateway_config, self.s.papers_upstream) as lib:
+            if not self.offline:
                 await self.pipe.discover(st, lib, all_q)
                 await self.pipe.acquire(st, lib)
-
-        pools = await asyncio.to_thread(self.pipe.pool, st, [(sq, None)])
+            pools = await self.pipe.pool(st, lib, [(sq, None)])
         saved = self.s.passages_per_subquestion
         self.s.passages_per_subquestion = max(saved, PASSAGES)
         try:

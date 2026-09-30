@@ -1,0 +1,33 @@
+# The SEARCH half of the field: a discipline profile for the paper library (paper-fetch).
+# Copy to ~/.config/paper-fetch/profiles/<slug>.toml, or contribute it to paper-fetch.
+# The EVIDENCE half (study designs, grading, critique) is the package in my_domain/.
+slug = "my-domain"
+label = "My domain"
+scope = "One sentence. A reader is shown this in the answer, so it must say what was searched."
+search_guidance = """
+How to write a query that this field's databases will actually match.
+"""
+
+# A term the field is indexed under. A `mesh` anchor MUST carry a real descriptor id (look it up:
+# https://id.nlm.nih.gov/mesh/lookup/descriptor?label=...&match=exact); a term without one is
+# `free-text`. A query using a synonym is also run with the label, never the reverse.
+[[anchors]]
+system = "mesh"
+label = "Replace me with a descriptor you have actually looked up"
+id = "D000000"
+
+[[anchors]]
+system = "free-text"
+label = "a term with no controlled descriptor"
+synonyms = ["its common abbreviation", "the older name for it"]
+
+[[measures]]
+label = "Example quantity"
+units = ["unit"]
+
+[[sources]]
+key = "pubmed"
+label = "PubMed / MEDLINE"
+role = "literature"
+url = "https://pubmed.ncbi.nlm.nih.gov/"
+why = "Why this source matters for your field."
