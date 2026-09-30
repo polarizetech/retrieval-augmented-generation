@@ -12,7 +12,7 @@ policy serialises into run.json and behaviour would not.
 from __future__ import annotations
 
 from research_pipeline.domains import (
-    Anchor, CritiqueRule, DomainPolicy, Measure, Source, StudyDesign, Taxonomy, declare,
+    CritiqueRule, DomainPolicy, Measure, StudyDesign, Taxonomy, declare,
 )
 
 __version__ = "0.1.0"
@@ -38,19 +38,9 @@ TAXONOMY = Taxonomy((
     StudyDesign("unclear", "Unclear", "the text does not say", rank=0),
 ))
 
-# What your field calls things, in a vocabulary that has ids. These seed query expansion and are
-# written into the run log, so a run can state which vocabulary it searched.
-#
-# A `mesh` anchor MUST carry a real descriptor id; the dataclass rejects anything else. Do not
-# guess one. A plausible-looking fake id is worse than no id at all, because it would be logged as
-# provenance for a search that never happened. If a term has no descriptor — plenty do not —
-# declare it `free-text` with its synonyms. That is not a lesser anchor, it is an accurate one,
-# and for a term with no descriptor the synonyms are doing all the retrieval work anyway.
-ANCHORS = (
-    Anchor("mesh", "D000000", "Replace me with a descriptor you have actually looked up"),
-    Anchor("free-text", "", "a term with no controlled descriptor",
-           synonyms=("its common abbreviation", "the older name for it")),
-)
+# What your field calls things, where its evidence lives and how to write its queries is the
+# SEARCH half of the field. It is not declared here: it is a discipline profile in the paper
+# library (see ../profile.toml, and docs/DOMAINS.md). This package is the EVIDENCE half.
 
 # Quantities your field reports, with the units they are legitimately reported in. Declaring these
 # upgrades the engine's number check: a claim's "40 mmHg" will no longer count as supported by a
@@ -59,26 +49,17 @@ MEASURES = (
     Measure("example", "Example quantity", ("unit",), aliases=("what people call it",)),
 )
 
-# Where this field's evidence lives, and why each source is worth trusting. The engine does not
-# fetch from these itself; it records them and tells the planner which vocabularies its queries
-# will be matched against, which is what actually changes the queries a small model writes.
-SOURCES = (
-    Source("pubmed", "PubMed / MEDLINE", "literature", "https://pubmed.ncbi.nlm.nih.gov/",
-           "Why this source matters for your field."),
-)
-
 POLICY = DomainPolicy(
     slug="my-domain",
     label="My domain",
     scope="One sentence. A reader is shown this in the answer, so it must say what was searched.",
     taxonomy=TAXONOMY,
-    sources=SOURCES,
-    anchors=ANCHORS,
     measures=MEASURES,
+    # The paper library's profile for this field; defaults to the slug.
+    profile="my-domain",
 
     # Prompt fragments. Each is APPENDED to an engine prompt; none replaces one. You can tighten
     # the engine's rules, never talk it out of one.
-    search_guidance="How to write a query that this field's databases will actually match.",
     reporting_rule="What a finding must keep to stay meaningful here (population, conditions...).",
     generalisation_rule="What may NOT be carried across populations, preparations or measures.",
     gap_guidance="What the critic should notice is missing.",

@@ -55,11 +55,6 @@ class Settings:
     verifier_model: str = field(
         default_factory=lambda: os.environ.get("PIPELINE_VERIFIER_MODEL", "")
     )
-    embedding_model: str = field(
-        default_factory=lambda: os.environ.get(
-            "PIPELINE_EMBEDDING_MODEL", os.environ.get("EMBEDDING_MODEL", "bge-m3")
-        )
-    )
     num_ctx: int = field(default_factory=lambda: _int("PIPELINE_NUM_CTX", 16384))
     # How long Ollama keeps a model loaded after a call. Its default (5 minutes) unloads the text
     # model during a run's network-bound stages, and every reload costs seconds.
@@ -74,14 +69,10 @@ class Settings:
     client_batch: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_BATCH", 12))
     # A run whose client stops answering fails after this long instead of waiting forever.
     client_timeout: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TIMEOUT", 1800))
+    # "auto": the local model rescores passages when it is the pipeline's model; a client model
+    # does not (a turn per four passages). "llm" or "none" force it. Retrieval, embeddings and the
+    # optional cross-encoder are the paper library's (PAPER_FETCH_EMBED_MODEL, _RERANK_MODEL).
     reranker: str = field(default_factory=lambda: os.environ.get("PIPELINE_RERANKER", "auto"))
-    # "<hub repo>::<onnx file>". int8 bge-reranker-v2-m3 is a 571 MB download on first use.
-    reranker_model: str = field(
-        default_factory=lambda: os.environ.get(
-            "PIPELINE_RERANKER_MODEL",
-            "onnx-community/bge-reranker-v2-m3-ONNX::onnx/model_int8.onnx",
-        )
-    )
 
     data_dir: Path = field(default_factory=lambda: _path("PIPELINE_DATA_DIR", "data/pipeline"))
     runs_dir: Path = field(default_factory=lambda: _path("PIPELINE_RUNS_DIR", "runs"))
@@ -95,6 +86,9 @@ class Settings:
     # The field to research, by slug ("cardiovascular") or distribution name. Empty means the
     # generic policy: the engine answers, without a field's vocabulary or grading rules.
     domain: str = field(default_factory=lambda: os.environ.get("PIPELINE_DOMAIN", ""))
+    # A paper-library collection to work in: searches and fetches are recorded there, and
+    # retrieval reads only its papers. Empty: retrieval reads every indexed paper.
+    collection: str = field(default_factory=lambda: os.environ.get("PIPELINE_COLLECTION", ""))
 
     # Budgets. Every one of these bounds work on a slow local model; none is a quality claim.
     max_subquestions: int = field(default_factory=lambda: _int("PIPELINE_MAX_SUBQUESTIONS", 4))
@@ -113,5 +107,5 @@ class Settings:
     fetch_concurrency: int = field(default_factory=lambda: _int("PIPELINE_FETCH_CONCURRENCY", 4))
 
     @property
-    def index_path(self) -> Path:
-        return self.data_dir / "passages.sqlite"
+    def notes_path(self) -> Path:
+        return self.data_dir / "notes.sqlite"

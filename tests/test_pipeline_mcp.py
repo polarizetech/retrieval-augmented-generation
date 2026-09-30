@@ -13,55 +13,43 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from paper_fetch import Library
 
 from research_pipeline import mcp_server, verify
-from research_pipeline.config import Settings
-from research_pipeline.index import PassageIndex
+from research_pipeline import pipeline as pipeline_module
 from research_pipeline.llm import Ollama
-from tests.conftest import PAPER, fake_embed
+from tests.conftest import PAPER, LibraryAdapter, hold, hold_w1, papers_library
 from tests.test_pipeline import QUESTION, ScriptedModel
 
 
-class EmbeddingsOnly(Ollama):
-    """Client mode still embeds locally; nothing else may reach Ollama."""
-
-    def embed(self, texts: list[str], **_: Any) -> list[list[float]]:
-        return fake_embed(texts)
+class NoChat(Ollama):
+    """In client mode nothing may reach Ollama: the client writes, the library embeds."""
 
     def resolve(self, model: str) -> tuple[str, str | None]:
-        return model, "sha256:embed"
+        return model, None
 
     def chat_json(self, *_: Any, **__: Any) -> dict[str, Any]:
         raise AssertionError("client mode must not send chat calls to Ollama")
 
 
 @pytest.fixture
-def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Library:
     for key, value in {
         "PIPELINE_DATA_DIR": str(tmp_path / "data"),
         "PIPELINE_RUNS_DIR": str(tmp_path / "runs"),
-        "PIPELINE_EMBEDDING_MODEL": "fake-embed",
         "PIPELINE_RERANKER": "none",
         "PIPELINE_VERIFIER_MODEL": "",
         "PIPELINE_MCP_LLM": "client",
         "PIPELINE_CLIENT_TURN_WAIT": "5",
     }.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(mcp_server, "Ollama", EmbeddingsOnly)
+    monkeypatch.setattr(mcp_server, "Ollama", NoChat)
     monkeypatch.setattr(mcp_server, "RUNS", {})
-    PassageIndex(Settings().index_path, "fake-embed").add(
-        {
-            "work": "W1",
-            "doi": "10.1000/w1",
-            "title": "Training and blood pressure",
-            "year": 2020,
-            "authors": ["Ada Lovelace"],
-            "route": "fixture",
-        },
-        PAPER,
-        fake_embed,
-    )
-    return tmp_path
+    library = papers_library(tmp_path)
+    hold_w1(library)
+    library.index_works()
+    monkeypatch.setattr(pipeline_module, "PaperLibrary", lambda *_: LibraryAdapter(library))
+    return library
 
 
 class CorrectingModel(ScriptedModel):
@@ -98,7 +86,7 @@ def drive(model: ScriptedModel) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return asyncio.run(conversation())
 
 
-def test_the_client_runs_every_model_step(env: Path) -> None:
+def test_the_client_runs_every_model_step(env: Library) -> None:
     final, turns = drive(CorrectingModel())
     assert final["status"] == "done", final
     # The draft citing an unretrieved evidence id was refused by the schema, then corrected.
@@ -116,7 +104,7 @@ def test_the_client_runs_every_model_step(env: Path) -> None:
     assert "shares the writer's blind spots" in final["answer"]
 
 
-def test_model_calls_arrive_in_batches(env: Path) -> None:
+def test_model_calls_arrive_in_batches(env: Library) -> None:
     _, turns = drive(CorrectingModel())
     task_turns = [t for t in turns if t["status"] == "tasks"]
     handed_out = sum(len(t["tasks"]) for t in task_turns)
@@ -133,7 +121,7 @@ def test_model_calls_arrive_in_batches(env: Path) -> None:
     assert len(extraction["schemas"]) < len(extraction["tasks"])
 
 
-def test_a_wrong_answer_is_refused_and_asked_again(env: Path) -> None:
+def test_a_wrong_answer_is_refused_and_asked_again(env: Library) -> None:
     async def conversation() -> dict[str, Any]:
         first = json.loads(await mcp_server.research_start(QUESTION, offline=True))
         [task] = first["tasks"]
@@ -151,7 +139,7 @@ def test_a_wrong_answer_is_refused_and_asked_again(env: Path) -> None:
     asyncio.run(conversation())
 
 
-def test_one_run_at_a_time(env: Path) -> None:
+def test_one_run_at_a_time(env: Library) -> None:
     async def conversation() -> None:
         first = json.loads(await mcp_server.research_start(QUESTION, offline=True))
         second = json.loads(await mcp_server.research_start(QUESTION, offline=True))
@@ -168,42 +156,40 @@ def test_one_run_at_a_time(env: Path) -> None:
     asyncio.run(conversation())
 
 
-def test_unknown_runs_are_reported(env: Path) -> None:
+def test_unknown_runs_are_reported(env: Library) -> None:
     reply = json.loads(asyncio.run(mcp_server.research_continue("nope", [])))
     assert "unknown run_id" in reply["error"]
 
 
-def test_concurrent_model_calls_never_touch_the_index(
-    env: Path, monkeypatch: pytest.MonkeyPatch
+def test_concurrent_model_calls_never_touch_the_note_store(
+    env: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Model calls run concurrently; the SQLite index must not. (Found by a live run.)"""
+    """Model calls run concurrently; the SQLite note store must not. (Found by a live run.)"""
     import threading
 
-    from research_pipeline import index as index_module
+    from research_pipeline.notes import NoteStore
 
-    PassageIndex(Settings().index_path, "fake-embed").add(
-        {
-            "work": "W2",
-            "doi": "10.1000/w2",
-            "title": "Another trial",
-            "year": 2021,
-            "authors": ["Grace Hopper"],
-            "route": "fixture",
-        },
+    hold(
+        env,
+        "W2",
         PAPER.replace("48 adults", "52 adults"),
-        fake_embed,
+        doi="10.1000/w2",
+        title="Another trial",
+        year=2021,
     )
+    env.index_works()
     threads: set[str] = set()
-    for name in ("paper", "opening", "note", "set_note"):
-        original = getattr(index_module.PassageIndex, name)
+    for name in ("get", "set"):
+        original = getattr(NoteStore, name)
 
         def spy(self: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
             threads.add(threading.current_thread().name)
             return _original(self, *args, **kwargs)
 
-        monkeypatch.setattr(index_module.PassageIndex, name, spy)
+        monkeypatch.setattr(NoteStore, name, spy)
     final, _ = drive(CorrectingModel())
     assert final["status"] == "done", final
+    assert threads  # the notes were used
     # Stages run one after another (in the event loop or an asyncio.to_thread worker); only the
-    # model-call pool runs concurrently, and it must never reach the index.
+    # model-call pool runs concurrently, and it must never reach the note store.
     assert not any(name.startswith("ThreadPoolExecutor") for name in threads), threads

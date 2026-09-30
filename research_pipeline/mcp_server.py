@@ -28,8 +28,8 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
-from .index import PassageIndex
 from .llm import Ollama
+from .papers import PaperLibrary, PapersError
 from .pipeline import Pipeline
 
 load_env()
@@ -94,20 +94,27 @@ async def _execute(run: Run, pipeline: Pipeline) -> None:
 
 @mcp.tool()
 async def research_start(
-    question: str, offline: bool = False, domain: str = "", ctx: Context | None = None
+    question: str,
+    offline: bool = False,
+    domain: str = "",
+    collection: str = "",
+    ctx: Context | None = None,
 ) -> str:
     """Start a research run and return its first step.
 
     Args:
         question: a scientific question answerable from published literature.
-        offline: true = use only papers already indexed locally (no search, no downloads).
-        domain: optional field whose evidence rules apply, e.g. "cardiovascular".
+        offline: true = use only papers already indexed (no search, no downloads).
+        domain: optional field, e.g. "cardiovascular": its evidence rules apply here, and the
+            paper library searches with its discipline profile.
+        collection: optional paper-library collection (see papers__collections) to search, fetch
+            into and retrieve from; it must exist.
     """
     busy = next((rid for rid, r in RUNS.items() if not r.done), None)
     if busy:
         return json.dumps(
             {
-                "error": "a run is already in progress; one index serves one run at a time",
+                "error": "a run is already in progress; one run at a time",
                 "active_run_id": busy,
                 "next": "research_continue(active_run_id, answers=[])",
             }
@@ -120,7 +127,14 @@ async def research_start(
     def progress(stage: str, detail: str) -> None:
         run.stage, run.detail = stage, detail
 
-    pipeline = Pipeline(settings, progress, offline=offline, domain=domain or None, llm=run.client)
+    pipeline = Pipeline(
+        settings,
+        progress,
+        offline=offline,
+        domain=domain or None,
+        llm=run.client,
+        collection=collection or None,
+    )
     run_id = uuid.uuid4().hex[:10]
     RUNS[run_id] = run
     run.task = asyncio.create_task(_execute(run, pipeline))
@@ -241,16 +255,21 @@ async def research_status(run_id: str) -> str:
 
 @mcp.tool()
 async def corpus_status() -> str:
-    """Size of the local passage index and the models configured for the pipeline."""
+    """Size of the paper library's passage index, and the models configured for the pipeline."""
     s = Settings()
+    try:
+        async with PaperLibrary(s.gateway_config, s.papers_upstream) as lib:
+            library = await lib.status()
+        index: Any = library.get("passages")
+    except (PapersError, OSError) as exc:
+        index = f"paper library unavailable: {exc}"
     return json.dumps(
         {
-            "index": PassageIndex(s.index_path, s.embedding_model).stats(),
+            "index": index,
             "model_backend": "mcp-client" if s.mcp_llm == "client" else "ollama",
             "text_model": s.text_model,
             "verifier_model": s.verifier_model or "(same as text)",
-            "embedding_model": s.embedding_model,
-            "reranker": s.reranker_model or s.reranker,
+            "reranker": s.reranker,
         }
     )
 
