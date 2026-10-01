@@ -20,6 +20,14 @@ class LLMError(RuntimeError):
     pass
 
 
+class ModelOutputError(LLMError):
+    """One call produced no usable answer (ran out of time or tokens, or broke its schema).
+
+    Unlike an unreachable server or a client that stopped answering, this is about one call, so a
+    stage may record it against that call and go on.
+    """
+
+
 class ChatModel(Protocol):
     """What the stages need from a model: Ollama, or the MCP client (client_llm.ClientLLM)."""
 
@@ -70,7 +78,12 @@ class Ollama:
             "keep_alive": self.s.ollama_keep_alive,
             "format": schema,
             "think": False,
-            "options": {"temperature": temperature, "num_ctx": self.s.num_ctx, "seed": 7},
+            "options": {
+                "temperature": temperature,
+                "num_ctx": self.s.num_ctx,
+                "num_predict": self.s.max_output_tokens,
+                "seed": 7,
+            },
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
         started = time.time()
@@ -92,7 +105,10 @@ class Ollama:
             }
         )
         if value is None:
-            raise LLMError(f"{task}: model returned non-JSON despite schema: {text[:200]!r}")
+            raise ModelOutputError(
+                f"{task}: no complete JSON answer (non-JSON despite the schema, or cut off at the "
+                f"{self.s.max_output_tokens}-token cap; {len(text)} chars): {text[:200]!r}"
+            )
         return value
 
     def _stream_json(
@@ -131,7 +147,7 @@ class Ollama:
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 for line in response:
                     if time.monotonic() > deadline:
-                        raise LLMError(
+                        raise ModelOutputError(
                             f"ollama /api/chat: exceeded wall-clock timeout of {timeout}s "
                             f"({len(text)} chars generated so far)"
                         )
