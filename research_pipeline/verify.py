@@ -25,7 +25,7 @@ from functools import partial
 from typing import Any
 
 from .domains import GENERIC, DomainPolicy
-from .llm import ChatModel
+from .llm import ChatModel, ModelOutputError
 from .prompts import DEFAULT, Prompts, wrap
 from .schema import Check, Claim, Evidence
 
@@ -81,6 +81,9 @@ MIN_QUOTE_WORDS = 5
 QUOTE_REPAIR_THRESHOLD = 0.85
 
 VERDICT_NUMBERS = "NUMBER_NOT_IN_SOURCE"
+# A claim no verifier returned a verdict on. It is removed and counted, never kept unchecked.
+VERDICT_UNCHECKED = "VERIFIER_FAILED"
+CHECK_FAILED = "CHECK_FAILED"  # one verifier call that produced no verdict
 
 
 def _norm(text: str) -> str:
@@ -237,13 +240,18 @@ def judge(
         reply = llm.chat_text("verify", model, f"Document: {source_text}\nClaim: {claim_text}")
         verdict = "SUPPORTED" if reply.lower().startswith("yes") else "NOT_SUPPORTED"
         return verdict, f"minicheck: {reply[:20]}"
-    got = llm.chat_json(
-        "verify",
-        prompts.verify_system,
-        f"Claim: {claim_text}\n\nSource passage:\n{wrap(source_text)}",
-        prompts.VERIFY_SCHEMA,
-        model=model,
-    )
+    try:
+        got = llm.chat_json(
+            "verify",
+            prompts.verify_system,
+            f"Claim: {claim_text}\n\nSource passage:\n{wrap(source_text)}",
+            prompts.VERIFY_SCHEMA,
+            model=model,
+        )
+    except ModelOutputError as exc:
+        # One call that produced no verdict is that verifier not accepting this evidence. It must
+        # not end the run, and it must not count as support.
+        return CHECK_FAILED, f"no verdict: {str(exc)[:200]}"
     verdict = got.get("verdict", "NOT_SUPPORTED")
     return verdict, f"claim adds: {str(got.get('claim_adds', ''))[:280]}"
 
@@ -320,5 +328,7 @@ def settle(
         claim.verdict = "CONTRADICTED"
     elif "PARTIALLY_SUPPORTED" in verdicts:
         claim.verdict = "PARTIALLY_SUPPORTED"
+    elif verdicts == {CHECK_FAILED}:  # no verifier answered at all: nothing was checked
+        claim.verdict = VERDICT_UNCHECKED
     else:
         claim.verdict = "NOT_SUPPORTED"

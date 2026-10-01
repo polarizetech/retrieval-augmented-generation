@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from .domains import GENERIC, DomainPolicy
 from .schema import source_status
-from .verify import VERDICT_NUMBERS
+from .verify import VERDICT_NUMBERS, VERDICT_UNCHECKED
 
 if TYPE_CHECKING:
     from .pipeline import State
@@ -63,8 +63,10 @@ def render(
     removed = [
         c
         for c in st.claims
-        if c.verdict not in ("SUPPORTED", "DISPUTED", "RETRACTED_SOURCE", VERDICT_NUMBERS)
+        if c.verdict
+        not in ("SUPPORTED", "DISPUTED", "RETRACTED_SOURCE", VERDICT_NUMBERS, VERDICT_UNCHECKED)
     ]
+    unchecked = [c for c in st.claims if c.verdict == VERDICT_UNCHECKED]
     wrong_numbers = [c for c in st.claims if c.verdict == VERDICT_NUMBERS]
     out = [f"# {st.question}", ""]
 
@@ -164,6 +166,12 @@ def render(
             f"- {len(wrong_numbers)} drafted claim(s) were removed because they stated a number "
             "their cited passage does not contain: "
             + "; ".join(f"“{c.text[:90]}”" for c in wrong_numbers[:4])
+        )
+    if unchecked:
+        out.append(
+            f"- {len(unchecked)} drafted claim(s) were removed because the verifier returned no "
+            "verdict on them (the call ran out of time or tokens): "
+            + "; ".join(f"“{c.text[:90]}”" for c in unchecked[:4])
         )
     unread = [c for c in st.candidates.values() if c.outcome == "not_obtainable"]
     if unread:

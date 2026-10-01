@@ -56,6 +56,10 @@ class Settings:
         default_factory=lambda: os.environ.get("PIPELINE_VERIFIER_MODEL", "")
     )
     num_ctx: int = field(default_factory=lambda: _int("PIPELINE_NUM_CTX", 16384))
+    # Most tokens one structured call may generate. The largest legitimate answer (a plan or a
+    # synthesis) is a few hundred; without a cap, a call whose model never closes its answer ran
+    # for the whole 600 s wall-clock limit (observed: 16,000 tokens, none of them output).
+    max_output_tokens: int = field(default_factory=lambda: _int("PIPELINE_MAX_OUTPUT_TOKENS", 2048))
     # How long Ollama keeps a model loaded after a call. Its default (5 minutes) unloads the text
     # model during a run's network-bound stages, and every reload costs seconds.
     ollama_keep_alive: str = field(
