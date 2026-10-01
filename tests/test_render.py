@@ -64,3 +64,23 @@ def test_a_supporting_result_from_the_null_search_is_not_called_opposing() -> No
     assert "No opposing result was retrieved" in section
     assert "found supporting results instead" in section
     assert "Found by searching specifically" not in section
+
+
+def test_a_claim_no_verifier_answered_is_counted_in_the_limits() -> None:
+    from research_pipeline.verify import VERDICT_UNCHECKED
+
+    st = State("Q?")
+    st.plan = Plan(
+        "Q?",
+        "m",
+        "Q?",
+        [SubQuestion("S1", "Q?", "evidence", []), SubQuestion("F1", "Q?", "falsification", [])],
+    )
+    st.evidence = {"S1-E1": make_evidence("S1-E1", "W1")}
+    st.claims = [
+        Claim("S1-C1", "S1", "Training lowered pressure.", ["S1-E1"], verdict=VERDICT_UNCHECKED)
+    ]
+    text = render(st, LIBRARY, MODELS)
+    limits = text.split("## Limits of this answer")[1]
+    assert "1 drafted claim(s) were removed because the verifier returned no verdict" in limits
+    assert "Training lowered pressure." not in text.split("## Limits")[0]
