@@ -68,7 +68,7 @@ def test_a_non_json_reply_is_an_error(ollama: Ollama) -> None:
             "urllib.request.urlopen",
             return_value=Stream([{"message": {"content": "no"}, "done": True}]),
         ),
-        pytest.raises(LLMError, match="non-JSON"),
+        pytest.raises(LLMError, match="non-JSON despite the schema"),
     ):
         ollama.chat_json("plan", "s", "u", {})
 
@@ -136,3 +136,24 @@ def test_classifier_replies_are_short_text(ollama: Ollama) -> None:
         "urllib.request.urlopen", return_value=body({"message": {"content": " Yes \n"}})
     ):
         assert ollama.chat_text("verify", "minicheck", "doc") == "Yes"
+
+
+def test_every_structured_call_is_capped_and_a_capped_call_is_one_calls_failure(
+    ollama: Ollama,
+) -> None:
+    from research_pipeline.llm import ModelOutputError
+
+    sent: list[dict[str, Any]] = []
+
+    def respond(request: Any, timeout: float) -> Stream:
+        sent.append(json.loads(request.data))
+        # What Ollama sends when num_predict runs out before the answer closes.
+        return Stream([{"message": {"content": '{"verdict": "SUPP'}, "done": True}])
+
+    with (
+        mock.patch("urllib.request.urlopen", side_effect=respond),
+        pytest.raises(ModelOutputError, match="2048-token cap"),
+    ):
+        ollama.chat_json("verify", "s", "u", {})
+    assert sent[0]["options"]["num_predict"] == 2048
+    assert issubclass(ModelOutputError, LLMError)  # callers that catch LLMError still catch it

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
@@ -214,3 +214,60 @@ def test_component_dois_resolve_to_their_article(doi: str, parent: str) -> None:
     from research_pipeline.schema import parent_doi
 
     assert parent_doi(doi) == parent
+
+
+class TestAVerifierCallThatFails:
+    """A call that ran out of time or tokens is recorded and the run goes on. (Found by a live
+    run: one verify call generated 16,000 tokens and no answer, and ended the whole run.)"""
+
+    def _claims(self) -> tuple[list[Any], dict[str, Any], dict[str, str]]:
+        from research_pipeline.schema import Claim
+
+        ev = {"S1-E1": make_evidence("S1-E1", "W1"), "S1-E2": make_evidence("S1-E2", "W2")}
+        passages = {"S1-E1": "Training lowered pressure.", "S1-E2": "Training lowered pressure."}
+        return [Claim("S1-C1", "S1", "Training lowered pressure.", ["S1-E1"])], ev, passages
+
+    def test_a_claim_no_verifier_answered_is_removed_not_kept(self) -> None:
+        from research_pipeline.llm import ModelOutputError
+
+        class Stalls:
+            calls: list[Any] = []  # noqa: RUF012
+
+            def chat_json(self, *_: Any, **__: Any) -> dict[str, Any]:
+                raise ModelOutputError("verify: no complete JSON answer within 2048 tokens")
+
+        claims, ev, passages = self._claims()
+        verify.check_claims(claims, ev, passages, Stalls(), ["m"])  # type: ignore[arg-type]
+        assert claims[0].verdict == verify.VERDICT_UNCHECKED
+        assert claims[0].supported_by == []
+        assert claims[0].checks[0].verdict == verify.CHECK_FAILED
+
+    def test_a_failed_check_never_outranks_a_real_verdict(self) -> None:
+        from research_pipeline.schema import Check
+
+        claims, ev, passages = self._claims()
+        claims[0].checks = [
+            Check("a", "S1-E1", verify.CHECK_FAILED, "x"),
+            Check("b", "S1-E1", "NOT_SUPPORTED", "y"),
+        ]
+        verify.settle(claims[0], ev, passages, ["a", "b"])
+        assert claims[0].verdict == "NOT_SUPPORTED"
+        claims[0].checks = [
+            Check("a", "S1-E1", verify.CHECK_FAILED, "x"),
+            Check("b", "S1-E1", "SUPPORTED", "y"),
+        ]
+        verify.settle(claims[0], ev, passages, ["a", "b"])
+        assert claims[0].verdict == "DISPUTED"  # one verifier accepted; the other did not answer
+
+    def test_a_dead_client_or_server_still_ends_the_run(self) -> None:
+        from research_pipeline.llm import LLMError
+
+        class Gone:
+            calls: list[Any] = []  # noqa: RUF012
+
+            def chat_json(self, *_: Any, **__: Any) -> dict[str, Any]:
+                raise LLMError("the client stopped answering this run")
+
+        claims, ev, passages = self._claims()
+        with pytest.raises(LLMError, match="stopped answering"):
+            verify.check_claims(claims, ev, passages, Gone(), ["m"])  # type: ignore[arg-type]
