@@ -66,7 +66,7 @@ retrieve         library: SQLite FTS5 (BM25) + exact dense search, fused by reci
   |               (k = 60) [11], optionally re-scored by its cross-encoder
   |  filter       drop retracted works and passages flagged by the safety scan
   v
-rerank           the local model rescores (a client model keeps the library's order); <=2 passages
+select           the library's order is kept (no model here re-scores passages); <=2 passages
   |               per paper, <=6 per sub-question, because long contexts are used unevenly [9]
   v
 extract          model per passage: relevant? direction, finding, verbatim quote, population
@@ -150,7 +150,7 @@ schema and check is the same; only who answers changes. The command line uses a 
 |---|---|---|
 | Text | `qwen3:4b-instruct-2507` | An 8B model would be a real upgrade in multi-turn reliability [22]; the pipeline does not need it, because it never asks the model to sequence calls. |
 | Embedding | `bge-m3`, the paper library's (`PAPER_FETCH_EMBED_MODEL`) | Dense only; BM25 comes from SQLite FTS5, because Ollama exposes no sparse output. |
-| Reranker | the library's optional cross-encoder (`PAPER_FETCH_RERANK_MODEL`, e.g. int8 `bge-reranker-v2-m3`, 571 MB), then the local text model | A client model does not rerank: a turn per four passages. |
+| Reranker | the library's cross-encoder (`PAPER_FETCH_RERANK_MODEL`, e.g. int8 `bge-reranker-v2-m3`, 571 MB) | Scores a passage in a fraction of a second, sees passage text only, and writes nothing. A chat model no longer reranks: the local 4B model spent 4.9 of a 5.7-hour run doing it. Without the setting, passages are read in retrieval order and the answer's log says so. |
 | Verifier | the text model, **with a printed caveat** | The right second verifier is a trained grounding classifier from another family, such as Bespoke-MiniCheck [8] (7B, CC BY-NC). `verify.judge` supports its documented `Document:/Claim:` format. |
 
 Set the context size explicitly (`PIPELINE_NUM_CTX`). Ollama's default can be about 4K tokens and

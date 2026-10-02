@@ -87,8 +87,9 @@ ollama pull bge-m3
 echo "PAPER_FETCH_EMBED_MODEL=bge-m3" >> ~/.config/paper-fetch/retrieval.env
 ```
 
-`paper-fetch-mcp` must be on your `PATH`, or its absolute path in `config/mcp-gateway.json`. The
-optional cross-encoder is paper-fetch's too (`paper-fetch[rerank]`, `PAPER_FETCH_RERANK_MODEL`).
+`paper-fetch-mcp` must be on your `PATH`, or its absolute path in `config/mcp-gateway.json`.
+Reranking is paper-fetch's cross-encoder: install `paper-fetch[rerank]` and set
+`PAPER_FETCH_RERANK_MODEL` (see its README); without it passages are read in retrieval order.
 
 ## Use
 

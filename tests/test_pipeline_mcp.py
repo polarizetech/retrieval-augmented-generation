@@ -37,7 +37,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Library:
     for key, value in {
         "PIPELINE_DATA_DIR": str(tmp_path / "data"),
         "PIPELINE_RUNS_DIR": str(tmp_path / "runs"),
-        "PIPELINE_RERANKER": "none",
         "PIPELINE_VERIFIER_MODEL": "",
         "PIPELINE_MCP_LLM": "client",
         "PIPELINE_CLIENT_TURN_WAIT": "5",

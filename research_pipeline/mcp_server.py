@@ -269,7 +269,6 @@ async def corpus_status() -> str:
             "model_backend": "mcp-client" if s.mcp_llm == "client" else "ollama",
             "text_model": s.text_model,
             "verifier_model": s.verifier_model or "(same as text)",
-            "reranker": s.reranker,
         }
     )
 
