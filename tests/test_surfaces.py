@@ -118,3 +118,21 @@ class TestEvalScoring:
         row = score({"id": "x", "kind": "k", "answerable": False}, self.log)
         assert row["abstained"] is False
         assert row["pass"] is False
+
+
+def test_a_rerank_batch_with_no_answer_keeps_retrieval_order() -> None:
+    from research_pipeline.llm import ModelOutputError
+
+    class Stalls(NamedModel):
+        asked = 0
+
+        def chat_json(self, *_: Any, **__: Any) -> dict[str, Any]:
+            self.asked += 1
+            if self.asked == 1:
+                raise ModelOutputError("rerank: cut off at the 2048-token cap")
+            return {"scores": [5.0]}
+
+    ranker = rerank.LLMReranker(Stalls(), batch=2)  # type: ignore[arg-type]
+    # The first batch (two passages) failed: retrieval scores only. The second was scored.
+    assert ranker.score("q", passages(0.3, 0.1, 0.2)) == [0.3, 0.1, 5.2]
+    assert ranker.failed == 1

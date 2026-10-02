@@ -208,6 +208,12 @@ def render(
             f"- {len(injected)} passage(s) were excluded for containing text addressed to an AI "
             "reader."
         )
+    unreadable = [d for d in st.dropped_passages if "no_answer_from_model" in d["flags"]]
+    if unreadable:
+        out.append(
+            f"- {len(unreadable)} retrieved passage(s) were not used because the model gave no "
+            "usable answer when reading them (the call ran out of time or tokens)."
+        )
     hidden = [d for d in st.dropped_passages if "hidden_characters" in d["flags"]]
     if hidden:
         out.append(f"- {len(hidden)} passage(s) were excluded for containing hidden characters.")

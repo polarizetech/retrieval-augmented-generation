@@ -33,7 +33,7 @@ from . import __version__, grading, integrity, rerank, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
-from .llm import Ollama
+from .llm import ModelOutputError, Ollama
 from .notes import NoteStore
 from .papers import PaperLibrary, PapersError, Passage
 from .prompts import Prompts, wrap
@@ -440,10 +440,15 @@ class Pipeline:
         sha = self.papers.get(work, {}).get("text_sha256") or ""
         self.notes.set(work, study_type, population, model, sha)
 
-    def _classify_call(self, user: str) -> dict[str, Any]:
-        return self.llm.chat_json(
-            "classify_paper", self.prompts.paper_system, user, self.prompts.paper_schema()
-        )
+    def _classify_call(self, user: str) -> dict[str, Any] | None:
+        """The classification, or None when the model gave no usable answer: the paper is then
+        graded as "unclear" in this run and classified again in the next."""
+        try:
+            return self.llm.chat_json(
+                "classify_paper", self.prompts.paper_system, user, self.prompts.paper_schema()
+            )
+        except ModelOutputError:
+            return None
 
     def _classify_record(self, work: str, got: dict[str, Any]) -> None:
         self._set_note(
@@ -463,13 +468,17 @@ class Pipeline:
     ) -> None:
         self.extract_many(st, [(sq, ranked)], openings or {})
 
-    def _read(self, sq: SubQuestion, p: Passage) -> dict[str, Any]:
-        return self.llm.chat_json(
-            "extract",
-            self.prompts.extract_system,
-            f"Research question: {sq.text}\n\n{wrap(p.text)}",
-            self.prompts.EXTRACT_SCHEMA,
-        )
+    def _read(self, sq: SubQuestion, p: Passage) -> dict[str, Any] | None:
+        """What the model extracted from a passage, or None when it gave no usable answer."""
+        try:
+            return self.llm.chat_json(
+                "extract",
+                self.prompts.extract_system,
+                f"Research question: {sq.text}\n\n{wrap(p.text)}",
+                self.prompts.EXTRACT_SCHEMA,
+            )
+        except ModelOutputError:
+            return None
 
     def extract_many(
         self,
@@ -499,8 +508,17 @@ class Pipeline:
         answers = self._parallel(jobs)
         results = answers[: len(items)]
         for (work, _), got in zip(to_classify, answers[len(items) :], strict=True):
-            self._classify_record(work, got)
+            if got is None:
+                st.notes.append(f"{work}: the model gave no study-design answer; graded unclear")
+            else:
+                self._classify_record(work, got)
         for (sq, p, score), got in zip(items, results, strict=True):
+            if got is None:
+                # A passage the model could not read is dropped and counted, not guessed at.
+                st.dropped_passages.append(
+                    {"passage_id": p.id, "work": p.work, "flags": ["no_answer_from_model"]}
+                )
+                continue
             if not got.get("relevant"):
                 continue
             quote, ratio = verify.anchor_quote(got.get("quote", ""), p.text)
@@ -825,6 +843,11 @@ class Pipeline:
             "name": self.index_stats.get("embedding_model"),
             "via": "paper library",
         }
+        if failed := getattr(ranker, "failed", 0):
+            st.notes.append(
+                f"{failed} reranking batch(es) got no usable answer from the model; their "
+                "passages kept the library's retrieval order."
+            )
         reranker = ranker.name
         if self.library_reranker:
             reranker = f"library:{self.library_reranker}" + (
