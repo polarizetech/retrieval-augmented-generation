@@ -10,11 +10,20 @@
       "open_world_tools": ["search", "fetch", "citations"]
     },
     "pipeline": {
-      "_comment": "The full pipeline as start/continue tools. By default the calling model answers its model steps (PIPELINE_MCP_LLM=client); Ollama is still used for embeddings. Give an absolute path if research-pipeline-mcp is not on PATH.",
+      "_comment": "The full pipeline as start/continue tools. By default the calling model answers its model steps (PIPELINE_MCP_LLM=client). Give an absolute path if research-pipeline-mcp is not on PATH.",
       "command": "research-pipeline-mcp",
       "args": [],
       "write_tools": ["research_start", "research_continue"],
       "open_world_tools": ["research_start", "research_continue"]
+    }
+  },
+  "companions": {
+    "_comment": "Tools the pipeline may loop in when a question calls for one (research_pipeline/companions.py). They are not offered to MCP clients through the gateway; the pipeline spawns them itself, only when the planner requests one. Set enabled to true once the command is installed.",
+    "datasets": {
+      "_comment": "dataset-fetch: discovery over open research datasets. Adds a 'Datasets that could test this' section, listed from the catalogues' own records.",
+      "command": "dataset-fetch-mcp",
+      "args": [],
+      "enabled": false
     }
   },
   "web_search": {

@@ -29,7 +29,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, grading, integrity, safety, verify
+from . import __version__, companions, grading, integrity, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
@@ -48,6 +48,7 @@ from .schema import (
     title_key,
     to_json,
 )
+from .upstream import UpstreamError
 
 Progress = Callable[[str, str], None]
 Model = Ollama | ClientLLM
@@ -68,6 +69,10 @@ class State:
     dropped_passages: list[dict[str, Any]] = field(default_factory=list)
     summary: list[dict[str, Any]] = field(default_factory=list)
     integrity: dict[str, dict[str, Any]] = field(default_factory=dict)  # doi -> Crossref status
+    requests: list[dict[str, Any]] = field(
+        default_factory=list
+    )  # companion tools the plan asked for
+    companions: dict[str, dict[str, Any]] = field(default_factory=dict)  # key -> what it returned
     fetches: int = 0  # library fetches attempted this run, against PIPELINE_MAX_FETCH
     notes: list[str] = field(default_factory=list)
 
@@ -98,6 +103,7 @@ class Pipeline:
         self.index_stats: dict[str, Any] = {}
         self.library_reranker: str | None = None
         self.profile: dict[str, Any] | None = None
+        self.companions: dict[str, companions.Companion] = {}  # configured ones, set per run
         self.models: dict[str, Any] = {}
         # The field being researched. Nothing installed means the generic policy, not a failure:
         # the engine answers a question on its own, it just answers it without a field's rules.
@@ -157,6 +163,40 @@ class Pipeline:
             )
         )
         st.plan = Plan(st.question, got["mode"], core, subs)
+        # Companion tools the planner asked for. The schema only admits configured ones, but as
+        # everywhere else that is checked here too; each tool is asked at most once.
+        for row in got.get("tools", []):
+            comp = self.companions.get(str(row.get("tool")))
+            queries = [q.strip() for q in row.get("queries", []) if q.strip()]
+            if comp and queries and comp.key not in {r["tool"] for r in st.requests}:
+                st.requests.append(
+                    {
+                        "tool": comp.key,
+                        "queries": queries[: comp.max_queries],
+                        "why": str(row.get("why", "")).strip(),
+                    }
+                )
+
+    async def run_companions(self, st: State, lib: PaperLibrary) -> None:
+        """Call each companion tool the plan requested. A companion never ends a run: one that
+        fails is recorded as having not answered, which the answer then says."""
+        assert st.plan
+        targets = [st.question, *(sq.text for sq in st.plan.subquestions if sq.kind == "evidence")]
+
+        async def rank(texts: list[str]) -> list[float]:
+            return await lib.relevance(targets, texts)
+
+        for request in st.requests:
+            comp = self.companions[request["tool"]]
+            self.progress("companion", f"{comp.key}: {'; '.join(request['queries'])}")
+            try:
+                async with companions.connect(self.s.gateway_config, comp.key) as up:
+                    st.companions[comp.key] = await comp.run(up, request["queries"], rank)
+            except (UpstreamError, OSError, KeyError, TypeError, ValueError) as exc:
+                st.companions[comp.key] = {
+                    "queries": request["queries"],
+                    "error": f"{type(exc).__name__}: {exc}"[:300],
+                }
 
     # -- stage 3-4: discover and normalise -------------------------------------------------
     async def discover(self, st: State, lib: PaperLibrary, queries: list[str]) -> None:
@@ -792,7 +832,9 @@ class Pipeline:
                         f"The paper library has no '{self.policy.profile}' profile; "
                         "queries were planned without the field's indexed terms."
                     )
-            self.prompts = Prompts(self.policy, self.profile)
+            # Companion tools reach outside the library, so an offline run has none.
+            self.companions = {} if self.offline else companions.configured(self.s.gateway_config)
+            self.prompts = Prompts(self.policy, self.profile, self.companions)
 
             self.progress("plan", f"decomposing the question ({self.policy.label})")
             await asyncio.to_thread(self.plan, st)
@@ -804,6 +846,7 @@ class Pipeline:
                     "fetching."
                 )
 
+            await self.run_companions(st, lib)
             await gather(
                 lib, list(dict.fromkeys(q for sq in plan.subquestions for q in sq.queries))
             )
@@ -842,7 +885,7 @@ class Pipeline:
 
         from .render import render  # late import: render depends on this module's State
 
-        answer = render(st, self.papers, self.models, self.policy)
+        answer = render(st, self.papers, self.models, self.policy, self.companions)
         log = {
             "pipeline_version": __version__,
             "prompt_version": self.prompts.version,
@@ -860,6 +903,11 @@ class Pipeline:
             "models": self.models,
             "reranker": self.library_reranker,
             "collection": self.collection or None,
+            "companions": {
+                "available": sorted(self.companions),
+                "requested": st.requests,
+                "results": st.companions,
+            },
             "settings": {
                 k: (str(v) if not isinstance(v, (int, str)) else v) for k, v in vars(self.s).items()
             },

@@ -109,6 +109,19 @@ remembered by the library, so a later run on the same concept is told what earli
 Set `PIPELINE_VERIFIER_MODEL` to a model from a different family than the text model. Without it
 the text model checks its own claims, and every answer says so.
 
+### Companion tools: datasets
+
+A run can loop in another tool when the question calls for it. The planner is told what each
+configured companion is for and may request it, with queries, in the plan it already writes; code
+then calls the tool and prints what its own records say. No model writes that section, and it
+never counts as evidence for a claim.
+
+One companion ships: `datasets`, which asks
+dataset-fetch's open-data catalogues for datasets that could test the question, and adds a
+"Datasets that could test this" section (title, licence, files, DOI, a pinned reference). Nothing
+is downloaded or assessed. Enable it under `companions` in `config/mcp-gateway.json`. Adding
+another tool is one entry in `research_pipeline/companions.py`.
+
 ### Novelty probe: has someone already done this?
 
 ```bash

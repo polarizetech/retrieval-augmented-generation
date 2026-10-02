@@ -10,22 +10,15 @@ happens after a passage is found: reading it, judging it, and checking what is c
 
 from __future__ import annotations
 
-import json
-import os
-from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.types import TextContent
+from .upstream import Upstream, UpstreamError
 
 
-class PapersError(RuntimeError):
-    def __init__(self, message: str, code: str = "tool_error"):
-        super().__init__(message)
-        self.code = code  # the library's own code, e.g. not_found, unavailable, no_store
+class PapersError(UpstreamError):
+    """The paper library refused or failed a call; `code` is its own (not_found, unavailable)."""
 
 
 @dataclass
@@ -65,56 +58,11 @@ class Passage:
         )
 
 
-class PaperLibrary:
+class PaperLibrary(Upstream):
+    error = PapersError
+
     def __init__(self, gateway_config: Path, upstream: str = "papers"):
-        if not gateway_config.exists():
-            raise PapersError(f"missing {gateway_config}; copy config/mcp-gateway.example.json")
-        spec = json.loads(gateway_config.read_text()).get("upstreams", {}).get(upstream)
-        if not spec:
-            raise PapersError(f"no '{upstream}' upstream in {gateway_config}")
-        self.spec = spec
-        self.stack = AsyncExitStack()
-        self.session: ClientSession | None = None
-
-    @classmethod
-    def over(cls, session: ClientSession) -> PaperLibrary:
-        """Speak the library contract over a session someone else already holds (the gateway)."""
-        lib = cls.__new__(cls)
-        lib.spec, lib.stack, lib.session = {}, AsyncExitStack(), session
-        return lib
-
-    async def __aenter__(self) -> PaperLibrary:
-        env = dict(os.environ)
-        env.update({str(k): str(v) for k, v in self.spec.get("env", {}).items()})
-        params = StdioServerParameters(
-            command=self.spec["command"],
-            args=[str(v) for v in self.spec.get("args", [])],
-            cwd=self.spec.get("cwd"),
-            env=env,
-        )
-        read, write = await self.stack.enter_async_context(stdio_client(params))
-        self.session = await self.stack.enter_async_context(ClientSession(read, write))
-        await self.session.initialize()
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        await self.stack.aclose()
-
-    async def _call(self, tool: str, **arguments: Any) -> dict[str, Any]:
-        """Return the tool's envelope. Raises PapersError on a refused or failed call."""
-        assert self.session is not None
-        result = await self.session.call_tool(tool, arguments)
-        text = next((c.text for c in result.content if isinstance(c, TextContent)), "")
-        try:
-            envelope = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise PapersError(f"{tool}: unparseable result: {text[:200]!r}") from exc
-        if result.isError or not envelope.get("ok", False):
-            raise PapersError(
-                f"{tool}: {str(envelope.get('error') or envelope)[:300]}",
-                code=str(envelope.get("code") or "tool_error"),
-            )
-        return envelope
+        super().__init__(gateway_config, upstream)
 
     async def search(
         self,
