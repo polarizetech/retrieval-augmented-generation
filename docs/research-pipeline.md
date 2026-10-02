@@ -66,7 +66,7 @@ retrieve         library: SQLite FTS5 (BM25) + exact dense search, fused by reci
   |               (k = 60) [11], optionally re-scored by its cross-encoder
   |  filter       drop retracted works and passages flagged by the safety scan
   v
-rerank           the local model rescores (a client model keeps the library's order); <=2 passages
+select           the library's order is kept (no model here re-scores passages); <=2 passages
   |               per paper, <=6 per sub-question, because long contexts are used unevenly [9]
   v
 extract          model per passage: relevant? direction, finding, verbatim quote, population
@@ -91,6 +91,31 @@ runs/<timestamp>-<slug>/answer.md and run.json
 provider's status, every candidate and what happened to it, every evidence record with the full
 passage text it came from, every claim with every verifier check, the retraction lookups, and the
 answer with its SHA-256.
+
+### Companion tools
+
+Some questions are also served by something papers cannot give, such as a list of open datasets
+that could test the claim. A *companion* (`research_pipeline/companions.py`) is a tool that
+provides that, used on the same terms as every other step:
+
+1. **The model decides whether, and what to ask.** With a companion configured, the plan's schema
+   gains one field, `tools`: a list of `{tool, queries, why}` restricted to the configured keys.
+   The planner is told what each is for and that most questions need none. Without a configured
+   companion the plan prompt and schema are exactly as before.
+2. **Code calls it.** At most once per tool per run, with the planner's queries and the bounds
+   the registry sets. A companion that fails is recorded as not having answered; it never ends a
+   run. Offline runs call none.
+3. **Code prints it.** The section comes from the tool's own records. No model writes it, and it
+   never enters the evidence table: it is a pointer for the reader, not support for a claim.
+
+The `datasets` companion speaks dataset-fetch's MCP contract: it asks which catalogues take a
+free-text query, searches each (Zenodo restricted to records typed as datasets), reads the data
+cards, drops records that hold only documents (counted, not listed), and orders the rest by the
+paper library's `relevance` to the question. A catalogue that did not answer is named in the
+answer's limits. Measured: two queries over three catalogues, ten cards read, 14 s.
+
+To add a companion, write `run` (call the tool, return plain records) and `render` (print them)
+and register a `Companion`. Nothing in the pipeline changes.
 
 ## Rules, where they are enforced, and how they are tested
 
@@ -150,7 +175,7 @@ schema and check is the same; only who answers changes. The command line uses a 
 |---|---|---|
 | Text | `qwen3:4b-instruct-2507` | An 8B model would be a real upgrade in multi-turn reliability [22]; the pipeline does not need it, because it never asks the model to sequence calls. |
 | Embedding | `bge-m3`, the paper library's (`PAPER_FETCH_EMBED_MODEL`) | Dense only; BM25 comes from SQLite FTS5, because Ollama exposes no sparse output. |
-| Reranker | the library's optional cross-encoder (`PAPER_FETCH_RERANK_MODEL`, e.g. int8 `bge-reranker-v2-m3`, 571 MB), then the local text model | A client model does not rerank: a turn per four passages. |
+| Reranker | the library's cross-encoder (`PAPER_FETCH_RERANK_MODEL`, e.g. int8 `bge-reranker-v2-m3`, 571 MB) | Scores a passage in a fraction of a second, sees passage text only, and writes nothing. A chat model no longer reranks: the local 4B model spent 4.9 of a 5.7-hour run doing it. Without the setting, passages are read in retrieval order and the answer's log says so. |
 | Verifier | the text model, **with a printed caveat** | The right second verifier is a trained grounding classifier from another family, such as Bespoke-MiniCheck [8] (7B, CC BY-NC). `verify.judge` supports its documented `Document:/Claim:` format. |
 
 Set the context size explicitly (`PIPELINE_NUM_CTX`). Ollama's default can be about 4K tokens and
@@ -164,6 +189,19 @@ several hundred tokens of hidden reasoning before the constrained answer, and ig
 10 s). Suppressing that reasoning made verification four times faster but got 5 of the 7 verifier
 cases right instead of 7, so it stays on. Models are kept loaded for 30 minutes
 (`PIPELINE_OLLAMA_KEEP_ALIVE`) so that a run's network-bound stages do not unload them.
+
+### Planned: your own endpoint for the model steps
+
+The calling model is the default behind MCP (`PIPELINE_MCP_LLM=client`), and stays so. The other
+backend today is Ollama on the same machine, which exists for one reason: keeping a question and
+its intermediate work off a hosted assistant. That backend should become "any OpenAI-compatible
+endpoint" (one setting each for URL, key and model), so the same option covers local Ollama, a
+hosted open-weight model with zero data retention (OpenRouter with ZDR-only routing, DigitalOcean
+serverless inference), or a self-hosted GPU server. Sizing: a run without reranking is about
+42,000 input and 10,000 output tokens, which is cents on hosted open-weight models. Note that a
+run started from a chat client still shows that client the question and the final answer; a
+fully private run starts from the command line. Not built yet; nothing else needs to change for
+it, since every model step already goes through one `ChatModel` interface.
 
 ## Alternatives considered (as of September 2026)
 

@@ -1,6 +1,6 @@
 """The research run: a fixed sequence of stages, with the model called only inside them.
 
-    plan -> discover -> acquire+index -> retrieve -> rerank -> extract (evidence table)
+    plan -> discover -> acquire+index -> retrieve+rerank -> extract (evidence table)
          -> synthesise -> critique (new searches, not rewrites) -> verify -> grade -> render -> log
 
 Discovery, acquisition, indexing and retrieval are the paper library's (paper-fetch, over MCP):
@@ -29,11 +29,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, grading, integrity, rerank, safety, verify
+from . import __version__, companions, grading, integrity, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
-from .llm import Ollama
+from .llm import ModelOutputError, Ollama
 from .notes import NoteStore
 from .papers import PaperLibrary, PapersError, Passage
 from .prompts import Prompts, wrap
@@ -48,6 +48,7 @@ from .schema import (
     title_key,
     to_json,
 )
+from .upstream import UpstreamError
 
 Progress = Callable[[str, str], None]
 Model = Ollama | ClientLLM
@@ -68,6 +69,10 @@ class State:
     dropped_passages: list[dict[str, Any]] = field(default_factory=list)
     summary: list[dict[str, Any]] = field(default_factory=list)
     integrity: dict[str, dict[str, Any]] = field(default_factory=dict)  # doi -> Crossref status
+    requests: list[dict[str, Any]] = field(
+        default_factory=list
+    )  # companion tools the plan asked for
+    companions: dict[str, dict[str, Any]] = field(default_factory=dict)  # key -> what it returned
     fetches: int = 0  # library fetches attempted this run, against PIPELINE_MAX_FETCH
     notes: list[str] = field(default_factory=list)
 
@@ -98,6 +103,7 @@ class Pipeline:
         self.index_stats: dict[str, Any] = {}
         self.library_reranker: str | None = None
         self.profile: dict[str, Any] | None = None
+        self.companions: dict[str, companions.Companion] = {}  # configured ones, set per run
         self.models: dict[str, Any] = {}
         # The field being researched. Nothing installed means the generic policy, not a failure:
         # the engine answers a question on its own, it just answers it without a field's rules.
@@ -157,6 +163,40 @@ class Pipeline:
             )
         )
         st.plan = Plan(st.question, got["mode"], core, subs)
+        # Companion tools the planner asked for. The schema only admits configured ones, but as
+        # everywhere else that is checked here too; each tool is asked at most once.
+        for row in got.get("tools", []):
+            comp = self.companions.get(str(row.get("tool")))
+            queries = [q.strip() for q in row.get("queries", []) if q.strip()]
+            if comp and queries and comp.key not in {r["tool"] for r in st.requests}:
+                st.requests.append(
+                    {
+                        "tool": comp.key,
+                        "queries": queries[: comp.max_queries],
+                        "why": str(row.get("why", "")).strip(),
+                    }
+                )
+
+    async def run_companions(self, st: State, lib: PaperLibrary) -> None:
+        """Call each companion tool the plan requested. A companion never ends a run: one that
+        fails is recorded as having not answered, which the answer then says."""
+        assert st.plan
+        targets = [st.question, *(sq.text for sq in st.plan.subquestions if sq.kind == "evidence")]
+
+        async def rank(texts: list[str]) -> list[float]:
+            return await lib.relevance(targets, texts)
+
+        for request in st.requests:
+            comp = self.companions[request["tool"]]
+            self.progress("companion", f"{comp.key}: {'; '.join(request['queries'])}")
+            try:
+                async with companions.connect(self.s.gateway_config, comp.key) as up:
+                    st.companions[comp.key] = await comp.run(up, request["queries"], rank)
+            except (UpstreamError, OSError, KeyError, TypeError, ValueError) as exc:
+                st.companions[comp.key] = {
+                    "queries": request["queries"],
+                    "error": f"{type(exc).__name__}: {exc}"[:300],
+                }
 
     # -- stage 3-4: discover and normalise -------------------------------------------------
     async def discover(self, st: State, lib: PaperLibrary, queries: list[str]) -> None:
@@ -226,6 +266,7 @@ class Pipeline:
                         list(hit.get("providers") or []),
                     )
                 cand.queries.append(query)
+                cand.is_oa = cand.is_oa or hit.get("is_oa")
                 cand.title = cand.title or title
                 cand.work = cand.work or work
                 cand.full_text_in_library = cand.full_text_in_library or bool(
@@ -267,7 +308,10 @@ class Pipeline:
             )
             for cand, score in zip(unscored, scores, strict=True):
                 cand.relevance = round(float(score), 4)
-        fresh.sort(key=lambda c: -c.relevance)
+        # Among them, papers a provider reported as open access go first, and papers every
+        # provider reported as closed go last: a fetch of a closed paper spends budget and
+        # returns nothing to read. (Observed: all six fetches of a run went to closed papers.)
+        fresh.sort(key=lambda c: ({True: 0, None: 1, False: 2}[c.is_oa], -c.relevance))
 
         # Decide who gets fetched, and consume the budget, before any awaiting: this keeps the
         # same priority order and the same PIPELINE_MAX_FETCH accounting as the sequential version.
@@ -385,17 +429,13 @@ class Pipeline:
             out[sq.id] = kept
         return out
 
-    def select(
-        self, sq: SubQuestion, kept: list[Passage], ranker: rerank.Reranker
-    ) -> list[tuple[Passage, float]]:
-        if not kept:
-            return []
-        self.progress("rerank", f"{sq.id}: {len(kept)} candidates")
-        # The reranker sees passage text only: no year, venue or citation count to be biased by.
-        ranked = sorted(zip(kept, ranker.score(sq.text, kept), strict=True), key=lambda t: -t[1])
+    def select(self, sq: SubQuestion, kept: list[Passage]) -> list[tuple[Passage, float]]:
+        """The passages to read for a sub-question, in the library's order. The library ranks
+        (its cross-encoder sees passage text only: no year, venue or citation count to be biased
+        by); this only caps how many come from one paper and how many are read."""
         out: list[tuple[Passage, float]] = []
         per_paper: dict[str, int] = {}
-        for p, score in ranked:
+        for p, score in sorted(((p, p.fused) for p in kept), key=lambda t: -t[1]):
             # One paper repeating itself must not look like several sources.
             if per_paper.get(p.work, 0) >= self.s.max_passages_per_paper:
                 continue
@@ -440,10 +480,15 @@ class Pipeline:
         sha = self.papers.get(work, {}).get("text_sha256") or ""
         self.notes.set(work, study_type, population, model, sha)
 
-    def _classify_call(self, user: str) -> dict[str, Any]:
-        return self.llm.chat_json(
-            "classify_paper", self.prompts.paper_system, user, self.prompts.paper_schema()
-        )
+    def _classify_call(self, user: str) -> dict[str, Any] | None:
+        """The classification, or None when the model gave no usable answer: the paper is then
+        graded as "unclear" in this run and classified again in the next."""
+        try:
+            return self.llm.chat_json(
+                "classify_paper", self.prompts.paper_system, user, self.prompts.paper_schema()
+            )
+        except ModelOutputError:
+            return None
 
     def _classify_record(self, work: str, got: dict[str, Any]) -> None:
         self._set_note(
@@ -463,13 +508,17 @@ class Pipeline:
     ) -> None:
         self.extract_many(st, [(sq, ranked)], openings or {})
 
-    def _read(self, sq: SubQuestion, p: Passage) -> dict[str, Any]:
-        return self.llm.chat_json(
-            "extract",
-            self.prompts.extract_system,
-            f"Research question: {sq.text}\n\n{wrap(p.text)}",
-            self.prompts.EXTRACT_SCHEMA,
-        )
+    def _read(self, sq: SubQuestion, p: Passage) -> dict[str, Any] | None:
+        """What the model extracted from a passage, or None when it gave no usable answer."""
+        try:
+            return self.llm.chat_json(
+                "extract",
+                self.prompts.extract_system,
+                f"Research question: {sq.text}\n\n{wrap(p.text)}",
+                self.prompts.EXTRACT_SCHEMA,
+            )
+        except ModelOutputError:
+            return None
 
     def extract_many(
         self,
@@ -499,8 +548,17 @@ class Pipeline:
         answers = self._parallel(jobs)
         results = answers[: len(items)]
         for (work, _), got in zip(to_classify, answers[len(items) :], strict=True):
-            self._classify_record(work, got)
+            if got is None:
+                st.notes.append(f"{work}: the model gave no study-design answer; graded unclear")
+            else:
+                self._classify_record(work, got)
         for (sq, p, score), got in zip(items, results, strict=True):
+            if got is None:
+                # A passage the model could not read is dropped and counted, not guessed at.
+                st.dropped_passages.append(
+                    {"passage_id": p.id, "work": p.work, "flags": ["no_answer_from_model"]}
+                )
+                continue
             if not got.get("relevant"):
                 continue
             quote, ratio = verify.anchor_quote(got.get("quote", ""), p.text)
@@ -747,7 +805,6 @@ class Pipeline:
         started = time.time()
         st = State(question.strip())
         verifiers = self._resolve_models(st)
-        ranker: rerank.Reranker = rerank.NoReranker()
 
         async def gather(lib: PaperLibrary, queries: list[str]) -> None:
             if self.offline:
@@ -759,10 +816,7 @@ class Pipeline:
             lib: PaperLibrary, targets: list[tuple[SubQuestion, list[str] | None]]
         ) -> None:
             pools = await self.pool(st, lib, targets)
-            ranked = [
-                (sq, await asyncio.to_thread(self.select, sq, pools[sq.id], ranker))
-                for sq, _ in targets
-            ]
+            ranked = [(sq, self.select(sq, pools[sq.id])) for sq, _ in targets]
             works = [p.work for _, chosen in ranked for p, _ in chosen]
             openings = await self.openings(lib, works)
             await asyncio.to_thread(self.extract_many, st, ranked, openings)
@@ -778,12 +832,9 @@ class Pipeline:
                         f"The paper library has no '{self.policy.profile}' profile; "
                         "queries were planned without the field's indexed terms."
                     )
-            self.prompts = Prompts(self.policy, self.profile)
-            # Reranking by a client model would cost a turn per four passages; it keeps the
-            # library's order (and the library's cross-encoder, if it has one) instead.
-            ranker = rerank.build(
-                self.s, None if isinstance(self.llm, ClientLLM) else self.llm, self.prompts
-            )
+            # Companion tools reach outside the library, so an offline run has none.
+            self.companions = {} if self.offline else companions.configured(self.s.gateway_config)
+            self.prompts = Prompts(self.policy, self.profile, self.companions)
 
             self.progress("plan", f"decomposing the question ({self.policy.label})")
             await asyncio.to_thread(self.plan, st)
@@ -795,6 +846,7 @@ class Pipeline:
                     "fetching."
                 )
 
+            await self.run_companions(st, lib)
             await gather(
                 lib, list(dict.fromkeys(q for sq in plan.subquestions for q in sq.queries))
             )
@@ -825,15 +877,15 @@ class Pipeline:
             "name": self.index_stats.get("embedding_model"),
             "via": "paper library",
         }
-        reranker = ranker.name
-        if self.library_reranker:
-            reranker = f"library:{self.library_reranker}" + (
-                f" + {ranker.name}" if ranker.name != "none" else ""
+        if not self.library_reranker:
+            st.notes.append(
+                "The paper library has no reranking model (PAPER_FETCH_RERANK_MODEL); passages "
+                "were read in retrieval order."
             )
 
         from .render import render  # late import: render depends on this module's State
 
-        answer = render(st, self.papers, self.models, self.policy)
+        answer = render(st, self.papers, self.models, self.policy, self.companions)
         log = {
             "pipeline_version": __version__,
             "prompt_version": self.prompts.version,
@@ -849,8 +901,13 @@ class Pipeline:
             "question": st.question,
             "model_backend": "mcp-client" if self.client else "ollama",
             "models": self.models,
-            "reranker": reranker,
+            "reranker": self.library_reranker,
             "collection": self.collection or None,
+            "companions": {
+                "available": sorted(self.companions),
+                "requested": st.requests,
+                "results": st.companions,
+            },
             "settings": {
                 k: (str(v) if not isinstance(v, (int, str)) else v) for k, v in vars(self.s).items()
             },

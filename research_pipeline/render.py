@@ -6,6 +6,7 @@ never types an author, a year, or a DOI, so it cannot invent one.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from .domains import GENERIC, DomainPolicy
@@ -13,6 +14,7 @@ from .schema import source_status
 from .verify import VERDICT_NUMBERS, VERDICT_UNCHECKED
 
 if TYPE_CHECKING:
+    from .companions import Companion
     from .pipeline import State
 
 LABEL_TEXT = {
@@ -35,6 +37,7 @@ def render(
     library: dict[str, dict[str, Any]],
     models: dict[str, Any],
     policy: DomainPolicy = GENERIC,
+    companions: Mapping[str, Companion] | None = None,
 ) -> str:
     """`library`: what the paper library said about each cited work (title, year, doi, authors)."""
     assert st.plan
@@ -152,7 +155,24 @@ def render(
         out += ["  " + line for line in claim_lines(supporting)]
     out.append("")
 
+    # Companion tools: printed from the tool's own records by code. Pointers, never evidence.
+    tools = {k: (companions or {}).get(k) for k in st.companions}
+    for key, comp in tools.items():
+        result = st.companions[key]
+        out += [f"## {comp.title if comp else key}", ""]
+        if "error" in result or comp is None:
+            out.append(
+                f"- The {key} tool was asked and did not answer"
+                f" ({result.get('error', 'not configured')}). That is not an absence of results."
+            )
+        else:
+            out += comp.render(result)
+        out.append("")
+
     out += ["## Limits of this answer", ""]
+    for key, comp in tools.items():
+        if comp and "error" not in st.companions[key]:
+            out += [f"- {line}" for line in comp.limits(st.companions[key])]
     if removed:
         out.append(
             f"- {len(removed)} drafted claim(s) were removed because their cited passage did "
@@ -207,6 +227,12 @@ def render(
         out.append(
             f"- {len(injected)} passage(s) were excluded for containing text addressed to an AI "
             "reader."
+        )
+    unreadable = [d for d in st.dropped_passages if "no_answer_from_model" in d["flags"]]
+    if unreadable:
+        out.append(
+            f"- {len(unreadable)} retrieved passage(s) were not used because the model gave no "
+            "usable answer when reading them (the call ran out of time or tokens)."
         )
     hidden = [d for d in st.dropped_passages if "hidden_characters" in d["flags"]]
     if hidden:

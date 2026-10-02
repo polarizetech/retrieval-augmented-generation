@@ -118,7 +118,6 @@ def settings_for(tmp_path: Path, **overrides: Any) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
         runs_dir=tmp_path / "runs",
-        reranker="none",
         verifier_model="",
         text_model="stub-model",
         max_rounds=2,
@@ -432,3 +431,71 @@ def test_a_profile_the_library_lacks_is_noted(
     log = asyncio.run(pipeline.run(QUESTION))
     assert any("no 'nowhere' profile" in note for note in log["notes"])
     assert log["domain"]["profile"] is None
+
+
+class Unreadable(ScriptedModel):
+    """Gives no usable answer for the null-result passage, and none when classifying the paper."""
+
+    def chat_json(
+        self, task: str, system: str, user: str, schema: dict[str, Any], **kw: Any
+    ) -> dict[str, Any]:
+        from research_pipeline.llm import ModelOutputError
+
+        if task == "classify_paper" or (task == "extract" and "did not change" in user):
+            raise ModelOutputError(f"{task}: cut off at the 2048-token cap")
+        return super().chat_json(task, system, user, schema, **kw)
+
+
+def test_one_call_with_no_answer_costs_that_item_not_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import pipeline as module
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    pipeline = Pipeline(settings_for(tmp_path), offline=True)
+    pipeline.llm = Unreadable()  # type: ignore[assignment]
+    log = asyncio.run(pipeline.run(QUESTION))
+    # The passage the model could not read was dropped and counted; the others became evidence.
+    assert {e["direction"] for e in log["evidence"]} == {"affirms"}
+    assert any("no_answer_from_model" in d["flags"] for d in log["dropped_passages"])
+    assert "the model gave no usable answer when reading them" in log["answer"]
+    # The paper could not be classified: graded unclear this run, and not cached as such.
+    assert {e["study_type"] for e in log["evidence"]} == {"unclear"}
+    assert any("no study-design answer" in n for n in log["notes"])
+    assert pipeline.notes.get("W1") is None
+
+
+def test_open_access_candidates_are_fetched_before_closed_ones(tmp_path: Path) -> None:
+    """A closed paper with the more relevant title must not take the only fetch."""
+    from research_pipeline.pipeline import State
+    from research_pipeline.schema import Candidate, Plan, SubQuestion
+
+    class Ordered(FakeLibrary):
+        async def relevance(self, targets: list[str], texts: list[str]) -> list[float]:
+            return [0.9 if "closed" in t.lower() else 0.2 for t in texts]
+
+    library = Ordered(papers_library(tmp_path))
+    pipeline = Pipeline(settings_for(tmp_path, max_fetch=1), offline=False)
+    st = State(QUESTION)
+    st.plan = Plan(QUESTION, "m", QUESTION, [SubQuestion("S1", QUESTION, "evidence", [])])
+    st.candidates = {
+        "10.1000/closed": Candidate(
+            "10.1000/closed",
+            "A closed-access trial",
+            2021,
+            {"doi": "10.1000/closed"},
+            [],
+            False,
+            [],
+        ),
+        "10.1000/w1": Candidate(
+            "10.1000/w1", "Training and blood pressure", 2020, {"doi": "10.1000/w1"}, [], True, []
+        ),
+    }
+    asyncio.run(pipeline.acquire(st, library))  # type: ignore[arg-type]
+    assert library.fetched == ["10.1000/w1"]
+    assert st.candidates["10.1000/w1"].outcome == "indexed"
+    assert st.candidates["10.1000/closed"].outcome == "over_budget"

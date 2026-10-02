@@ -1,4 +1,4 @@
-"""Entry points and pluggable parts: the CLI, rerankers, eval scoring."""
+"""Entry points: the CLI, and eval scoring."""
 
 from __future__ import annotations
 
@@ -11,48 +11,7 @@ import pytest
 
 from benchmarks.research.eval_pipeline import score
 from research_pipeline import __main__ as cli
-from research_pipeline import rerank
-from research_pipeline.config import Settings
-from research_pipeline.papers import Passage
 from tests.conftest import LibraryAdapter, papers_library
-
-
-class NamedModel:
-    s = Settings(text_model="text")
-
-
-def passages(*scores: float) -> list[Passage]:
-    return [Passage(f"W#p{i}", "W", i, 0, 1, f"text {i}", score=s) for i, s in enumerate(scores)]
-
-
-class TestRerankers:
-    def test_none_keeps_the_fused_retrieval_order(self) -> None:
-        assert rerank.NoReranker().score("q", passages(0.3, 0.1)) == [0.3, 0.1]
-
-    def test_llm_scores_in_batches_and_breaks_ties_by_retrieval(self) -> None:
-        class Scorer(NamedModel):
-            def chat_json(
-                self, task: str, system: str, user: str, schema: dict[str, Any], **_: Any
-            ) -> dict[str, Any]:
-                return {"scores": [1.0] * user.count("Passage ")}
-
-        ranker = rerank.LLMReranker(Scorer(), batch=2)  # type: ignore[arg-type]
-        assert ranker.score("q", passages(0.3, 0.1, 0.2)) == [1.3, 1.1, 1.2]
-        assert ranker.name == "llm:text"
-
-    def test_build_honours_the_setting(self) -> None:
-        llm: Any = NamedModel()
-        assert rerank.build(Settings(reranker="none"), llm).name == "none"
-        assert isinstance(rerank.build(Settings(reranker="llm"), llm), rerank.LLMReranker)
-        assert isinstance(rerank.build(Settings(reranker="auto"), llm), rerank.LLMReranker)
-        # A client model never reranks: a turn per four passages. It keeps the library's order.
-        assert rerank.build(Settings(reranker="auto"), None).name == "none"
-        with pytest.raises(ValueError, match="needs the local model"):
-            rerank.build(Settings(reranker="llm"), None)
-
-    def test_the_cross_encoder_setting_points_to_the_library(self) -> None:
-        with pytest.raises(ValueError, match="PAPER_FETCH_RERANK_MODEL"):
-            rerank.build(Settings(reranker="onnx"), NamedModel())  # type: ignore[arg-type]
 
 
 class TestCli:
