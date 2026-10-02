@@ -17,7 +17,7 @@ from typing import Protocol
 
 from . import prompts as _prompts
 from .config import Settings
-from .llm import Ollama
+from .llm import ModelOutputError, Ollama
 from .papers import Passage
 from .prompts import DEFAULT, Prompts
 
@@ -42,6 +42,7 @@ class LLMReranker:
         self.llm, self.batch, self.max_chars = llm, batch, max_chars
         self.prompts = prompts
         self.name = f"llm:{llm.s.text_model}"
+        self.failed = 0  # batches the model gave no usable answer for; they keep retrieval order
 
     def score(self, question: str, passages: list[Passage]) -> list[float]:
         out: list[float] = []
@@ -51,13 +52,19 @@ class LLMReranker:
                 f"Passage {n}:\n{_prompts.wrap(p.text[: self.max_chars])}"
                 for n, p in enumerate(group, 1)
             )
-            got = self.llm.chat_json(
-                "rerank",
-                self.prompts.rerank_system,
-                f"Research question: {question}\n\n{body}\n\n"
-                f"Score the {len(group)} passages in order.",
-                self.prompts.rerank_schema(len(group)),
-            )
+            try:
+                got = self.llm.chat_json(
+                    "rerank",
+                    self.prompts.rerank_system,
+                    f"Research question: {question}\n\n{body}\n\n"
+                    f"Score the {len(group)} passages in order.",
+                    self.prompts.rerank_schema(len(group)),
+                )
+            except ModelOutputError:
+                # One batch with no answer is not a reason to stop: its passages score zero, so
+                # they rank by retrieval order, below the batches that were scored.
+                self.failed += 1
+                got = {}
             scores = [float(s) for s in got.get("scores", [])][: len(group)]
             scores += [0.0] * (len(group) - len(scores))
             # Break ties by retrieval order so equal scores keep a stable, explainable ranking.
