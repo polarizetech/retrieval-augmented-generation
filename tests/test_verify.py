@@ -271,3 +271,25 @@ class TestAVerifierCallThatFails:
         claims, ev, passages = self._claims()
         with pytest.raises(LLMError, match="stopped answering"):
             verify.check_claims(claims, ev, passages, Gone(), ["m"])  # type: ignore[arg-type]
+
+
+def test_an_exact_quote_that_stops_inside_a_number_is_widened_to_the_whole_number() -> None:
+    passage = (
+        "Water aerobic exercise reduces the systolic and mean arterial blood pressure of the "
+        "participants by 11.71 and 5.9 mmHg respectively. Based on this study, it helps."
+    )
+    cut = (
+        "reduces the systolic and mean arterial blood pressure of the participants by 11.71 and 5."
+    )
+    quote, ratio = verify.anchor_quote(cut, passage)
+    assert ratio == 1.0
+    assert quote is not None
+    assert quote.endswith("by 11.71 and 5.9")
+    # ...and one that stops inside a word, or starts inside one.
+    quote, _ = verify.anchor_quote(
+        "ater aerobic exercise reduces the systolic and mean arter", passage
+    )
+    assert quote == "Water aerobic exercise reduces the systolic and mean arterial"
+    # A quote that ends at a sentence's full stop is left alone.
+    whole = "of the participants by 11.71 and 5.9 mmHg respectively."
+    assert verify.anchor_quote(whole, passage)[0] == whole

@@ -40,8 +40,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, rerank, verify
-from .client_llm import ClientLLM
+from . import __version__, verify
 from .config import Settings
 from .papers import PaperLibrary
 from .pipeline import Model, Pipeline, Progress, State
@@ -240,11 +239,6 @@ class NoveltyProbe:
         started = time.time()
         st = State(statement.strip())
         verifiers = self.pipe._resolve_models(st)
-        ranker = rerank.build(
-            self.s,
-            None if isinstance(self.pipe.llm, ClientLLM) else self.pipe.llm,
-            self.pipe.prompts,
-        )
         sq = SubQuestion("S1", statement.strip(), "evidence", all_q)
         st.plan = Plan(statement.strip(), "novelty_probe", statement.strip(), [sq])
 
@@ -256,7 +250,7 @@ class NoveltyProbe:
         saved = self.s.passages_per_subquestion
         self.s.passages_per_subquestion = max(saved, PASSAGES)
         try:
-            ranked = await asyncio.to_thread(self.pipe.select, sq, pools["S1"], ranker)
+            ranked = self.pipe.select(sq, pools["S1"])
         finally:
             self.s.passages_per_subquestion = saved
         self.progress("verify", f"{len(ranked)} passages x {len(verifiers)} verifier(s)")
@@ -292,7 +286,7 @@ class NoveltyProbe:
                 "pipeline_version": __version__,
                 "prompt_version": self.pipe.prompts.version,
                 "models": self.pipe.models,
-                "reranker": ranker.name,
+                "reranker": self.pipe.library_reranker,
                 "min_read": MIN_READ,
                 "offline": self.offline,
             },

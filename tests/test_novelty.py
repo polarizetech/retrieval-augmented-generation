@@ -54,7 +54,6 @@ def probe(tmp_path: Path, model: Verifier, statement: str = STATEMENT) -> dict[s
     settings = Settings(
         data_dir=tmp_path / "data",
         runs_dir=tmp_path / "runs",
-        reranker="none",
         verifier_model="",
         text_model="stub-model",
     )

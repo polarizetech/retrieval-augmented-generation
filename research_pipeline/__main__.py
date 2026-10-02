@@ -54,7 +54,6 @@ async def _status(settings: Settings) -> dict[str, object]:
         "collection": settings.collection or None,
         "text_model": settings.text_model,
         "verifier_model": settings.verifier_model or "(same as text)",
-        "reranker": settings.reranker,
     }
 
 
