@@ -128,7 +128,7 @@ def anchor_quote(
     norm_quote, norm_passage = _norm(quote), _norm(passage)
     start = norm_passage.find(norm_quote)
     if start >= 0:
-        return _slice_original(passage, start, len(norm_quote)), 1.0
+        return _whole_tokens(passage, _slice_original(passage, start, len(norm_quote))), 1.0
     best, best_ratio = None, 0.0
     for sentence in SENTENCE.split(passage):
         ratio = SequenceMatcher(None, norm_quote, _norm(sentence)).ratio()
@@ -139,6 +139,37 @@ def anchor_quote(
     if _negations(best) != _negations(quote) or _numbers(best) != _numbers(quote):
         return None, best_ratio
     return best, best_ratio
+
+
+def _continues(text: str, at: int) -> bool:
+    """Whether the character at `at` belongs to the same word or number as the one before it."""
+    here, before = text[at], text[at - 1]
+    if here.isalnum():
+        if before.isalnum():
+            return True
+        # the digits after a decimal point or thousands separator: "5." + "9", "1," + "200"
+        return before in ".," and here.isdigit() and at >= 2 and text[at - 2].isdigit()
+    if here in ".,":  # a separator inside a number: "5" + ".9"
+        return before.isdigit() and at + 1 < len(text) and text[at + 1].isdigit()
+    return False
+
+
+def _whole_tokens(passage: str, quote: str) -> str:
+    """Widen an exact match that starts or ends inside a word or a number to the whole token.
+
+    A model's quote can stop mid-number ("...by 11.71 and 5." for "5.9 mmHg") and still be an
+    exact substring of the passage. Stored that way it would misstate the figure, so the quote
+    is extended to the token's edge. The result is still text that exists in the source.
+    """
+    start = passage.find(quote)
+    if start < 0:
+        return quote
+    end = start + len(quote)
+    while start > 0 and _continues(passage, start):
+        start -= 1
+    while end < len(passage) and _continues(passage, end):
+        end += 1
+    return passage[start:end]
 
 
 def _slice_original(passage: str, norm_start: int, norm_len: int) -> str:

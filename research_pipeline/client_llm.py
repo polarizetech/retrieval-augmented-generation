@@ -110,7 +110,7 @@ class ClientLLM:
         return self.ollama.resolve(model)
 
     @property
-    def s(self) -> Any:  # rerankers read the configured text model from here
+    def s(self) -> Any:  # the configured settings, as on the local client
         return self.ollama.s
 
     # -- the MCP handler's side ------------------------------------------------------------

@@ -159,32 +159,6 @@ class Prompts:
             "required": ["study_type", "population"],
         }
 
-    # -- rerank ----------------------------------------------------------------------------
-    @property
-    def rerank_system(self) -> str:
-        return _join(
-            "You judge whether passages help answer a research question.",
-            DATA_RULE,
-            "Score each passage: 3 = directly reports a result that answers it, 2 = relevant "
-            "evidence or method detail, 1 = same topic only, 0 = unrelated. Topic overlap alone "
-            "is a 1.",
-        )
-
-    @staticmethod
-    def rerank_schema(n: int) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "scores": {
-                    "type": "array",
-                    "minItems": n,
-                    "maxItems": n,
-                    "items": {"type": "integer", "minimum": 0, "maximum": 3},
-                }
-            },
-            "required": ["scores"],
-        }
-
     # -- synthesise ------------------------------------------------------------------------
     @property
     def synth_system(self) -> str:
@@ -343,7 +317,6 @@ class Prompts:
                 self.plan_context(),
                 self.extract_system,
                 self.paper_system,
-                self.rerank_system,
                 self.synth_system,
                 self.gap_system,
                 self.verify_system,
@@ -374,14 +347,12 @@ EXTRACT_SYSTEM = DEFAULT.extract_system
 EXTRACT_SCHEMA = Prompts.EXTRACT_SCHEMA
 PAPER_SYSTEM = DEFAULT.paper_system
 PAPER_SCHEMA = DEFAULT.paper_schema()
-RERANK_SYSTEM = DEFAULT.rerank_system
 SYNTH_SYSTEM = DEFAULT.synth_system
 GAP_SYSTEM = DEFAULT.gap_system
 VERIFY_SYSTEM = DEFAULT.verify_system
 VERIFY_SCHEMA = Prompts.VERIFY_SCHEMA
 SUMMARY_SYSTEM = DEFAULT.summary_system
 plan_schema = DEFAULT.plan_schema
-rerank_schema = Prompts.rerank_schema
 synth_schema = Prompts.synth_schema
 gap_schema = Prompts.gap_schema
 summary_schema = Prompts.summary_schema

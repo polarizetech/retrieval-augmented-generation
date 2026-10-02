@@ -118,7 +118,6 @@ def settings_for(tmp_path: Path, **overrides: Any) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
         runs_dir=tmp_path / "runs",
-        reranker="none",
         verifier_model="",
         text_model="stub-model",
         max_rounds=2,
@@ -467,3 +466,36 @@ def test_one_call_with_no_answer_costs_that_item_not_the_run(
     assert {e["study_type"] for e in log["evidence"]} == {"unclear"}
     assert any("no study-design answer" in n for n in log["notes"])
     assert pipeline.notes.get("W1") is None
+
+
+def test_open_access_candidates_are_fetched_before_closed_ones(tmp_path: Path) -> None:
+    """A closed paper with the more relevant title must not take the only fetch."""
+    from research_pipeline.pipeline import State
+    from research_pipeline.schema import Candidate, Plan, SubQuestion
+
+    class Ordered(FakeLibrary):
+        async def relevance(self, targets: list[str], texts: list[str]) -> list[float]:
+            return [0.9 if "closed" in t.lower() else 0.2 for t in texts]
+
+    library = Ordered(papers_library(tmp_path))
+    pipeline = Pipeline(settings_for(tmp_path, max_fetch=1), offline=False)
+    st = State(QUESTION)
+    st.plan = Plan(QUESTION, "m", QUESTION, [SubQuestion("S1", QUESTION, "evidence", [])])
+    st.candidates = {
+        "10.1000/closed": Candidate(
+            "10.1000/closed",
+            "A closed-access trial",
+            2021,
+            {"doi": "10.1000/closed"},
+            [],
+            False,
+            [],
+        ),
+        "10.1000/w1": Candidate(
+            "10.1000/w1", "Training and blood pressure", 2020, {"doi": "10.1000/w1"}, [], True, []
+        ),
+    }
+    asyncio.run(pipeline.acquire(st, library))  # type: ignore[arg-type]
+    assert library.fetched == ["10.1000/w1"]
+    assert st.candidates["10.1000/w1"].outcome == "indexed"
+    assert st.candidates["10.1000/closed"].outcome == "over_budget"

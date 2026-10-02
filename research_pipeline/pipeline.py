@@ -1,6 +1,6 @@
 """The research run: a fixed sequence of stages, with the model called only inside them.
 
-    plan -> discover -> acquire+index -> retrieve -> rerank -> extract (evidence table)
+    plan -> discover -> acquire+index -> retrieve+rerank -> extract (evidence table)
          -> synthesise -> critique (new searches, not rewrites) -> verify -> grade -> render -> log
 
 Discovery, acquisition, indexing and retrieval are the paper library's (paper-fetch, over MCP):
@@ -29,7 +29,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, grading, integrity, rerank, safety, verify
+from . import __version__, grading, integrity, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
@@ -226,6 +226,7 @@ class Pipeline:
                         list(hit.get("providers") or []),
                     )
                 cand.queries.append(query)
+                cand.is_oa = cand.is_oa or hit.get("is_oa")
                 cand.title = cand.title or title
                 cand.work = cand.work or work
                 cand.full_text_in_library = cand.full_text_in_library or bool(
@@ -267,7 +268,10 @@ class Pipeline:
             )
             for cand, score in zip(unscored, scores, strict=True):
                 cand.relevance = round(float(score), 4)
-        fresh.sort(key=lambda c: -c.relevance)
+        # Among them, papers a provider reported as open access go first, and papers every
+        # provider reported as closed go last: a fetch of a closed paper spends budget and
+        # returns nothing to read. (Observed: all six fetches of a run went to closed papers.)
+        fresh.sort(key=lambda c: ({True: 0, None: 1, False: 2}[c.is_oa], -c.relevance))
 
         # Decide who gets fetched, and consume the budget, before any awaiting: this keeps the
         # same priority order and the same PIPELINE_MAX_FETCH accounting as the sequential version.
@@ -385,17 +389,13 @@ class Pipeline:
             out[sq.id] = kept
         return out
 
-    def select(
-        self, sq: SubQuestion, kept: list[Passage], ranker: rerank.Reranker
-    ) -> list[tuple[Passage, float]]:
-        if not kept:
-            return []
-        self.progress("rerank", f"{sq.id}: {len(kept)} candidates")
-        # The reranker sees passage text only: no year, venue or citation count to be biased by.
-        ranked = sorted(zip(kept, ranker.score(sq.text, kept), strict=True), key=lambda t: -t[1])
+    def select(self, sq: SubQuestion, kept: list[Passage]) -> list[tuple[Passage, float]]:
+        """The passages to read for a sub-question, in the library's order. The library ranks
+        (its cross-encoder sees passage text only: no year, venue or citation count to be biased
+        by); this only caps how many come from one paper and how many are read."""
         out: list[tuple[Passage, float]] = []
         per_paper: dict[str, int] = {}
-        for p, score in ranked:
+        for p, score in sorted(((p, p.fused) for p in kept), key=lambda t: -t[1]):
             # One paper repeating itself must not look like several sources.
             if per_paper.get(p.work, 0) >= self.s.max_passages_per_paper:
                 continue
@@ -765,7 +765,6 @@ class Pipeline:
         started = time.time()
         st = State(question.strip())
         verifiers = self._resolve_models(st)
-        ranker: rerank.Reranker = rerank.NoReranker()
 
         async def gather(lib: PaperLibrary, queries: list[str]) -> None:
             if self.offline:
@@ -777,10 +776,7 @@ class Pipeline:
             lib: PaperLibrary, targets: list[tuple[SubQuestion, list[str] | None]]
         ) -> None:
             pools = await self.pool(st, lib, targets)
-            ranked = [
-                (sq, await asyncio.to_thread(self.select, sq, pools[sq.id], ranker))
-                for sq, _ in targets
-            ]
+            ranked = [(sq, self.select(sq, pools[sq.id])) for sq, _ in targets]
             works = [p.work for _, chosen in ranked for p, _ in chosen]
             openings = await self.openings(lib, works)
             await asyncio.to_thread(self.extract_many, st, ranked, openings)
@@ -797,11 +793,6 @@ class Pipeline:
                         "queries were planned without the field's indexed terms."
                     )
             self.prompts = Prompts(self.policy, self.profile)
-            # Reranking by a client model would cost a turn per four passages; it keeps the
-            # library's order (and the library's cross-encoder, if it has one) instead.
-            ranker = rerank.build(
-                self.s, None if isinstance(self.llm, ClientLLM) else self.llm, self.prompts
-            )
 
             self.progress("plan", f"decomposing the question ({self.policy.label})")
             await asyncio.to_thread(self.plan, st)
@@ -843,15 +834,10 @@ class Pipeline:
             "name": self.index_stats.get("embedding_model"),
             "via": "paper library",
         }
-        if failed := getattr(ranker, "failed", 0):
+        if not self.library_reranker:
             st.notes.append(
-                f"{failed} reranking batch(es) got no usable answer from the model; their "
-                "passages kept the library's retrieval order."
-            )
-        reranker = ranker.name
-        if self.library_reranker:
-            reranker = f"library:{self.library_reranker}" + (
-                f" + {ranker.name}" if ranker.name != "none" else ""
+                "The paper library has no reranking model (PAPER_FETCH_RERANK_MODEL); passages "
+                "were read in retrieval order."
             )
 
         from .render import render  # late import: render depends on this module's State
@@ -872,7 +858,7 @@ class Pipeline:
             "question": st.question,
             "model_backend": "mcp-client" if self.client else "ollama",
             "models": self.models,
-            "reranker": reranker,
+            "reranker": self.library_reranker,
             "collection": self.collection or None,
             "settings": {
                 k: (str(v) if not isinstance(v, (int, str)) else v) for k, v in vars(self.s).items()

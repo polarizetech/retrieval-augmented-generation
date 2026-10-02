@@ -73,10 +73,6 @@ class Settings:
     client_batch: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_BATCH", 12))
     # A run whose client stops answering fails after this long instead of waiting forever.
     client_timeout: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TIMEOUT", 1800))
-    # "auto": the local model rescores passages when it is the pipeline's model; a client model
-    # does not (a turn per four passages). "llm" or "none" force it. Retrieval, embeddings and the
-    # optional cross-encoder are the paper library's (PAPER_FETCH_EMBED_MODEL, _RERANK_MODEL).
-    reranker: str = field(default_factory=lambda: os.environ.get("PIPELINE_RERANKER", "auto"))
 
     data_dir: Path = field(default_factory=lambda: _path("PIPELINE_DATA_DIR", "data/pipeline"))
     runs_dir: Path = field(default_factory=lambda: _path("PIPELINE_RUNS_DIR", "runs"))
@@ -101,7 +97,9 @@ class Settings:
     )
     hits_per_query: int = field(default_factory=lambda: _int("PIPELINE_HITS_PER_QUERY", 8))
     max_fetch: int = field(default_factory=lambda: _int("PIPELINE_MAX_FETCH", 12))
-    candidates_per_subquestion: int = field(default_factory=lambda: _int("PIPELINE_CANDIDATES", 40))
+    # Passages asked of the library per retrieval query. The library ranks them (BM25 + vectors,
+    # then its cross-encoder when PAPER_FETCH_RERANK_MODEL is set); nothing here re-scores them.
+    candidates_per_subquestion: int = field(default_factory=lambda: _int("PIPELINE_CANDIDATES", 12))
     passages_per_subquestion: int = field(default_factory=lambda: _int("PIPELINE_PASSAGES", 6))
     max_passages_per_paper: int = field(default_factory=lambda: _int("PIPELINE_MAX_PER_PAPER", 2))
     max_rounds: int = field(default_factory=lambda: _int("PIPELINE_MAX_ROUNDS", 2))
