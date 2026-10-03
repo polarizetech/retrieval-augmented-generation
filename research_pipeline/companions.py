@@ -51,98 +51,68 @@ class Companion:
 
 
 # ---------------------------------------------------------------------------------- datasets
-# dataset-fetch: discovery over open research datasets. Its contract (see its MCP instructions):
-# `providers` lists catalogues and the search filters each takes; `search(provider, filters)`
-# returns pinned refs; `describe(ref)` returns a card. `unavailable` never means "nothing exists".
+# dataset-fetch's `recommend(topic, hints, limit)`: it decides which of its catalogues to ask from
+# each one's declared scope, phrases the query in each catalogue's own terms, reads the records,
+# sets apart those that hold only documents, and ranks the rest by the topic's terms, giving the
+# reason. Every catalogue gets a status: ok, unavailable, skipped (and why) or error. This module
+# only asks it, once per query the planner wrote, and prints what it returned.
 
-TEXT_FILTERS = ("q", "query", "keywords")  # the free-text filter, under whichever name it has
-# How a query is put to a catalogue whose free-text search also returns things that are not
-# datasets. Zenodo holds papers, posters and software too, and a plain query returns mostly PDFs
-# of articles (observed: six of six); its query language can ask for records typed as datasets.
-QUERY_FORM = {"zenodo": "({query}) AND resource_type.type:dataset"}
-PER_SEARCH = 5  # refs asked of one catalogue for one query
-MAX_DESCRIBED = 12  # data cards read per run
 MAX_LISTED = 6  # datasets shown in the answer
-DOCUMENTS = frozenset({".pdf", ".doc", ".docx", ".ppt", ".pptx", ".md", ".txt", ".html", ".rtf"})
+NOT_ANSWERED = ("unavailable", "error")  # statuses that are silence, never "nothing found"
 
 
 async def find_datasets(up: Upstream, queries: list[str], rank: Rank) -> dict[str, Any]:
-    """Search every catalogue that takes a free-text query, read the cards of what was found."""
-    providers = (await up.call("providers"))["providers"]
-    searchable = [
-        (p["name"], f)
-        for p in providers
-        if (f := next((x for x in TEXT_FILTERS if x in p.get("search_filters", [])), None))
-    ]
-    searches: list[dict[str, Any]] = []
-    found: dict[str, str] = {}  # ref -> the query that found it first
+    """Ask dataset-fetch's `recommend` for each query; merge the ranked cards by reference.
+
+    `rank` is unused: dataset-fetch ranks, and says how.
+    """
+    del rank
+    cards: dict[str, dict[str, Any]] = {}
+    providers: dict[str, dict[str, Any]] = {}
+    documents: dict[str, dict[str, Any]] = {}
+    more = 0
+    failed: list[str] = []
     for query in queries:
-        for provider, text_filter in searchable:
-            row: dict[str, Any] = {"query": query, "provider": provider}
-            try:
-                asked = QUERY_FORM.get(provider, "{query}").format(query=query)
-                data = await up.call(
-                    "search", provider=provider, filters={text_filter: asked}, limit=PER_SEARCH
-                )
-            except UpstreamError as exc:
-                searches.append(row | {"status": exc.code, "error": str(exc)[:200]})
-                continue
-            refs = [r["ref"] for r in data.get("results", [])][:PER_SEARCH]
-            searches.append(row | {"status": "ok", "n": len(refs)})
-            for ref in refs:
-                found.setdefault(ref, query)
-
-    items: list[dict[str, Any]] = []
-    for ref, query in list(found.items())[:MAX_DESCRIBED]:
         try:
-            card = await up.call("describe", ref=ref)
-        except UpstreamError:
+            got = await up.call("recommend", topic=query, limit=MAX_LISTED)
+        except UpstreamError as exc:
+            # One query the tool refused (no content words, say) does not discard the others.
+            failed.append(f"“{query}” ({exc.code}: {str(exc)[:120]})")
             continue
-        files = card.get("files") or {}
-        extensions = files.get("extensions") or {}
-        items.append(
-            {
-                "ref": ref,
-                "provider": card.get("provider"),
-                "title": card.get("title"),
-                "doi": card.get("doi"),
-                "license": card.get("license"),
-                "creators": (card.get("creators") or [])[:3],
-                "total_bytes": card.get("total_bytes"),
-                "n_files": files.get("n_files"),
-                "extensions": extensions,
-                # None when the card lists no files: unknown, which is not "documents only".
-                "data_files": bool(set(extensions) - DOCUMENTS) if extensions else None,
-                "found_by": query,
-            }
-        )
-    scores = await rank([str(i["title"] or "") for i in items]) if items else []
-    for item, score in zip(items, scores, strict=True):
-        item["relevance"] = round(float(score), 4)
-    # A record whose files are all documents describes data rather than holding it: counted, not
-    # listed. The rest are ordered by closeness to the question.
-    documents = [i for i in items if i["data_files"] is False]
-    items = sorted(
-        (i for i in items if i["data_files"] is not False), key=lambda i: -i["relevance"]
-    )
+        for card in got.get("results", []):
+            seen = cards.get(card["ref"])
+            if seen is None or card.get("score", 0) > seen.get("score", 0):
+                cards[card["ref"]] = {**card, "asked_as": query}
+        for doc in got.get("documents_only", []):
+            documents.setdefault(doc["ref"], doc)
+        more += int(got.get("more_results") or 0)
+        for name, row in (got.get("providers") or {}).items():
+            # A catalogue that answered any query answered; one silent on every query did not.
+            if providers.get(name, {}).get("status") != "ok":
+                providers[name] = {"status": row.get("status"), "why": row.get("why")}
 
-    silent = sorted({s["provider"] for s in searches if s["status"] != "ok"})
+    # Known to hold data first, then unverified; each by dataset-fetch's own score.
+    items = sorted(
+        cards.values(), key=lambda c: (c.get("data_files") is not True, -c.get("score", 0))
+    )
+    asked = sorted(n for n, r in providers.items() if r["status"] not in ("skipped", None))
+    silent = sorted(n for n, r in providers.items() if r["status"] in NOT_ANSWERED)
     limits = []
+    if failed:
+        if len(failed) == len(queries):
+            raise UpstreamError("recommend answered none of the queries: " + "; ".join(failed))
+        limits.append("dataset-fetch did not answer for: " + "; ".join(failed) + ".")
     if silent:
         limits.append(
-            f"Dataset catalogues that did not answer at least once: {', '.join(silent)}. "
-            "Their silence is not an absence of datasets."
-        )
-    if len(found) > MAX_DESCRIBED:
-        limits.append(
-            f"{len(found) - MAX_DESCRIBED} further dataset record(s) were found but not read."
+            f"Dataset catalogues that did not answer: {', '.join(silent)}. Their silence is "
+            "not an absence of datasets."
         )
     return {
         "queries": queries,
-        "catalogues": [name for name, _ in searchable],
-        "searches": searches,
-        "found": len(found),
+        "asked": asked,
+        "providers": providers,
         "items": items[:MAX_LISTED],
+        "more": more + max(0, len(items) - MAX_LISTED),
         "documents_only": len(documents),
         "limits": limits,
     }
@@ -151,43 +121,72 @@ async def find_datasets(up: Upstream, queries: list[str], rank: Rank) -> dict[st
 def _size(n: int | None) -> str:
     if not n:
         return "size not stated"
-    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+    for unit, scale in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
         if n >= scale:
             return f"{n / scale:.1f} {unit}"
     return f"{n} bytes"
 
 
+def _files(card: dict[str, Any]) -> str:
+    files = card.get("files") or {}
+    n = files.get("n_files")
+    if not n:
+        return "files not listed by the catalogue"
+    kinds = files.get("extensions") or {}
+    shown = ", ".join(f"{ext} ×{k}" for ext, k in sorted(kinds.items())[:4])
+    return (
+        f"{n:,} file(s)" + (f" ({shown})" if shown else "") + f", {_size(card.get('total_bytes'))}"
+    )
+
+
 def render_datasets(result: dict[str, Any]) -> list[str]:
     asked = "; ".join(f"“{q}”" for q in result["queries"])
     out = [
-        f"Open dataset catalogues ({', '.join(result['catalogues']) or 'none available'}) were "
-        f"searched for: {asked}. Each entry is the catalogue's own record. Nothing was downloaded, "
-        "opened or assessed: whether a dataset can answer the question is for the reader to check.",
+        f"dataset-fetch was asked for datasets on: {asked}. It chose the catalogues whose declared "
+        f"scope covers the topic ({', '.join(result['asked']) or 'none'}), and ranked what they "
+        "returned by the topic's terms. Each entry is the catalogue's own record. Nothing was "
+        "downloaded, opened or assessed: whether a dataset can answer the question is for the "
+        "reader to check.",
         "",
     ]
     if not result["items"]:
-        out.append("- No dataset record with data files was found by these searches.")
-    for i in result["items"]:
-        kinds = ", ".join(f"{ext} ×{n}" for ext, n in sorted(i["extensions"].items())[:5])
-        files = (
-            f"{i['n_files']} file(s) ({kinds}), {_size(i['total_bytes'])}"
-            if kinds
-            else "files not listed by the catalogue (access may be restricted)"
-        )
-        stated = i["license"] if i["license"] and i["license"].lower() != "unknown" else None
-        licence = stated or "no licence stated, which is not permission to reuse"
-        who = ", ".join(i["creators"]) + (" et al." if len(i["creators"]) == 3 else "")
-        out.append(
-            f"- **{i['title'] or i['ref']}** — {i['provider']}; {licence}; {files}"
-            + (f"; {who}" if who else "")
-            + (f"; doi:{i['doi']}" if i["doi"] else "")
-            + f". Ref `{i['ref']}`."
-        )
+        out.append("- No dataset record with data files was found.")
+    for c in result["items"]:
+        licence = c.get("license")
+        if not licence or str(licence).lower() == "unknown":
+            licence = "no licence stated, which is not permission to reuse"
+        creators = list(c.get("creators") or [])
+        who = ", ".join(creators[:3]) + (" et al." if len(creators) > 3 else "")
+        doi = str(c.get("doi") or "").removeprefix("doi:").removeprefix("https://doi.org/")
+        facts = [
+            f"{c.get('provider')}" + (f" ({c['kind']})" if c.get("kind") else ""),
+            licence,
+            _files(c),
+        ]
+        if isinstance(c.get("n_subjects"), int):
+            facts.append(f"{c['n_subjects']} subjects")
+        if c.get("modalities"):
+            facts.append(", ".join(c["modalities"]))
+        if who:
+            facts.append(who)
+        if doi:
+            facts.append(f"doi:{doi}")
+        line = f"- **{c.get('title') or c['ref']}** — {'; '.join(facts)}. Ref `{c['ref']}`."
+        if c.get("score_reason"):
+            line += f" *Why listed: {c['score_reason']}.*"
+        if c.get("data_files") is not True:
+            line += " *Whether it holds data files could not be verified.*"
+        out.append(line)
+    tail = []
+    if result.get("more"):
+        tail.append(f"{result['more']} further record(s) ranked below these")
     if result.get("documents_only"):
-        out.append(
-            f"- {result['documents_only']} further record(s) hold only documents (a PDF of an "
-            "article, say) and are not listed: they describe data rather than hold it."
+        tail.append(
+            f"{result['documents_only']} record(s) hold only documents (an article PDF, a "
+            "protocol) and describe data rather than hold it"
         )
+    if tail:
+        out.append("- Not listed: " + "; ".join(tail) + ".")
     return out
 
 
