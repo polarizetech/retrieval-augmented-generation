@@ -116,10 +116,10 @@ configured companion is for and may request it, with queries, in the plan it alr
 then calls the tool and prints what its own records say. No model writes that section, and it
 never counts as evidence for a claim.
 
-One companion ships: `datasets`, which asks
-dataset-fetch's open-data catalogues for datasets that could test the question, and adds a
-"Datasets that could test this" section (title, licence, files, DOI, a pinned reference). Nothing
-is downloaded or assessed. Enable it under `companions` in `config/mcp-gateway.json`. Adding
+One companion ships: `datasets`, which asks dataset-fetch's `recommend` (it needs a
+dataset-fetch with that tool) for datasets that could test the question, and adds a "Datasets that
+could test this" section: title, catalogue, licence, files, subjects, DOI, a pinned reference and
+why it was listed. Nothing is downloaded or assessed. Enable it under `companions` in `config/mcp-gateway.json`. Adding
 another tool is one entry in `research_pipeline/companions.py`.
 
 ### Novelty probe: has someone already done this?
