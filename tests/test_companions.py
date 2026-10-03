@@ -16,30 +16,37 @@ from research_pipeline.upstream import UpstreamError
 from tests.conftest import LibraryAdapter, hold_w1, papers_library
 from tests.test_pipeline import QUESTION, ScriptedModel, settings_for
 
-CARDS = {
-    "zenodo/1@2024": {
-        "provider": "zenodo",
-        "title": "Blood pressure recordings before and after aerobic training",
-        "doi": "10.5281/zenodo.1",
-        "license": "cc-by-4.0",
-        "creators": ["A One", "B Two", "C Three", "D Four"],
-        "total_bytes": 2_500_000,
-        "files": {"n_files": 3, "extensions": {".csv": 2, ".pdf": 1}},
-    },
-    "zenodo/2@2023": {
-        "provider": "zenodo",
-        "title": "Aerobic training lowered blood pressure: a report",
-        "doi": None,
-        "license": None,
-        "creators": [],
-        "total_bytes": 170_263,
-        "files": {"n_files": 1, "extensions": {".pdf": 1}},
-    },
+DATA_CARD = {
+    "ref": "physionet/bp-exercise@1.0.0",
+    "title": "Blood pressure before and after aerobic training",
+    "license": "ODC-By-1.0",
+    "doi": "doi:10.13026/abc",
+    "creators": ["A One", "B Two", "C Three", "D Four"],
+    "total_bytes": 2_500_000,
+    "files": {"n_files": 3, "extensions": {".csv": 2, ".hea": 1}, "data_files": True},
+    "data_files": True,
+    "kind": "database",
+    "n_subjects": 48,
+    "modalities": ["blood pressure"],
+    "provider": "physionet",
+    "score": 0.8,
+    "score_reason": "matched 4 of 5 topic terms",
+}
+UNVERIFIED = {
+    "ref": "osf/xyz@2024",
+    "title": "Exercise physiology study",
+    "license": None,
+    "doi": None,
+    "creators": [],
+    "files": {"n_files": 0, "extensions": None},
+    "data_files": None,
+    "provider": "osf",
+    "score": 0.9,
 }
 
 
 class FakeDatasets:
-    """dataset-fetch's contract: providers, search (per provider), describe."""
+    """dataset-fetch's `recommend` contract, as returned for each topic."""
 
     def __init__(self, *, down: tuple[str, ...] = ()) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -53,63 +60,75 @@ class FakeDatasets:
 
     async def call(self, tool: str, **kw: Any) -> Any:
         self.calls.append((tool, kw))
-        if tool == "providers":
-            return {
-                "providers": [
-                    {"name": "zenodo", "search_filters": ["q", "size"]},
-                    {"name": "eegdash", "search_filters": ["modality", "query"]},
-                    {"name": "gfz", "search_filters": []},  # no free-text search: never asked
-                ]
-            }
-        if tool == "search":
-            if kw["provider"] in self.down:
-                raise UpstreamError("search: timed out", "unavailable")
-            refs = list(CARDS) if kw["provider"] == "zenodo" else []
-            return {"n": len(refs), "results": [{"ref": r} for r in refs]}
-        assert tool == "describe"
-        return {"ref": kw["ref"], **CARDS[kw["ref"]]}
+        assert tool == "recommend"
+        statuses = {
+            "physionet": {"status": "ok", "why": None},
+            "osf": {"status": "ok", "why": None},
+            "gfz": {"status": "skipped", "why": "outside its scope"},
+        }
+        for name in self.down:
+            statuses[name] = {"status": "unavailable", "why": "no answer in 20 s"}
+        lower = {**DATA_CARD, "score": 0.4}  # the same record, found by the second query
+        return {
+            "results": [UNVERIFIED, DATA_CARD] if "first" in kw["topic"] else [lower],
+            "documents_only": [{"ref": "zenodo/1@2022", "title": "A PDF", "why": "documents"}],
+            "more_results": 2,
+            "providers": statuses,
+        }
 
 
 async def rank(texts: list[str]) -> list[float]:
-    return [0.9 if "report" in t else 0.5 for t in texts]
+    raise AssertionError("dataset-fetch ranks; the companion never asks the library to")
 
 
-def test_datasets_are_found_across_catalogues_and_listed_from_their_records() -> None:
-    up = FakeDatasets(down=("eegdash",))
-    result = asyncio.run(companions.find_datasets(up, ["blood pressure training"], rank))  # type: ignore[arg-type]
-    searched = [(kw["provider"], kw["filters"]) for tool, kw in up.calls if tool == "search"]
-    # Each catalogue is asked with its own name for the free-text filter; gfz has none.
-    assert searched == [
-        ("zenodo", {"q": "(blood pressure training) AND resource_type.type:dataset"}),
-        ("eegdash", {"query": "blood pressure training"}),
+def test_one_recommend_call_per_query_merged_and_listed_from_its_cards() -> None:
+    up = FakeDatasets(down=("zenodo",))
+    result = asyncio.run(companions.find_datasets(up, ["first topic", "second topic"], rank))  # type: ignore[arg-type]
+    assert [(t, kw["topic"]) for t, kw in up.calls] == [
+        ("recommend", "first topic"),
+        ("recommend", "second topic"),
     ]
-    # The record that holds only a PDF is counted, not listed, although it scored higher.
-    assert [i["ref"] for i in result["items"]] == ["zenodo/1@2024"]
+    # Verified data first, although the unverified card scored higher; the duplicate card
+    # keeps its better score.
+    assert [i["ref"] for i in result["items"]] == ["physionet/bp-exercise@1.0.0", "osf/xyz@2024"]
+    assert result["items"][0]["score"] == 0.8
+    assert result["asked"] == ["osf", "physionet", "zenodo"]
     assert result["documents_only"] == 1
+    assert result["more"] == 4
     assert result["limits"] == [
-        "Dataset catalogues that did not answer at least once: eegdash. "
-        "Their silence is not an absence of datasets."
+        "Dataset catalogues that did not answer: zenodo. Their silence is not an absence of "
+        "datasets."
     ]
     lines = "\n".join(companions.render_datasets(result))
-    assert "Blood pressure recordings before and after aerobic training" in lines
-    assert "cc-by-4.0; 3 file(s) (.csv ×2, .pdf ×1), 2.5 MB; A One, B Two, C Three et al." in lines
-    assert "doi:10.5281/zenodo.1. Ref `zenodo/1@2024`." in lines
-    assert "1 further record(s) hold only documents" in lines
+    assert "**Blood pressure before and after aerobic training** — physionet (database)" in lines
+    assert "ODC-By-1.0; 3 file(s) (.csv ×2, .hea ×1), 2.5 MB; 48 subjects" in lines
+    assert "A One, B Two, C Three et al.; doi:10.13026/abc." in lines  # no doubled "doi:"
+    assert "*Why listed: matched 4 of 5 topic terms.*" in lines
+    assert "no licence stated, which is not permission to reuse" in lines
+    assert "files not listed by the catalogue" in lines
+    assert "Whether it holds data files could not be verified" in lines
+    assert "Not listed: 4 further record(s) ranked below these; 1 record(s) hold only" in lines
     assert "Nothing was downloaded" in lines
+
+
+def test_a_catalogue_that_answers_one_query_is_not_reported_silent() -> None:
+    class Flaky(FakeDatasets):
+        async def call(self, tool: str, **kw: Any) -> Any:
+            self.down = ("osf",) if "first" in kw["topic"] else ()
+            return await super().call(tool, **kw)
+
+    result = asyncio.run(companions.find_datasets(Flaky(), ["first", "second"], rank))  # type: ignore[arg-type]
+    assert result["limits"] == []
 
 
 def test_nothing_found_is_said_plainly() -> None:
     class Empty(FakeDatasets):
         async def call(self, tool: str, **kw: Any) -> Any:
-            if tool == "search":
-                return {"n": 0, "results": []}
-            return await super().call(tool, **kw)
+            return {"results": [], "documents_only": [], "more_results": 0, "providers": {}}
 
     result = asyncio.run(companions.find_datasets(Empty(), ["x"], rank))  # type: ignore[arg-type]
     assert result["items"] == []
-    assert "- No dataset record with data files was found by these searches." in (
-        companions.render_datasets(result)
-    )
+    assert "- No dataset record with data files was found." in companions.render_datasets(result)
 
 
 def test_only_configured_companions_are_offered(tmp_path: Path) -> None:
@@ -174,9 +193,9 @@ def test_a_requested_companion_adds_its_section(
     ]
     answer = log["answer"]
     section = answer.split("## Datasets that could test this")[1].split("## Limits")[0]
-    assert "Blood pressure recordings before and after aerobic training" in section
+    assert "Blood pressure before and after aerobic training" in section
     assert answer.index("## Datasets that could test this") < answer.index("## Limits")
-    assert log["companions"]["results"]["datasets"]["found"] == 2
+    assert log["companions"]["results"]["datasets"]["documents_only"] == 1
     # A companion is a pointer for the reader: it never becomes evidence for a claim.
     assert all(e["work"] == "W1" for e in log["evidence"])
 
@@ -202,25 +221,17 @@ def test_an_offline_run_asks_no_companion(tmp_path: Path, monkeypatch: pytest.Mo
     assert "## Datasets" not in log["answer"]
 
 
-def test_a_record_with_no_licence_or_no_file_list_says_so() -> None:
-    result = {
-        "queries": ["q"],
-        "catalogues": ["zenodo"],
-        "items": [
-            {
-                "ref": "zenodo/3@2021",
-                "provider": "zenodo",
-                "title": "A study dataset",
-                "doi": None,
-                "license": "unknown",
-                "creators": [],
-                "total_bytes": None,
-                "n_files": 0,
-                "extensions": {},
-                "data_files": None,
-            }
-        ],
-    }
-    line = companions.render_datasets(result)[-1]
-    assert "no licence stated, which is not permission to reuse" in line
-    assert "files not listed by the catalogue (access may be restricted)" in line
+def test_one_refused_query_keeps_the_others_results() -> None:
+    class Picky(FakeDatasets):
+        async def call(self, tool: str, **kw: Any) -> Any:
+            if kw["topic"] == "the and of":
+                raise UpstreamError("the topic has no content words to search for", "tool_error")
+            return await super().call(tool, **kw)
+
+    result = asyncio.run(companions.find_datasets(Picky(), ["first topic", "the and of"], rank))  # type: ignore[arg-type]
+    assert result["items"]
+    assert result["limits"][0].startswith(
+        "dataset-fetch did not answer for: “the and of” (tool_error"
+    )
+    with pytest.raises(UpstreamError, match="answered none of the queries"):
+        asyncio.run(companions.find_datasets(Picky(), ["the and of"], rank))  # type: ignore[arg-type]

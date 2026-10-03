@@ -108,11 +108,15 @@ provides that, used on the same terms as every other step:
 3. **Code prints it.** The section comes from the tool's own records. No model writes it, and it
    never enters the evidence table: it is a pointer for the reader, not support for a claim.
 
-The `datasets` companion speaks dataset-fetch's MCP contract: it asks which catalogues take a
-free-text query, searches each (Zenodo restricted to records typed as datasets), reads the data
-cards, drops records that hold only documents (counted, not listed), and orders the rest by the
-paper library's `relevance` to the question. A catalogue that did not answer is named in the
-answer's limits. Measured: two queries over three catalogues, ten cards read, 14 s.
+The `datasets` companion makes one call per planner query to dataset-fetch's `recommend`, which
+owns the dataset-side intelligence the way the paper library owns the paper side: it asks only
+the catalogues whose declared scope covers the topic, phrases each query in that catalogue's own
+terms, sets apart records that hold only documents, and ranks the rest by the topic's terms with
+a stated reason. The companion merges the cards by reference, lists verified data first, and
+prints the tool's own fields and reason. A catalogue that answered no query is named in the
+answer's limits. Measured: one query, four catalogues asked (OpenNeuro, PhysioNet, Zenodo, OSF)
+and ten skipped with reasons, 19 s; every listed record held data, against none of six with the
+earlier per-catalogue loop.
 
 To add a companion, write `run` (call the tool, return plain records) and `render` (print them)
 and register a `Companion`. Nothing in the pipeline changes.
