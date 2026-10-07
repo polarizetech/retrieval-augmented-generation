@@ -109,18 +109,32 @@ remembered by the library, so a later run on the same concept is told what earli
 Set `PIPELINE_VERIFIER_MODEL` to a model from a different family than the text model. Without it
 the text model checks its own claims, and every answer says so.
 
-### Companion tools: datasets
+### Companion tools: datasets and patents
 
 A run can loop in another tool when the question calls for it. The planner is told what each
 configured companion is for and may request it, with queries, in the plan it already writes; code
 then calls the tool and prints what its own records say. No model writes that section, and it
 never counts as evidence for a claim.
 
-One companion ships: `datasets`, which asks dataset-fetch's `recommend` (it needs a
-dataset-fetch with that tool) for datasets that could test the question, and adds a "Datasets that
-could test this" section: title, catalogue, licence, files, subjects, DOI, a pinned reference and
-why it was listed. Nothing is downloaded or assessed. Enable it under `companions` in `config/mcp-gateway.json`. Adding
-another tool is one entry in `research_pipeline/companions.py`.
+Two companions ship. Both are off until enabled under `companions` in
+`config/mcp-gateway.json`, and each is asked only when the planner judges that the question calls
+for it; most questions call for neither.
+
+- `datasets` asks [dataset-fetch](https://github.com/polarizetech/dataset-fetch)'s `recommend` (it
+  needs a dataset-fetch with that tool) for datasets that could test the question, and adds a
+  "Datasets that could test this" section: title, catalogue, licence, files, subjects, DOI, a
+  pinned reference and why it was listed. Nothing is downloaded or assessed.
+- `patents` runs [patent-fetch](https://github.com/polarizetech/patent-fetch)'s
+  `patent-fetch --json search` when the question is about a device, a method or another
+  invention, and adds an "Existing patents on this" section: title, publication number, year,
+  applicants or inventors, classes and a link, ordered by how close each title sits to the
+  question. Nothing is fetched or read, and it is not a legal opinion: the section says so, and
+  the limits name every patent service that was not asked or did not answer. Without a patent
+  service account, patent-fetch can only search life-science patents up to 2012; the answer says
+  that too.
+
+Adding another tool is one entry in `research_pipeline/companions.py`: an MCP server or a command
+line that prints JSON.
 
 ### Novelty probe: has someone already done this?
 

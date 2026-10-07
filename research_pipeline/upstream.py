@@ -1,15 +1,21 @@
-"""A client for one MCP server named in the gateway config, spoken to over stdio.
+"""Clients for the other programs named in the gateway config.
 
 The pipeline reaches other tools this way: the paper library (`upstreams.papers`) and companion
 tools (`companions.<key>`, see companions.py). Each is a separate program with its own repository;
-this module only spawns it and calls its tools. Every such server answers with one envelope:
+this module only spawns it and calls it.
+
+`Upstream` speaks to an MCP server over stdio. Every such server answers with one envelope:
 
     {"ok": true, "data": ...}
     {"ok": false, "code": "not_found" | "unavailable" | "tool_error", "error": "..."}
+
+`Command` runs a tool that ships a command line and no MCP server: it is started once per call,
+with fixed arguments (never through a shell), and its standard output is read as JSON.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import AsyncExitStack
@@ -93,3 +99,57 @@ class Upstream:
     async def call(self, tool: str, **arguments: Any) -> Any:
         """The `data` of a successful call."""
         return (await self._call(tool, **arguments))["data"]
+
+
+class Command:
+    """A companion that is a command line: `await tool.run("search", query, "-n", "5")`.
+
+    The gateway config gives the command and any leading arguments (`"args": ["--json"]`). Each
+    call starts it afresh with those plus the call's own arguments, as an argument list: nothing
+    a model wrote is ever interpreted by a shell. Standard output must be one JSON value.
+    """
+
+    def __init__(self, gateway_config: Path, name: str, section: str = "companions"):
+        spec = spec_for(gateway_config, name, section)
+        if not spec:
+            raise UpstreamError(f"no '{name}' {section.rstrip('s')} in {gateway_config}")
+        self.name, self.spec = name, spec
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def run(self, *arguments: str, timeout: float = 120.0) -> Any:
+        argv = [self.spec["command"], *(str(v) for v in self.spec.get("args", [])), *arguments]
+        env = dict(os.environ)
+        env.update({str(k): str(v) for k, v in self.spec.get("env", {}).items()})
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.spec.get("cwd"),
+                env=env,
+            )
+        except OSError as exc:
+            raise UpstreamError(
+                f"{self.name}: cannot start {argv[0]!r}: {exc}", "unavailable"
+            ) from exc
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        except TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            raise UpstreamError(
+                f"{self.name}: no answer in {timeout:.0f} s", "unavailable"
+            ) from exc
+        if proc.returncode != 0:
+            detail = err.decode(errors="replace").strip().splitlines()[-1:] or ["no message"]
+            raise UpstreamError(f"{self.name}: exit {proc.returncode}: {detail[0][:300]}")
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as exc:
+            raise UpstreamError(f"{self.name}: output is not JSON: {out[:200]!r}") from exc
