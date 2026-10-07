@@ -16,7 +16,12 @@ reader, not support for a claim.
 A companion is configured in the gateway config, apart from the federated upstreams (its tools
 are not offered to MCP clients through the gateway):
 
-    "companions": {"datasets": {"command": "dataset-fetch-mcp"}}
+    "companions": {"datasets": {"command": "dataset-fetch-mcp"},
+                   "patents": {"command": "patent-fetch", "args": ["--json"]}}
+
+A companion is reached the way its own repository offers: an MCP server (`transport="mcp"`, an
+`upstream.Upstream`) or a command line that prints JSON (`transport="command"`, an
+`upstream.Command`).
 
 To add one: write its `run` (call the tool, return plain records) and `render` (print them), and
 register a `Companion` below. Nothing in the pipeline changes.
@@ -29,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .upstream import Upstream, UpstreamError, spec_for
+from .upstream import Command, Upstream, UpstreamError, spec_for
 
 SECTION = "companions"
 Rank = Callable[[list[str]], Awaitable[list[float]]]  # texts -> closeness to the question, 0..1
@@ -41,9 +46,10 @@ class Companion:
     title: str  # the heading of its section in the answer
     when: str  # for the planner: when requesting it serves the question
     ask: str  # for the planner: what each query should look like
-    run: Callable[[Upstream, list[str], Rank], Awaitable[dict[str, Any]]]
+    run: Callable[[Any, list[str], Rank], Awaitable[dict[str, Any]]]  # Any: its transport's client
     render: Callable[[dict[str, Any]], list[str]]
     max_queries: int = 2
+    transport: str = "mcp"  # "mcp": an Upstream; "command": a Command
 
     def limits(self, result: dict[str, Any]) -> list[str]:
         """Lines for the answer's limits: what the tool could not be asked or did not answer."""
@@ -206,7 +212,144 @@ DATASETS = Companion(
     render=render_datasets,
 )
 
-REGISTRY: dict[str, Companion] = {c.key: c for c in (DATASETS,)}
+# ---------------------------------------------------------------------------------- patents
+# patent-fetch ships a command line and no MCP server: `patent-fetch --json search "<words>"`
+# asks its patent services, merges what they answer by publication number, and says by name
+# which answered. It does not rank, so the hits are ordered here by how close each title sits to
+# the question (the paper library's relevance, the same measure that orders fetches). Nothing is
+# fetched: this lists what a search matched, from the services' own records.
+
+PATENTS_LISTED = 6
+PATENTS_PER_QUERY = 8
+
+
+async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[str, Any]:
+    """Run patent-fetch's search for each query; merge the hits by publication number."""
+    hits: dict[str, dict[str, Any]] = {}
+    providers: dict[str, dict[str, Any]] = {}
+    failed: list[str] = []
+    for query in queries:
+        try:
+            got = await tool.run("search", query, "-n", str(PATENTS_PER_QUERY))
+        except UpstreamError as exc:
+            failed.append(f"“{query}” ({str(exc)[:120]})")
+            continue
+        for hit in got.get("hits", []):
+            hits.setdefault(hit["id"], {**hit, "asked_as": query})
+        for row in got.get("providers", []):
+            # A service that answered any query answered; one silent on every query did not.
+            if providers.get(row["provider"], {}).get("status") not in ("ok", "cache"):
+                providers[row["provider"]] = {
+                    "status": row.get("status"),
+                    "why": row.get("detail"),
+                }
+    if failed and len(failed) == len(queries):
+        raise UpstreamError("patent-fetch answered none of the queries: " + "; ".join(failed))
+
+    items = list(hits.values())
+    scores = await rank([h.get("title") or "" for h in items]) if items else []
+    for hit, score in zip(items, scores, strict=True):
+        hit["relevance"] = round(float(score), 4)
+    items.sort(key=lambda h: (-h["relevance"], -(h.get("year") or 0)))
+
+    answered = sorted(n for n, r in providers.items() if r["status"] in ("ok", "cache"))
+    no_key = sorted(n for n, r in providers.items() if r["status"] == "skipped")
+    silent = sorted(n for n, r in providers.items() if r["status"] in NOT_ANSWERED)
+    limits = []
+    if failed:
+        limits.append("patent-fetch did not answer for: " + "; ".join(failed) + ".")
+    if not answered:
+        limits.append("No patent service answered, so the patent search says nothing either way.")
+    elif answered == ["europepmc"]:
+        limits.append(
+            "The only patent service that answered was Europe PMC's archive: life-science "
+            "patents only, and none after 2012. Later patents, and other fields, were not searched."
+        )
+    if no_key:
+        limits.append(f"Patent services not asked (no account configured): {', '.join(no_key)}.")
+    if silent:
+        limits.append(
+            f"Patent services that did not answer: {', '.join(silent)}. Their silence is not an "
+            "absence of patents."
+        )
+    return {
+        "queries": queries,
+        "answered": answered,
+        "providers": providers,
+        "items": [
+            {
+                k: h.get(k)
+                for k in (
+                    "id",
+                    "kind",
+                    "title",
+                    "year",
+                    "applicants",
+                    "inventors",
+                    "classifications",
+                    "status",
+                    "url",
+                    "found_by",
+                    "asked_as",
+                    "relevance",
+                )
+            }
+            for h in items[:PATENTS_LISTED]
+        ],
+        "more": max(0, len(items) - PATENTS_LISTED),
+        "limits": limits,
+    }
+
+
+def render_patents(result: dict[str, Any]) -> list[str]:
+    asked = "; ".join(f"“{q}”" for q in result["queries"])
+    out = [
+        f"patent-fetch searched for: {asked}. Services that answered: "
+        f"{', '.join(result['answered']) or 'none'}. Each entry is the service's own record, "
+        "ordered by how close its title sits to the question; none was opened or read. This is "
+        "what a keyword search matched, not a legal opinion: it does not say whether a patent is "
+        "valid, in force, or covers anything, and finding none is not evidence that none exists.",
+        "",
+    ]
+    if not result["items"]:
+        out.append("- No patent record was returned.")
+    for h in result["items"]:
+        who = list(h.get("applicants") or []) or list(h.get("inventors") or [])
+        named = ", ".join(who[:3]) + (" et al." if len(who) > 3 else "")
+        facts = [str(h["year"]) if h.get("year") else "year not stated"]
+        if named:
+            facts.append(named)
+        if h.get("classifications"):
+            facts.append("classes " + ", ".join(h["classifications"][:3]))
+        if h.get("status"):
+            facts.append(f"status as the service reports it: {h['status']}")
+        line = f"- **{h.get('title') or h['id']}** — `{h['id']}`; {'; '.join(facts)}."
+        if h.get("url"):
+            line += f" {h['url']}"
+        out.append(line)
+    if result.get("more"):
+        out.append(f"- Not listed: {result['more']} further record(s) ranked below these.")
+    return out
+
+
+PATENTS = Companion(
+    key="patents",
+    title="Existing patents on this",
+    when=(
+        "the question is about a device, an apparatus, a method of treatment or measurement, a "
+        "compound or another invention, so a reader would want to know what has already been "
+        "patented"
+    ),
+    ask=(
+        "1-2 short keyword queries, each naming the invention and what it does the way a patent "
+        "title would"
+    ),
+    run=find_patents,
+    render=render_patents,
+    transport="command",
+)
+
+REGISTRY: dict[str, Companion] = {c.key: c for c in (DATASETS, PATENTS)}
 
 
 def configured(gateway_config: Path) -> dict[str, Companion]:
@@ -214,5 +357,8 @@ def configured(gateway_config: Path) -> dict[str, Companion]:
     return {k: c for k, c in REGISTRY.items() if spec_for(gateway_config, k, SECTION)}
 
 
-def connect(gateway_config: Path, key: str) -> Upstream:
+def connect(gateway_config: Path, key: str) -> Upstream | Command:
+    """The client for a configured companion, by the transport it declares."""
+    if REGISTRY[key].transport == "command":
+        return Command(gateway_config, key, SECTION)
     return Upstream(gateway_config, key, SECTION)

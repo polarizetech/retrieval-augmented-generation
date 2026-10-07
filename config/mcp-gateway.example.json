@@ -24,6 +24,12 @@
       "command": "dataset-fetch-mcp",
       "args": [],
       "enabled": false
+    },
+    "patents": {
+      "_comment": "patent-fetch: finds existing patents (https://github.com/polarizetech/patent-fetch). It ships a command line, not an MCP server, so the pipeline runs `patent-fetch --json search ...`. Adds an 'Existing patents on this' section from the patent services' own records. Without an EPO OPS key it can only search life-science patents up to 2012, and the answer says so.",
+      "command": "patent-fetch",
+      "args": ["--json"],
+      "enabled": false
     }
   },
   "web_search": {
