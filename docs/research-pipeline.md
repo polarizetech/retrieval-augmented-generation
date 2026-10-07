@@ -118,8 +118,21 @@ answer's limits. Measured: one query, four catalogues asked (OpenNeuro, PhysioNe
 and ten skipped with reasons, 19 s; every listed record held data, against none of six with the
 earlier per-catalogue loop.
 
+The `patents` companion runs patent-fetch's command line (`patent-fetch --json search`, once per
+planner query): that repository ships no MCP server, and offers the command for exactly this.
+The command is started with an argument list, so a query a model wrote is one argument and no
+shell reads it. patent-fetch merges its services' hits by publication number and reports each
+service's status, but does not rank; the companion orders the hits by the paper library's
+`relevance` of each title to the question, the measure that orders paper fetches. It prints the
+services' own fields (number, year, applicants or inventors, classes, status in the service's
+words, link) and fetches nothing. Its limits name the services that had no account configured or
+did not answer, and say so when only Europe PMC's archive answered (life-science patents, none
+after 2012), because a search that could not see recent patents must not read as "none exist".
+Measured: two queries, 16 distinct records, six listed.
+
 To add a companion, write `run` (call the tool, return plain records) and `render` (print them)
-and register a `Companion`. Nothing in the pipeline changes.
+and register a `Companion` with its transport (`mcp` or `command`). Nothing in the pipeline
+changes.
 
 ## Rules, where they are enforced, and how they are tested
 
