@@ -119,24 +119,34 @@ and ten skipped with reasons, 19 s; every listed record held data, against none 
 earlier per-catalogue loop.
 
 The `patents` companion runs patent-fetch's command line (`patent-fetch --json search`, once per
-planner query): that repository ships no MCP server, and offers the command for exactly this.
-The command is started with an argument list, so a query a model wrote is one argument and no
-shell reads it. patent-fetch folds the publications of one invention into one hit (the others
-are printed after it as "Also published as"), and the companion lists an invention once even
-when two queries kept different publications of it. A patent service matches a query only where
-every word is in the title or abstract, so the planner is asked for queries of two to four
-words, and a query that still matches nothing is asked again with one word left out at a time
-(the answer's limits say so). On 2026-10-13 a six-word planner query matched no record at either
-service, and the section showed only patents from 1996 to 2001; without one word it matched
-fifteen. Of the six entries listed, four are the closest titles and two are the most recent of
-the rest, so old patents whose titles repeat the question cannot fill every place. patent-fetch merges its services' hits by
-publication number and reports each service's status, but does not rank; the companion orders the hits by the paper library's
-`relevance` of each title to the question, the measure that orders paper fetches. It prints the
-services' own fields (number, year, applicants or inventors, classes, status in the service's
-words, link) and fetches nothing. Its limits name the services that had no account configured or
-did not answer, and say so when only Europe PMC's archive answered (life-science patents, none
-after 2012), because a search that could not see recent patents must not read as "none exist".
-Measured: two queries, 16 distinct records, six listed.
+planner query): that repository ships no MCP server, and offers the command for exactly this. The
+command is started with an argument list, so a query a model wrote is one argument and no shell
+reads it. patent-fetch folds the publications of one invention into one hit (the others are printed
+after it as "Also published as"), and the companion lists an invention once even when two queries
+kept different publications of it. A patent service matches a query only where every word is in the
+title or abstract, so the planner is asked for queries of two to four words, and a query that still
+matches nothing is asked again with one word left out at a time (the answer's limits say so). On
+2026-10-13 a six-word planner query matched no record at either service, and the section showed
+only patents from 1996 to 2001; without one word it matched fifteen. Of the six entries listed,
+four are the closest titles and two are the most recent of the rest, so old patents whose titles
+repeat the question cannot fill every place. patent-fetch merges its services' hits by publication
+number and reports each service's status, but does not rank; the companion orders the hits by the
+paper library's `relevance` of each title to the question, the measure that orders paper fetches.
+It prints the services' own fields (number, year, applicants or inventors, classes, status in the
+service's words, link) and fetches nothing. Its limits name the services that had no account
+configured or did not answer, and say so when only Europe PMC's archive answered (life-science
+patents, none after 2012), because a search that could not see recent patents must not read as
+"none exist". Measured: two queries, 16 distinct records, six listed.
+
+Which patent services are asked is patent-fetch's own configuration, and its paid ones are asked
+only when named. To add one for the pipeline alone, give the companion an `env` in the gateway
+config that names the whole set, for example
+`"env": {"PATENT_FETCH_SEARCH_PROVIDERS": "europepmc,epo-ops,lens,serpapi"}`: the variable is
+set only for the commands the pipeline starts, so a search from patent-fetch's command line
+still asks its usual set. With `serpapi` (Google Patents' full-text search, through SerpApi)
+each planner query spends one paid search, and the one-word-left-out retry can spend up to
+seven more for a query that matches nothing. Measured 2026-10-13 with one query: EPO OPS,
+Europe PMC and SerpApi answered, and five of the six entries listed came from SerpApi alone.
 
 To add a companion, write `run` (call the tool, return plain records) and `render` (print them)
 and register a `Companion` with its transport (`mcp` or `command`). Nothing in the pipeline
