@@ -123,7 +123,13 @@ planner query): that repository ships no MCP server, and offers the command for 
 The command is started with an argument list, so a query a model wrote is one argument and no
 shell reads it. patent-fetch folds the publications of one invention into one hit (the others
 are printed after it as "Also published as"), and the companion lists an invention once even
-when two queries kept different publications of it. patent-fetch merges its services' hits by
+when two queries kept different publications of it. A patent service matches a query only where
+every word is in the title or abstract, so the planner is asked for queries of two to four
+words, and a query that still matches nothing is asked again with one word left out at a time
+(the answer's limits say so). On 2026-10-13 a six-word planner query matched no record at either
+service, and the section showed only patents from 1996 to 2001; without one word it matched
+fifteen. Of the six entries listed, four are the closest titles and two are the most recent of
+the rest, so old patents whose titles repeat the question cannot fill every place. patent-fetch merges its services' hits by
 publication number and reports each service's status, but does not rank; the companion orders the hits by the paper library's
 `relevance` of each title to the question, the measure that orders paper fetches. It prints the
 services' own fields (number, year, applicants or inventors, classes, status in the service's

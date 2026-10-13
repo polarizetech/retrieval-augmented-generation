@@ -127,8 +127,8 @@ for it; most questions call for neither.
 - `patents` runs [patent-fetch](https://github.com/polarizetech/patent-fetch)'s
   `patent-fetch --json search` when the question is about a device, a method or another
   invention, and adds an "Existing patents on this" section: title, publication number, year,
-  applicants or inventors, classes and a link, ordered by how close each title sits to the
-  question. Nothing is fetched or read, and it is not a legal opinion: the section says so, and
+  applicants or inventors, classes and a link, one entry per invention: the titles closest to
+  the question, then the most recent of the rest. Nothing is fetched or read, and it is not a legal opinion: the section says so, and
   the limits name every patent service that was not asked or did not answer. Without a patent
   service account, patent-fetch can only search life-science patents up to 2012; the answer says
   that too.

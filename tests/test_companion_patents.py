@@ -129,6 +129,67 @@ def test_one_invention_is_listed_once_whichever_publication_each_query_kept() ->
     assert text.count("Also published as") == 1  # a hit with no other publication says nothing
 
 
+def test_a_query_that_matches_nothing_is_asked_again_with_one_word_left_out() -> None:
+    """Every word must be in a title or abstract, so one word a patent does not use loses it."""
+    recent = hit("US20240000001", "Pre-curved blood pressure electrode array", 2024)
+
+    class Strict(FakePatents):
+        async def run(self, *arguments: str, timeout: float = 120.0) -> Any:
+            self.calls.append(arguments)
+            words = arguments[1].split()
+            found = [recent] if "perimodiolar" not in words and len(words) == 3 else []
+            return {"query": arguments[1], "hits": found, "providers": self.providers}
+
+    tool = Strict()
+    result = find(tool, ["pre-curved perimodiolar electrode array", "two words"])
+    assert [c[1] for c in tool.calls] == [
+        "pre-curved perimodiolar electrode array",
+        "perimodiolar electrode array",
+        "pre-curved electrode array",
+        "pre-curved perimodiolar array",
+        "pre-curved perimodiolar electrode",
+        "two words",  # too short to leave a word out of: asked once
+    ]
+    (item,) = result["items"]
+    assert (item["id"], item["asked_as"]) == ("US20240000001", "pre-curved electrode array")
+    limits = " ".join(result["limits"])
+    assert (
+        "“pre-curved perimodiolar electrode array” matched no record: a patent service returns "
+        "only records with every word of a query in the title or abstract. Asked again with one "
+        "word left out at a time, it matched 1 record(s)." in limits
+    )
+    short = next(ln for ln in result["limits"] if "“two words”" in ln)
+    assert short.endswith("in the title or abstract.")  # nothing to leave out: asked once
+    assert companions.relaxed("a b") == []
+    assert companions.relaxed("a b c d e f g h") == []  # too long: not worth eight more requests
+    assert companions.relaxed("same same other") == ["same other", "same same"]
+
+
+def test_the_most_recent_patents_keep_a_place_beside_the_closest() -> None:
+    """Old patents whose titles repeat the question would otherwise fill every place."""
+    old = [hit(f"US500000{i}", f"Blood pressure cuff {i}", 1990 + i) for i in range(6)]
+    new = [hit(f"US2024000000{i}", f"Wearable monitor {i}", 2020 + i) for i in range(4)]
+
+    class Many(FakePatents):
+        async def run(self, *arguments: str, timeout: float = 120.0) -> Any:
+            return {"query": arguments[1], "hits": [*old, *new], "providers": self.providers}
+
+    result = find(Many(), ["blood pressure"])
+    listed = [(h["id"], h["year"], h["recent"]) for h in result["items"]]
+    assert listed == [
+        ("US5000005", 1995, None),  # the four closest titles, the later first
+        ("US5000004", 1994, None),
+        ("US5000003", 1993, None),
+        ("US5000002", 1992, None),
+        ("US20240000003", 2023, True),  # then the two most recent of the rest
+        ("US20240000002", 2022, True),
+    ]
+    assert result["more"] == 4
+    text = "\n".join(companions.render_patents(result))
+    assert "first those whose titles sit closest to the question, then the most recent" in text
+    assert "- Not listed: 4 further record(s), older or less close." in text
+
+
 def test_the_limits_say_what_was_and_was_not_searched() -> None:
     limits = " ".join(find(FakePatents(), ["first"])["limits"])
     assert "life-science patents only, and none after 2012" in limits
@@ -258,5 +319,9 @@ def test_the_planner_is_told_when_patents_serve_a_question() -> None:
 
     offered = Prompts(companions={"patents": companions.PATENTS, "datasets": companions.DATASETS})
     assert "`patents`: request it when the question is about a device" in offered.plan_system
+    assert "1-3 queries of 2 to 4 words each" in offered.plan_system
+    assert "EVERY word of the query is in its title or abstract" in offered.plan_system
+    most = offered.plan_schema(4, 2)["properties"]["tools"]["items"]["properties"]["queries"]
+    assert most["maxItems"] == 3
     tools = offered.plan_schema(4, 2)["properties"]["tools"]
     assert tools["items"]["properties"]["tool"]["enum"] == ["datasets", "patents"]
