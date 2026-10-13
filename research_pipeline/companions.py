@@ -224,8 +224,14 @@ PATENTS_PER_QUERY = 8
 
 
 async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[str, Any]:
-    """Run patent-fetch's search for each query; merge the hits by publication number."""
+    """Run patent-fetch's search for each query; list each invention once.
+
+    patent-fetch folds the publications of one invention (an application, its grant, the same
+    filing at other offices) into one hit and names the others in `also_published_as`. Two
+    queries can keep different publications of the same invention, so a hit counts as already
+    listed when its number, or any number it was also published under, was listed before."""
     hits: dict[str, dict[str, Any]] = {}
+    listed: set[str] = set()
     providers: dict[str, dict[str, Any]] = {}
     failed: list[str] = []
     for query in queries:
@@ -235,7 +241,12 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
             failed.append(f"“{query}” ({str(exc)[:120]})")
             continue
         for hit in got.get("hits", []):
-            hits.setdefault(hit["id"], {**hit, "asked_as": query})
+            also = [str(m["id"]) for m in hit.get("also_published_as") or [] if m.get("id")]
+            numbers = {hit["id"], *also}
+            if numbers & listed:
+                continue
+            listed |= numbers
+            hits[hit["id"]] = {**hit, "also_published_as": also, "asked_as": query}
         for row in got.get("providers", []):
             # A service that answered any query answered; one silent on every query did not.
             if providers.get(row["provider"], {}).get("status") not in ("ok", "cache"):
@@ -289,6 +300,7 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
                     "classifications",
                     "status",
                     "url",
+                    "also_published_as",
                     "found_by",
                     "asked_as",
                     "relevance",
@@ -305,8 +317,9 @@ def render_patents(result: dict[str, Any]) -> list[str]:
     asked = "; ".join(f"“{q}”" for q in result["queries"])
     out = [
         f"patent-fetch searched for: {asked}. Services that answered: "
-        f"{', '.join(result['answered']) or 'none'}. Each entry is the service's own record, "
-        "ordered by how close its title sits to the question; none was opened or read. This is "
+        f"{', '.join(result['answered']) or 'none'}. Each entry is one invention, from the "
+        "service's own record of one of its publications, ordered by how close its title sits "
+        "to the question; none was opened or read. This is "
         "what a keyword search matched, not a legal opinion: it does not say whether a patent is "
         "valid, in force, or covers anything, and finding none is not evidence that none exists.",
         "",
@@ -326,6 +339,10 @@ def render_patents(result: dict[str, Any]) -> list[str]:
         line = f"- **{h.get('title') or h['id']}** — `{h['id']}`; {'; '.join(facts)}."
         if h.get("url"):
             line += f" {h['url']}"
+        also = h.get("also_published_as") or []
+        if also:
+            more = f" and {len(also) - 4} more" if len(also) > 4 else ""
+            line += f" Also published as {', '.join(f'`{n}`' for n in also[:4])}{more}."
         out.append(line)
     if result.get("more"):
         out.append(f"- Not listed: {result['more']} further record(s) ranked below these.")

@@ -94,6 +94,41 @@ def test_hits_are_merged_by_number_and_ordered_by_closeness_to_the_question() ->
     assert "finding none is not evidence that none exists" in text
 
 
+def test_one_invention_is_listed_once_whichever_publication_each_query_kept() -> None:
+    """patent-fetch folds a family into one hit; two queries may each keep a different member."""
+    us = hit(
+        "US5545219",
+        "Blood pressure cuff with positioning system",
+        1996,
+        also_published_as=[
+            {"id": n, "kind": None, "year": 1996, "url": None, "found_by": ["epo-ops"]}
+            for n in ("EP0818123", "WO9631087", "CA2216703", "AU5140696", "JP3400000")
+        ],
+    )
+    ep = hit(
+        "EP0818123",
+        "BLOOD PRESSURE CUFF WITH POSITIONING SYSTEM",
+        1998,
+        also_published_as=[{"id": "WO9631087"}],
+    )
+
+    class TwoAnswers(FakePatents):
+        async def run(self, *arguments: str, timeout: float = 120.0) -> Any:
+            found = [us] if "first" in arguments[1] else [ep, CUFF]
+            return {"query": arguments[1], "hits": found, "providers": self.providers}
+
+    result = find(TwoAnswers(), ["first query", "second query"])
+    assert sorted(h["id"] for h in result["items"]) == ["US5545219", "US7000001"]
+    kept = next(h for h in result["items"] if h["id"] == "US5545219")
+    assert kept["also_published_as"][:2] == ["EP0818123", "WO9631087"]
+    text = "\n".join(companions.render_patents(result))
+    assert "Each entry is one invention" in text
+    assert (
+        "Also published as `EP0818123`, `WO9631087`, `CA2216703`, `AU5140696` and 1 more." in text
+    )
+    assert text.count("Also published as") == 1  # a hit with no other publication says nothing
+
+
 def test_the_limits_say_what_was_and_was_not_searched() -> None:
     limits = " ".join(find(FakePatents(), ["first"])["limits"])
     assert "life-science patents only, and none after 2012" in limits
