@@ -220,7 +220,25 @@ DATASETS = Companion(
 # fetched: this lists what a search matched, from the services' own records.
 
 PATENTS_LISTED = 6
+PATENTS_RECENT = 2  # of those listed, how many are kept for the most recent of the rest
 PATENTS_PER_QUERY = 8
+#: A query that matches nothing is asked again with one word left out at a time, when it has
+#: this many words: fewer leaves nothing worth asking, more is too many requests to spend on it.
+RELAX_WORDS = range(3, 8)
+
+
+def relaxed(query: str) -> list[str]:
+    """`query` with each of its words left out in turn, or nothing when it is too short or long.
+
+    A patent service matches a query only where EVERY word is in the title or abstract, so one
+    word a patent does not use loses that patent. Measured 2026-10-13: "pre-curved perimodiolar
+    cochlear implant electrode array" matched no record at either service; without "perimodiolar"
+    it matched fifteen, six of them from 2014 or later.
+    """
+    words = query.split()
+    if len(words) not in RELAX_WORDS:
+        return []
+    return list(dict.fromkeys(" ".join(words[:i] + words[i + 1 :]) for i in range(len(words))))
 
 
 async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[str, Any]:
@@ -234,18 +252,21 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
     listed: set[str] = set()
     providers: dict[str, dict[str, Any]] = {}
     failed: list[str] = []
-    for query in queries:
+    empty: list[dict[str, Any]] = []  # queries that matched nothing, and what asking again found
+
+    async def ask(query: str) -> int | None:
+        """Ask one query; the number of records it matched, or None when it was refused."""
         try:
             got = await tool.run("search", query, "-n", str(PATENTS_PER_QUERY))
         except UpstreamError as exc:
             failed.append(f"“{query}” ({str(exc)[:120]})")
-            continue
+            return None
         for hit in got.get("hits", []):
             also = [str(m["id"]) for m in hit.get("also_published_as") or [] if m.get("id")]
             numbers = {hit["id"], *also}
             if numbers & listed:
                 continue
-            listed |= numbers
+            listed.update(numbers)
             hits[hit["id"]] = {**hit, "also_published_as": also, "asked_as": query}
         for row in got.get("providers", []):
             # A service that answered any query answered; one silent on every query did not.
@@ -254,7 +275,13 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
                     "status": row.get("status"),
                     "why": row.get("detail"),
                 }
-    if failed and len(failed) == len(queries):
+        return len(got.get("hits", []))
+
+    for query in queries:
+        if await ask(query) == 0:
+            found = [n for n in [await ask(q) for q in relaxed(query)] if n]
+            empty.append({"query": query, "asked_again": bool(relaxed(query)), "found": sum(found)})
+    if failed and not hits and not providers:
         raise UpstreamError("patent-fetch answered none of the queries: " + "; ".join(failed))
 
     items = list(hits.values())
@@ -262,6 +289,11 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
     for hit, score in zip(items, scores, strict=True):
         hit["relevance"] = round(float(score), 4)
     items.sort(key=lambda h: (-h["relevance"], -(h.get("year") or 0)))
+    # The closest titles, then the most recent of the rest: an old patent whose title repeats
+    # the question's words would otherwise crowd out everything filed since.
+    closest = items[: PATENTS_LISTED - PATENTS_RECENT]
+    rest = sorted(items[len(closest) :], key=lambda h: -(h.get("year") or 0))
+    shown = closest + [{**h, "recent": True} for h in rest[:PATENTS_RECENT]]
 
     answered = sorted(n for n, r in providers.items() if r["status"] in ("ok", "cache"))
     no_key = sorted(n for n, r in providers.items() if r["status"] == "skipped")
@@ -269,6 +301,16 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
     limits = []
     if failed:
         limits.append("patent-fetch did not answer for: " + "; ".join(failed) + ".")
+    for row in empty:
+        again = (
+            f" Asked again with one word left out at a time, it matched {row['found']} record(s)."
+            if row["asked_again"]
+            else ""
+        )
+        limits.append(
+            f"The patent query “{row['query']}” matched no record: a patent service returns only "
+            f"records with every word of a query in the title or abstract.{again}"
+        )
     if not answered:
         limits.append("No patent service answered, so the patent search says nothing either way.")
     elif answered == ["europepmc"]:
@@ -304,11 +346,12 @@ async def find_patents(tool: Command, queries: list[str], rank: Rank) -> dict[st
                     "found_by",
                     "asked_as",
                     "relevance",
+                    "recent",
                 )
             }
-            for h in items[:PATENTS_LISTED]
+            for h in shown
         ],
-        "more": max(0, len(items) - PATENTS_LISTED),
+        "more": len(items) - len(shown),
         "limits": limits,
     }
 
@@ -318,8 +361,8 @@ def render_patents(result: dict[str, Any]) -> list[str]:
     out = [
         f"patent-fetch searched for: {asked}. Services that answered: "
         f"{', '.join(result['answered']) or 'none'}. Each entry is one invention, from the "
-        "service's own record of one of its publications, ordered by how close its title sits "
-        "to the question; none was opened or read. This is "
+        "service's own record of one of its publications: first those whose titles sit closest "
+        "to the question, then the most recent of the others; none was opened or read. This is "
         "what a keyword search matched, not a legal opinion: it does not say whether a patent is "
         "valid, in force, or covers anything, and finding none is not evidence that none exists.",
         "",
@@ -345,7 +388,7 @@ def render_patents(result: dict[str, Any]) -> list[str]:
             line += f" Also published as {', '.join(f'`{n}`' for n in also[:4])}{more}."
         out.append(line)
     if result.get("more"):
-        out.append(f"- Not listed: {result['more']} further record(s) ranked below these.")
+        out.append(f"- Not listed: {result['more']} further record(s), older or less close.")
     return out
 
 
@@ -358,11 +401,14 @@ PATENTS = Companion(
         "patented"
     ),
     ask=(
-        "1-2 short keyword queries, each naming the invention and what it does the way a patent "
-        "title would"
+        "1-3 queries of 2 to 4 words each: the invention's own term plus the thing it is part "
+        "of. A patent is found only if EVERY word of the query is in its title or abstract, so "
+        "each extra word finds fewer patents; put a synonym or an older term in a query of its "
+        "own, never in the same one"
     ),
     run=find_patents,
     render=render_patents,
+    max_queries=3,
     transport="command",
 )
 
