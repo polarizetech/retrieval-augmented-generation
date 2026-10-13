@@ -121,8 +121,10 @@ earlier per-catalogue loop.
 The `patents` companion runs patent-fetch's command line (`patent-fetch --json search`, once per
 planner query): that repository ships no MCP server, and offers the command for exactly this.
 The command is started with an argument list, so a query a model wrote is one argument and no
-shell reads it. patent-fetch merges its services' hits by publication number and reports each
-service's status, but does not rank; the companion orders the hits by the paper library's
+shell reads it. patent-fetch folds the publications of one invention into one hit (the others
+are printed after it as "Also published as"), and the companion lists an invention once even
+when two queries kept different publications of it. patent-fetch merges its services' hits by
+publication number and reports each service's status, but does not rank; the companion orders the hits by the paper library's
 `relevance` of each title to the question, the measure that orders paper fetches. It prints the
 services' own fields (number, year, applicants or inventors, classes, status in the service's
 words, link) and fetches nothing. Its limits name the services that had no account configured or
