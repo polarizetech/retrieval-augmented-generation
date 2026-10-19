@@ -48,6 +48,8 @@ from .schema import (
     title_key,
     to_json,
 )
+from .strictness import Strictness
+from .strictness import resolve as resolve_strictness
 from .upstream import UpstreamError
 
 Progress = Callable[[str, str], None]
@@ -87,6 +89,8 @@ class Pipeline:
         *,
         llm: Model | None = None,
         collection: str | None = None,
+        strictness: str | None = None,
+        agent_route: dict[str, Any] | None = None,
     ):
         self.s = settings
         self.offline = offline  # answer from the already-indexed corpus; no discovery, no fetching
@@ -105,6 +109,8 @@ class Pipeline:
         self.profile: dict[str, Any] | None = None
         self.companions: dict[str, companions.Companion] = {}  # configured ones, set per run
         self.models: dict[str, Any] = {}
+        self.strictness: Strictness = resolve_strictness(strictness or settings.strictness)
+        self.agent_route = dict(agent_route or {})
         # The field being researched. Nothing installed means the generic policy, not a failure:
         # the engine answers a question on its own, it just answers it without a field's rules.
         self.domain = domain if isinstance(domain, Domain) else active(domain or settings.domain)
@@ -132,7 +138,44 @@ class Pipeline:
                 "PIPELINE_VERIFIER_MODEL to a different model family for an independent check."
             )
         self.models["verifiers"] = [{"name": n, "digest": d} for n, d in resolved]
+        independent = [n for n, _ in resolved if n != text]
+        self.models["independent_verification"] = bool(independent)
+        if self.strictness.require_independent_verifier and not independent:
+            raise ValueError(
+                "publication strictness requires PIPELINE_VERIFIER_MODEL to name at least one "
+                "model other than the claim-writing model"
+            )
         return [n for n, _ in resolved]
+
+    def _risk(self, st: State) -> dict[str, Any]:
+        kept = [c for c in st.claims if c.verdict in ("SUPPORTED", "DISPUTED")]
+        provider_failures = sorted(
+            {name for search in st.searches for name in search.get("did_not_answer", [])}
+        )
+        unread = sum(c.outcome == "not_obtainable" for c in st.candidates.values())
+        unsupported = len(st.claims) - len(kept)
+        flags = []
+        if not self.models.get("independent_verification"):
+            flags.append("no independent verifier")
+        if provider_failures:
+            flags.append("one or more search providers did not answer")
+        if unread:
+            flags.append("relevant-looking closed papers were unread")
+        if st.insufficient:
+            flags.append("one or more subquestions had insufficient evidence")
+        return {
+            "strictness": self.strictness.name,
+            "policy": self.strictness.description,
+            "corpus_ready_policy": self.strictness.corpus_ready,
+            "independent_verifier": bool(self.models.get("independent_verification")),
+            "claims_drafted": len(st.claims),
+            "claims_kept": len(kept),
+            "claims_removed": unsupported,
+            "disputed_claims": sum(c.verdict == "DISPUTED" for c in kept),
+            "unread_candidates": unread,
+            "provider_failures": provider_failures,
+            "flags": flags,
+        }
 
     # -- stage 0-2: plan -------------------------------------------------------------------
     def plan(self, st: State) -> None:
@@ -885,7 +928,15 @@ class Pipeline:
 
         from .render import render  # late import: render depends on this module's State
 
-        answer = render(st, self.papers, self.models, self.policy, self.companions)
+        risk = self._risk(st)
+        answer = render(
+            st,
+            self.papers,
+            self.models,
+            self.policy,
+            companions=self.companions,
+            risk=risk,
+        )
         log = {
             "pipeline_version": __version__,
             "prompt_version": self.prompts.version,
@@ -901,6 +952,13 @@ class Pipeline:
             "question": st.question,
             "model_backend": "mcp-client" if self.client else "ollama",
             "models": self.models,
+            "strictness": {
+                "name": self.strictness.name,
+                "description": self.strictness.description,
+                "require_independent_verifier": self.strictness.require_independent_verifier,
+            },
+            "risk": risk,
+            "agent_route": self.agent_route,
             "reranker": self.library_reranker,
             "collection": self.collection or None,
             "companions": {

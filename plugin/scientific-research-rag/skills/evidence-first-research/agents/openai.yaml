@@ -1,0 +1,6 @@
+interface:
+  display_name: "Evidence-first Research"
+  short_description: "Ground scientific answers in full-text evidence"
+  default_prompt: "Use $evidence-first-research to answer this scientific question from retrieved evidence."
+policy:
+  allow_implicit_invocation: true

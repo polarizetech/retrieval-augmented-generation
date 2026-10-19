@@ -40,6 +40,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Library:
         "PIPELINE_VERIFIER_MODEL": "",
         "PIPELINE_MCP_LLM": "client",
         "PIPELINE_CLIENT_TURN_WAIT": "5",
+        # Keep these protocol tests on the generic policy regardless of which optional domain
+        # packages the developer has installed. Agent/domain routing has focused tests elsewhere.
+        "PIPELINE_AGENT_PROFILES_DIR": str(tmp_path / "no-agent-profiles"),
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(mcp_server, "Ollama", NoChat)
@@ -138,11 +141,41 @@ def test_a_wrong_answer_is_refused_and_asked_again(env: Library) -> None:
     asyncio.run(conversation())
 
 
-def test_one_run_at_a_time(env: Library) -> None:
+def test_several_chats_research_at_once(env: Library) -> None:
+    """Two runs are carried together, each to its own answer. (Before: one run at a time, and
+    a second chat was refused while the first was in progress.)"""
+
+    async def both() -> list[dict[str, Any]]:
+        async def one() -> dict[str, Any]:
+            model = CorrectingModel()
+            reply = json.loads(await mcp_server.research_start(QUESTION, offline=True))
+            while reply["status"] in ("tasks", "working"):
+                if reply.get("errors"):
+                    model.refused = True
+                answers = [
+                    {"task_id": t["task_id"], "result": getattr(model, t["task"])(t["input"])}
+                    for t in reply.get("tasks", [])
+                ]
+                reply = json.loads(await mcp_server.research_continue(reply["run_id"], answers))
+            return reply
+
+        return list(await asyncio.gather(one(), one()))
+
+    first, second = asyncio.run(both())
+    assert (first["status"], second["status"]) == ("done", "done")
+    assert first["run_id"] != second["run_id"]
+    assert Path(first["run_dir"]).is_dir()
+    assert Path(second["run_dir"]).is_dir()
+
+
+def test_the_number_of_runs_is_capped(env: Library, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PIPELINE_MAX_RUNS", "1")
+
     async def conversation() -> None:
         first = json.loads(await mcp_server.research_start(QUESTION, offline=True))
         second = json.loads(await mcp_server.research_start(QUESTION, offline=True))
-        assert second["active_run_id"] == first["run_id"]
+        assert second["active_run_ids"] == [first["run_id"]]
+        assert "PIPELINE_MAX_RUNS" in second["error"]
         status = json.loads(await mcp_server.research_status(first["run_id"]))
         assert status["done"] is False
         run = mcp_server.RUNS[first["run_id"]]
@@ -151,8 +184,59 @@ def test_one_run_at_a_time(env: Library) -> None:
         assert run.task is not None
         await run.task
         assert json.loads(await mcp_server.research_continue(first["run_id"]))["status"] == "failed"
+        # Its slot is free again.
+        third = json.loads(await mcp_server.research_start(QUESTION, offline=True))
+        assert "error" not in third
+        mcp_server.RUNS[third["run_id"]].client.close("test over")  # type: ignore[union-attr]
+        await mcp_server.RUNS[third["run_id"]].task  # type: ignore[misc]
 
     asyncio.run(conversation())
+
+
+def test_an_abandoned_run_is_ended_and_frees_its_slot(
+    env: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chat closed mid-run used to hold the only slot for the full client timeout (30 min)."""
+    monkeypatch.setenv("PIPELINE_MAX_RUNS", "1")
+
+    async def conversation() -> None:
+        first = json.loads(await mcp_server.research_start(QUESTION, offline=True))
+        abandoned = mcp_server.RUNS[first["run_id"]]
+        abandoned.seen -= 10_000  # its client has not called for a long time
+        second = json.loads(await mcp_server.research_start(QUESTION, offline=True))
+        # The idle run was ended to make room, but it takes a moment to stop: still at the cap.
+        assert abandoned.client is not None
+        assert abandoned.client.closed
+        assert abandoned.task is not None
+        await abandoned.task
+        assert abandoned.failed.startswith("LLMError")
+        assert "abandoned: no call from the client in 600 s" in abandoned.failed
+        if "error" in second:
+            second = json.loads(await mcp_server.research_start(QUESTION, offline=True))
+        assert "error" not in second
+        run = mcp_server.RUNS[second["run_id"]]
+        assert run.client is not None
+        run.client.close("test over")
+        await run.task  # type: ignore[misc]
+
+    asyncio.run(conversation())
+
+
+def test_a_working_client_is_never_taken_for_an_abandoned_one(
+    env: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PIPELINE_CLIENT_IDLE", "1")
+    final, _ = drive(CorrectingModel())  # answers every turn at once: never idle for 1 s
+    assert final["status"] == "done", final
+
+
+def test_finished_runs_are_forgotten_after_an_hour(env: Library) -> None:
+    final, _ = drive(CorrectingModel())
+    run_id = final["run_id"]
+    assert run_id in mcp_server.RUNS
+    mcp_server.RUNS[run_id].ended -= mcp_server.FORGET_AFTER + 1
+    mcp_server._tidy(mcp_server.Settings())
+    assert run_id not in mcp_server.RUNS
 
 
 def test_unknown_runs_are_reported(env: Library) -> None:
