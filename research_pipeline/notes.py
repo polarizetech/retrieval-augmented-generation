@@ -25,6 +25,8 @@ class NoteStore:
         # Classification runs on a stage's own thread; model calls run elsewhere and never
         # touch this connection.
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=30)
+        # Several runs (one connection each) may write at once; WAL lets them, and readers too.
+        self.db.execute("pragma journal_mode=wal")
         self.db.executescript(SCHEMA)
         self._closer = weakref.finalize(self, self.db.close)
 

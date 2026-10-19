@@ -17,7 +17,7 @@ import pytest
 
 from research_pipeline import verify
 from research_pipeline.config import Settings
-from research_pipeline.pipeline import Pipeline
+from research_pipeline.pipeline import Pipeline, State
 from tests.conftest import PAPER, LibraryAdapter, hold_w1, papers_library
 
 QUESTION = "Does aerobic training lower resting blood pressure in adults?"
@@ -175,6 +175,26 @@ def test_the_null_result_is_reported_as_opposing_evidence(run_log: dict[str, Any
 def test_self_verification_is_disclosed(run_log: dict[str, Any]) -> None:
     assert run_log["models"]["verifiers"] == [{"name": "stub-model", "digest": "sha256:test"}]
     assert "shares the writer's blind spots" in run_log["answer"]
+
+
+def test_publication_mode_refuses_self_verification(tmp_path: Path) -> None:
+    pipeline = Pipeline(settings_for(tmp_path), offline=True, strictness="publication")
+    pipeline.llm = ScriptedModel()  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="publication strictness requires"):
+        pipeline._resolve_models(State(QUESTION))
+
+
+def test_publication_mode_accepts_a_different_verifier(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    settings.verifier_model = "independent-model"
+    pipeline = Pipeline(
+        settings,
+        offline=True,
+        strictness="publication",
+    )
+    pipeline.llm = ScriptedModel()  # type: ignore[assignment]
+    assert pipeline._resolve_models(State(QUESTION)) == ["independent-model"]
+    assert pipeline.models["independent_verification"] is True
 
 
 def test_the_run_log_holds_passages_models_and_the_answer(run_log: dict[str, Any]) -> None:

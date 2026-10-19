@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "scientific-research-rag": {
+      "type": "streamable-http",
+      "url": "https://polarize-mcp.tailc463ae.ts.net/retrieval-augmented-generation",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "dcr"
+            },
+            "baseScopes": [
+              "rag:use"
+            ],
+            "defaultScopes": [
+              "rag:use"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
