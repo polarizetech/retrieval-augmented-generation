@@ -137,7 +137,14 @@ class Brief:
 
 
 def _words(text: str) -> set[str]:
-    return set(WORD.findall(text.lower())) - STOPWORDS
+    tokens = set(WORD.findall(text.lower()))
+    return (tokens | {part for token in tokens for part in token.split("-")}) - STOPWORDS
+
+
+def _has_specialist_anchor(name: str, words: set[str]) -> bool:
+    if name == "bone-conduction-auditory":
+        return {"bone", "conduction"} <= words or "mastoid" in words
+    return bool(words & SPECIALIST_TERMS.get(name, set(name.split("-"))))
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -245,9 +252,7 @@ def route(
     # Profile prose contains intentionally broad research vocabulary, so overlap against the
     # prose alone is too permissive. Require at least one specialist anchor term as well; the
     # score then breaks ties and remains useful in the provenance record.
-    anchored = [
-        row for row in ranked if words & SPECIALIST_TERMS.get(row[0], set(row[0].split("-")))
-    ]
+    anchored = [row for row in ranked if _has_specialist_anchor(row[0], words)]
     specialist = anchored[0][0] if anchored and anchored[0][1] >= 3 else None
     domain = explicit_domain
     if not domain:
