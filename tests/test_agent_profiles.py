@@ -68,6 +68,22 @@ def test_private_specialists_are_routed_and_guide_prompts(tmp_path: Path) -> Non
     assert general["specialist"] is None
     assert general["guidance"] == ""
 
+    (agents / "bone-conduction-auditory.md").write_text(
+        "---\nname: bone-conduction-auditory\n"
+        "description: Use first for bone-conduction hearing and cross-talk.\n"
+        "extends: researcher\n---\n"
+        "## Pipeline guidance\n\nCheck both cochlear pathways.\n"
+    )
+    bone = route(
+        "How does bone conduction cross talk affect hearing?", public, extensions_root=private
+    )
+    assert bone["specialist"] == "bone-conduction-auditory"
+    assert bone["guidance"] == "Check both cochlear pathways."
+    assert (
+        route("How does bone density change?", public, extensions_root=private)["specialist"]
+        is None
+    )
+
 
 def test_missing_private_overlay_keeps_public_route(tmp_path: Path) -> None:
     _brief(tmp_path, "researcher", "literature evidence researcher")
