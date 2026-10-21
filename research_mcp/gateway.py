@@ -143,6 +143,21 @@ def _load_searxng(config: dict[str, Any]) -> str:
     return (direct or configured).rstrip("/")
 
 
+def _run_artifact(runs_dir: Path, supplied: str, name: str) -> Path:
+    """Resolve one file beneath the run store; never accept an arbitrary host path."""
+    root = runs_dir.resolve()
+    run_dir = Path(supplied)
+    if not run_dir.is_absolute():
+        run_dir = root / run_dir
+    resolved = run_dir.resolve()
+    if resolved.parent != root or not resolved.is_dir():
+        raise ValueError("run_dir must name one direct child of the configured runs directory")
+    artifact = resolved / name
+    if not artifact.is_file():
+        raise ValueError(f"this run has no {name}")
+    return artifact
+
+
 async def _web_search(base: str, arguments: dict[str, Any]) -> CallToolResult:
     if not base:
         return CallToolResult(
@@ -516,13 +531,62 @@ def build_server(
                 ),
             ),
         ]
+        session_tools = [
+            Tool(
+                name="session__read_capsule",
+                description=(
+                    "Read the compact, review-required capsule generated for a completed pipeline "
+                    "run. It contains the checked bottom line, promotion candidates, companion "
+                    "records and provenance without duplicating the complete transcript."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "run_dir": {
+                            "type": "string",
+                            "description": "The run_dir returned by pipeline__research_continue.",
+                        }
+                    },
+                    "required": ["run_dir"],
+                },
+                annotations=ToolAnnotations(
+                    readOnlyHint=True, idempotentHint=True, openWorldHint=False
+                ),
+            ),
+            Tool(
+                name="session__propose",
+                description=(
+                    "Send a completed run's capsule to the research repository as a branch and "
+                    "pull request through research__ri_propose. This never writes main. Review "
+                    "and merge or close the PR separately."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "run_dir": {
+                            "type": "string",
+                            "description": "The run_dir returned by pipeline__research_continue.",
+                        },
+                        "project": {"type": "string"},
+                        "title": {"type": "string"},
+                    },
+                    "required": ["run_dir", "project"],
+                },
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            ),
+        ]
         upstream = [entry[2] for entry in federation.tools.values()]
         if not builtin_tools:
             return [status, *upstream]
-        return [status, web, *rag_tools, *math_tools, *upstream]
+        return [status, web, *rag_tools, *math_tools, *session_tools, *upstream]
 
-    # gateway_status, plus web__search, the five rag__ and two math__ tools unless they are off
-    builtin = 9 if builtin_tools else 1
+    # gateway_status, web__search, five rag__, two math__, and two session tools.
+    builtin = 11 if builtin_tools else 1
 
     rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]] = {
         "rag__retrieve_evidence": (
@@ -566,7 +630,9 @@ def build_server(
                 "total_tools": len(federation.tools) + builtin,
                 "web_search_configured": bool(searxng),
             }
-        if not builtin_tools and (name == "web__search" or name.startswith(("rag__", "math__"))):
+        if not builtin_tools and (
+            name == "web__search" or name.startswith(("rag__", "math__", "session__"))
+        ):
             return _tool_error(f"unknown tool: {name}")
         if name == "web__search":
             return await _web_search(searxng, arguments)
@@ -588,6 +654,30 @@ def build_server(
                 return await asyncio.to_thread(sync_handler, arguments)
             except (ValueError, KeyError, OSError, sqlite3.Error) as exc:
                 return _tool_error(f"{label} failed: {type(exc).__name__}: {exc}")
+        if name == "session__read_capsule":
+            try:
+                capsule = _run_artifact(settings.runs_dir, arguments["run_dir"], "capsule.md")
+                return {"run_dir": str(capsule.parent), "capsule": capsule.read_text()}
+            except (ValueError, KeyError, OSError) as exc:
+                return _tool_error(f"capsule read failed: {type(exc).__name__}: {exc}")
+        if name == "session__propose":
+            if "research__ri_propose" not in federation.tools:
+                return _tool_error("the research repository upstream is unavailable")
+            try:
+                capsule = _run_artifact(settings.runs_dir, arguments["run_dir"], "capsule.md")
+                log = json.loads((capsule.parent / "run.json").read_text())
+                title = str(arguments.get("title") or log.get("question") or "research session")
+                return await federation.call(
+                    "research__ri_propose",
+                    {
+                        "project": arguments["project"],
+                        "kind": "session",
+                        "title": title[:160],
+                        "body": capsule.read_text(),
+                    },
+                )
+            except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
+                return _tool_error(f"session proposal failed: {type(exc).__name__}: {exc}")
         if name not in federation.tools:
             return _tool_error(f"unknown tool: {name}")
         return await federation.call(name, arguments)

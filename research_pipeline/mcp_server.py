@@ -22,15 +22,21 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from . import agent_profiles
 from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
+from .domains import UnknownDomain
+from .domains import active as active_domain
 from .llm import Ollama
 from .papers import PaperLibrary, PapersError
 from .pipeline import Pipeline
+from .sessions import SessionStore
+from .strictness import resolve as resolve_strictness
 
 load_env()
 
@@ -66,9 +72,35 @@ class Run:
     log: dict[str, Any] | None = None
     client: ClientLLM | None = None
     task: asyncio.Task[None] | None = None
+    seen: float = field(default_factory=time.time)  # the client's last call for this run
+    ended: float = 0.0
+    client_name: str = ""
+    external_session_id: str = ""
+    project: str = ""
+    strictness: str = "grounded"
+    agent_route: dict[str, Any] = field(default_factory=dict)
+    capsule_path: str = ""
 
 
 RUNS: dict[str, Run] = {}
+FORGET_AFTER = 3600  # seconds a finished run stays answerable, then it is dropped from memory
+
+
+def _tidy(settings: Settings) -> None:
+    """End runs whose client went away, and forget runs that finished long ago."""
+    now = time.time()
+    for run_id, run in list(RUNS.items()):
+        if run.done:
+            if now - run.ended > FORGET_AFTER:
+                del RUNS[run_id]
+        elif run.client is not None and now - run.seen > settings.client_idle:
+            # The pipeline sees the closed client as an error on its next model call, ends the
+            # run as failed and frees the slot; its answers so far are kept under runs/.
+            run.client.close(f"abandoned: no call from the client in {settings.client_idle} s")
+
+
+def _active() -> list[str]:
+    return [rid for rid, r in RUNS.items() if not r.done]
 
 
 def _client_name(ctx: Context | None) -> str:
@@ -79,15 +111,24 @@ def _client_name(ctx: Context | None) -> str:
     return f"{info.name}/{info.version}" if info.version else info.name
 
 
-async def _execute(run: Run, pipeline: Pipeline) -> None:
+async def _execute(run_id: str, run: Run, pipeline: Pipeline, sessions: SessionStore) -> None:
     try:
         run.log = await pipeline.run(run.question)
+        metadata = {
+            "client": run.client_name,
+            "external_session_id": run.external_session_id,
+            "project": run.project,
+            "strictness": run.strictness,
+            "agent_route": run.agent_route,
+        }
+        run.capsule_path = str(sessions.finish(run_id, run.log, metadata))
         run.stage = "done"
     except Exception as exc:  # noqa: BLE001 - surface the failure to the caller, not a dead run
         run.failed = f"{type(exc).__name__}: {exc}"[:500]
+        sessions.fail(run_id, run.failed)
         run.stage = "failed"
     finally:
-        run.done = True
+        run.done, run.ended = True, time.time()
         if run.client is not None:
             run.client.close("run ended")
 
@@ -95,9 +136,13 @@ async def _execute(run: Run, pipeline: Pipeline) -> None:
 @mcp.tool()
 async def research_start(
     question: str,
+    *,
     offline: bool = False,
     domain: str = "",
     collection: str = "",
+    strictness: str = "",
+    session_id: str = "",
+    project: str = "",
     ctx: Context | None = None,
 ) -> str:
     """Start a research run and return its first step.
@@ -109,18 +154,49 @@ async def research_start(
             paper library searches with its discipline profile.
         collection: optional paper-library collection (see papers__collections) to search, fetch
             into and retrieve from; it must exist.
+        strictness: explore, grounded (default), or publication. Publication requires an
+            independent verifier and refuses to run without one.
+        session_id: optional conversation identifier from the host, stored only for provenance.
+        project: optional research-repository project slug for the generated session capsule.
     """
-    busy = next((rid for rid, r in RUNS.items() if not r.done), None)
-    if busy:
+    settings = Settings()
+    _tidy(settings)
+    if len(active := _active()) >= settings.max_runs:
         return json.dumps(
             {
-                "error": "a run is already in progress; one run at a time",
-                "active_run_id": busy,
-                "next": "research_continue(active_run_id, answers=[])",
+                "error": f"{len(active)} runs are in progress, the most this server carries "
+                f"(PIPELINE_MAX_RUNS); try again when one finishes. A run whose client stops "
+                f"calling is ended after {settings.client_idle} s.",
+                "active_run_ids": active,
             }
         )
-    settings = Settings()
-    run = Run(question.strip())
+    policy = resolve_strictness(strictness or settings.strictness)
+    routed = agent_profiles.route(
+        question, settings.agent_profiles_dir, domain, settings.agent_extensions_dir
+    )
+    pipeline_domain: Any = domain or None
+    if not domain and (suggested_domain := routed.get("domain")):
+        try:
+            pipeline_domain = active_domain(str(suggested_domain))
+            routed["domain_applied"] = suggested_domain
+        except UnknownDomain:
+            # A profile route is advice, not a dependency declaration. Keep the suggestion in
+            # provenance and use the generic evidence policy until that optional domain package
+            # is installed. An explicitly requested unknown domain still fails loudly below.
+            pipeline_domain = None
+            routed["domain_applied"] = ""
+            routed["domain_note"] = (
+                f"suggested domain {suggested_domain!r} is not installed; used generic policy"
+            )
+    client_name = _client_name(ctx)
+    run = Run(
+        question.strip(),
+        client_name=client_name,
+        external_session_id=session_id.strip(),
+        project=project.strip(),
+        strictness=policy.name,
+        agent_route=routed,
+    )
     if settings.mcp_llm == "client":
         run.client = ClientLLM(Ollama(settings), _client_name(ctx), settings.client_timeout)
 
@@ -131,13 +207,25 @@ async def research_start(
         settings,
         progress,
         offline=offline,
-        domain=domain or None,
+        domain=pipeline_domain,
         llm=run.client,
         collection=collection or None,
+        strictness=policy.name,
+        agent_route=routed,
     )
     run_id = uuid.uuid4().hex[:10]
     RUNS[run_id] = run
-    run.task = asyncio.create_task(_execute(run, pipeline))
+    sessions = SessionStore(settings.sessions_path)
+    sessions.start(
+        run_id,
+        run.question,
+        client=client_name,
+        project=run.project,
+        strictness=policy.name,
+        external_session_id=run.external_session_id,
+        route=routed,
+    )
+    run.task = asyncio.create_task(_execute(run_id, run, pipeline, sessions))
     return json.dumps(await _turn(run_id, run, [], settings.client_turn_wait))
 
 
@@ -149,6 +237,7 @@ async def research_continue(run_id: str, answers: list[dict[str, Any]] | None = 
         run_id: from research_start.
         answers: [{"task_id": ..., "result": {...}}] for the tasks you were given; [] to wait.
     """
+    settings = Settings()
     run = RUNS.get(run_id)
     if run is None:
         return json.dumps(
@@ -157,6 +246,8 @@ async def research_continue(run_id: str, answers: list[dict[str, Any]] | None = 
                 "but finished answers are kept under runs/"
             }
         )
+    run.seen = time.time()
+    _tidy(settings)
     errors = []
     for item in answers or []:
         if run.client is None:
@@ -165,7 +256,9 @@ async def research_continue(run_id: str, answers: list[dict[str, Any]] | None = 
         problem = run.client.answer(str(item.get("task_id", "")), item.get("result"))
         if problem:
             errors.append(problem)
-    return json.dumps(await _turn(run_id, run, errors, Settings().client_turn_wait))
+    out = await _turn(run_id, run, errors, settings.client_turn_wait)
+    run.seen = time.time()  # the client is here until this reply reaches it
+    return json.dumps(out)
 
 
 async def _turn(run_id: str, run: Run, errors: list[str], wait: float) -> dict[str, Any]:
@@ -222,7 +315,7 @@ async def _turn(run_id: str, run: Run, errors: list[str], wait: float) -> dict[s
 
 
 def _result(log: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "answer": log["answer"],
         "run_dir": log["run_dir"],
         "stats": {
@@ -232,8 +325,18 @@ def _result(log: dict[str, Any]) -> dict[str, Any]:
             "evidence": len(log["evidence"]),
             "claims": len(log["claims"]),
             "claims_kept": sum(c["verdict"] in ("SUPPORTED", "DISPUTED") for c in log["claims"]),
+            "strictness": log.get("strictness", {}).get("name", "grounded"),
+            "independent_verifier": log.get("risk", {}).get("independent_verifier", False),
         },
     }
+    capsule = Path(log["run_dir"]) / "capsule.md"
+    if capsule.exists():
+        result["capsule_path"] = str(capsule)
+        result["next"] = (
+            "Review capsule_path; to put it in the research corpus, call "
+            "session__propose with this run_dir and a project."
+        )
+    return result
 
 
 @mcp.tool()
@@ -242,6 +345,7 @@ async def research_status(run_id: str) -> str:
     run = RUNS.get(run_id)
     if run is None:
         return json.dumps({"error": f"unknown run_id {run_id}"})
+    run.seen = time.time()
     return json.dumps(
         {
             "run_id": run_id,
@@ -249,7 +353,21 @@ async def research_status(run_id: str) -> str:
             "stage": run.stage,
             "detail": run.detail,
             "elapsed_s": round(time.time() - run.started),
+            "strictness": run.strictness,
+            "agent_route": run.agent_route,
+            "capsule_path": run.capsule_path or None,
         }
+    )
+
+
+@mcp.tool()
+async def profile_route(question: str, domain: str = "") -> str:
+    """Show the deterministic agent-profile/domain route without starting a run."""
+    settings = Settings()
+    return json.dumps(
+        agent_profiles.route(
+            question, settings.agent_profiles_dir, domain, settings.agent_extensions_dir
+        )
     )
 
 

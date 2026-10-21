@@ -1,0 +1,37 @@
+{
+  "interface": {
+    "capabilities": [
+      "Interactive"
+    ],
+    "category": "Productivity",
+    "defaultPrompt": [
+      "Research this scientific question from the literature and show the evidence behind the answer.",
+      "Find full-text evidence for this claim, check every citation, and report the limitations.",
+      "Run an evidence-first literature review of this question using the full research pipeline."
+    ],
+    "developerName": "Joshua Anderton",
+    "displayName": "Scientific Research RAG",
+    "longDescription": "Run auditable literature research, retrieve papers, patents and datasets, preserve session capsules, and propose reviewed changes to research and code repositories.",
+    "shortDescription": "Evidence-first research"
+  },
+  "name": "scientific-research-rag",
+  "version": "0.3.0",
+  "description": "Evidence-first scientific literature research using the hosted retrieval-augmented-generation MCP gateway.",
+  "author": {
+    "name": "Joshua Anderton",
+    "email": "info@joshanderton.com"
+  },
+  "keywords": [
+    "research",
+    "science",
+    "literature",
+    "evidence",
+    "citations",
+    "rag"
+  ],
+  "homepage": "https://github.com/polarizetech/retrieval-augmented-generation",
+  "repository": "https://github.com/polarizetech/retrieval-augmented-generation",
+  "license": "MIT",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json"
+}

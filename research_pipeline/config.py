@@ -33,6 +33,14 @@ def _path(name: str, default: str) -> Path:
     return p if p.is_absolute() else ROOT / p
 
 
+def _optional_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    p = Path(value).expanduser()
+    return p if p.is_absolute() else ROOT / p
+
+
 def _ollama_url() -> str:
     explicit = os.environ.get("PIPELINE_OLLAMA_URL", "").strip()
     if explicit:
@@ -55,6 +63,11 @@ class Settings:
     verifier_model: str = field(
         default_factory=lambda: os.environ.get("PIPELINE_VERIFIER_MODEL", "")
     )
+    # Named evidence policy: explore | grounded | publication. Publication refuses to run
+    # without a verifier independent of the model that drafted the claims.
+    strictness: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_STRICTNESS", "grounded")
+    )
     num_ctx: int = field(default_factory=lambda: _int("PIPELINE_NUM_CTX", 16384))
     # Most tokens one structured call may generate. The largest legitimate answer (a plan or a
     # synthesis) is a few hundred; without a cap, a call whose model never closes its answer ran
@@ -71,6 +84,11 @@ class Settings:
     client_turn_wait: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TURN_WAIT", 40))
     # Most tasks handed to the client in one turn.
     client_batch: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_BATCH", 12))
+    # Runs one pipeline server carries at once: several chats can research at the same time.
+    max_runs: int = field(default_factory=lambda: _int("PIPELINE_MAX_RUNS", 4))
+    # A run whose client has made no call for this long was abandoned (a closed chat): it is
+    # ended so that it stops holding a slot. A working client calls every turn (about 40 s).
+    client_idle: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_IDLE", 600))
     # A run whose client stops answering fails after this long instead of waiting forever.
     client_timeout: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TIMEOUT", 1800))
 
@@ -89,6 +107,16 @@ class Settings:
     # A paper-library collection to work in: searches and fetches are recorded there, and
     # retrieval reads only its papers. Empty: retrieval reads every indexed paper.
     collection: str = field(default_factory=lambda: os.environ.get("PIPELINE_COLLECTION", ""))
+    # Provider-neutral role briefs. They are routed and versioned in the run log, never executed
+    # as arbitrary instructions by the pipeline.
+    agent_profiles_dir: Path = field(
+        default_factory=lambda: _path(
+            "PIPELINE_AGENT_PROFILES_DIR", "../scientific-research-agents"
+        )
+    )
+    agent_extensions_dir: Path | None = field(
+        default_factory=lambda: _optional_path("PIPELINE_AGENT_EXTENSIONS_DIR")
+    )
 
     # Budgets. Every one of these bounds work on a slow local model; none is a quality claim.
     max_subquestions: int = field(default_factory=lambda: _int("PIPELINE_MAX_SUBQUESTIONS", 4))
@@ -111,3 +139,7 @@ class Settings:
     @property
     def notes_path(self) -> Path:
         return self.data_dir / "notes.sqlite"
+
+    @property
+    def sessions_path(self) -> Path:
+        return self.data_dir / "sessions.sqlite"

@@ -43,6 +43,7 @@ class Prompts:
         policy: DomainPolicy = GENERIC,
         profile: dict[str, Any] | None = None,
         companions: Mapping[str, Companion] | None = None,
+        agent_guidance: str = "",
     ) -> None:
         self.policy = policy
         # The paper library's discipline profile for this field (its indexed terms, measures and
@@ -51,6 +52,8 @@ class Prompts:
         # Companion tools this run may loop in (companions.py). The planner is told what each is
         # for and may request it; with none configured the plan prompt and schema are unchanged.
         self.companions = dict(companions or {})
+        # Curated local brief section, never text retrieved from a paper or web page.
+        self.agent_guidance = agent_guidance.strip()
 
     # -- plan ------------------------------------------------------------------------------
     @property
@@ -64,6 +67,12 @@ class Prompts:
             "Use standard terminology and one synonym or older term where it exists.",
             "Also write falsification queries: searches that would find null results, failed "
             "replications, or contradicting findings for the most likely answer.",
+            (
+                "Use this selected specialist's decomposition and controls where relevant: "
+                + self.agent_guidance
+                if self.agent_guidance
+                else ""
+            ),
             self._companion_guidance(),
         )
 
@@ -218,6 +227,12 @@ class Prompts:
             self.policy.generalisation_rule,
             "If the findings do not answer the sub-question, return no claims and set "
             "insufficient to true. No finding found is not evidence of absence.",
+            (
+                "Apply this selected specialist's distinctions only where the findings support "
+                "them; they never supply evidence themselves: " + self.agent_guidance
+                if self.agent_guidance
+                else ""
+            ),
         )
 
     @staticmethod
@@ -371,6 +386,7 @@ class Prompts:
                 self.paper_schema(),
                 self.policy.summary(),
                 self.profile,
+                self.agent_guidance,
                 sorted(self.companions),
             ],
             sort_keys=True,

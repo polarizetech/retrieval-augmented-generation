@@ -1,0 +1,40 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "scientific-research-rag",
+  "version": "0.3.0",
+  "description": "Evidence-first scientific literature research using the hosted retrieval-augmented-generation MCP gateway.",
+  "homepage": "https://github.com/polarizetech/retrieval-augmented-generation",
+  "repository": "https://github.com/polarizetech/retrieval-augmented-generation",
+  "license": "MIT",
+  "author": {
+    "name": "Joshua Anderton",
+    "email": "info@joshanderton.com"
+  },
+  "keywords": [
+    "research",
+    "science",
+    "literature",
+    "evidence",
+    "citations",
+    "rag"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Scientific Research RAG",
+        "shortDescription": "Evidence-first research",
+        "longDescription": "Run auditable literature research, retrieve papers, patents and datasets, preserve session capsules, and propose reviewed changes to research and code repositories.",
+        "developerName": "Joshua Anderton",
+        "category": "Productivity",
+        "capabilities": [
+          "Interactive"
+        ],
+        "defaultPrompt": [
+          "Research this scientific question from the literature and show the evidence behind the answer.",
+          "Find full-text evidence for this claim, check every citation, and report the limitations.",
+          "Run an evidence-first literature review of this question using the full research pipeline."
+        ]
+      }
+    }
+  }
+}

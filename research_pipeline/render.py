@@ -37,7 +37,9 @@ def render(
     library: dict[str, dict[str, Any]],
     models: dict[str, Any],
     policy: DomainPolicy = GENERIC,
+    *,
     companions: Mapping[str, Companion] | None = None,
+    risk: dict[str, Any] | None = None,
 ) -> str:
     """`library`: what the paper library said about each cited work (title, year, doi, authors)."""
     assert st.plan
@@ -89,6 +91,22 @@ def render(
             "could be found and read in this run, not what exists."
         )
     out.append("")
+
+    if risk:
+        out += ["## Verification risk", ""]
+        out.append(f"- Strictness: **{risk['strictness']}** — {risk['policy']}")
+        out.append(
+            "- Independent verifier: "
+            + ("**yes**" if risk.get("independent_verifier") else "**no**")
+        )
+        out.append(
+            f"- Claims: {risk.get('claims_kept', 0)} kept; "
+            f"{risk.get('claims_removed', 0)} removed; "
+            f"{risk.get('disputed_claims', 0)} disputed."
+        )
+        for flag in risk.get("flags", []):
+            out.append(f"- Risk flag: {flag}.")
+        out.append("")
 
     out += ["## Findings", ""]
     for sq in st.plan.subquestions:
