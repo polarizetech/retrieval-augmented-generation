@@ -7,6 +7,10 @@ One gateway process (`research-rag-gateway`) exposes:
 | `rag__search`, `rag__retrieve_evidence`, `rag__check_citations`, `rag__save_report` | this repository | no (embedding only, for hybrid retrieval) |
 | `papers__*` | the paper library upstream | no |
 | `pipeline__research_start`, `_continue`, `_status` | the pipeline upstream | yes: by default the calling model; optionally a local Ollama model |
+| `datasets__*`, `patents__*` | dataset-fetch and patent-fetch adapters | no |
+| `session__read_capsule`, `session__propose` | session store and research PR gate | no |
+| `research__*` | trusted research-repository reads and proposals | no |
+| `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
 | `web__search` | an optional SearXNG instance | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
 
@@ -64,6 +68,21 @@ validated against its schema before the run uses it; a refused answer is returne
 and asked again (three invalid answers end the run). Status `working` means the run is searching
 or fetching: call `research_continue(run_id, [])` to wait. Status `done` carries the answer.
 
+Pass `strictness="explore"`, `"grounded"` or `"publication"`. Publication mode requires an
+independent verifier; `PIPELINE_VERIFIER_MODEL` may name a local verifier even when the client is
+the drafting model. The pipeline deterministically routes the question through the versioned
+scientific agent briefs. An optional domain policy is applied only when its package is installed;
+the suggested route and any generic-policy fallback are recorded.
+
+Set `PIPELINE_AGENT_PROFILES_DIR` to the local scientific-research-agents checkout and, when you
+have a private specialist overlay, set `PIPELINE_AGENT_EXTENSIONS_DIR` to that checkout in the
+gitignored `config/rag.env`. The router reads `agents/*.md` from both, selects a matching
+`extends: researcher` brief, and records each selected file's hash and repository commit. Only
+the brief's bounded `## Pipeline guidance` section shapes search planning and claim synthesis;
+the pipeline's evidence and verification rules still control the result. Use
+`pipeline__profile_route(question)` to inspect selection before a run. A specialist without that
+section is still routed and recorded but adds no model guidance.
+
 Independent calls are batched, at most `PIPELINE_CLIENT_BATCH` (12) per turn. A typical question
 takes about a dozen turns: plan, extraction (with paper classification), synthesis, the
 falsification pass, critique, verification and the summary check.
@@ -75,6 +94,18 @@ falsification pass, critique, verification and the summary check.
 - Ollama still computes embeddings (a chat model cannot produce the index's vectors).
 - `PIPELINE_MCP_LLM=ollama` makes the local model answer instead; the same two tools then simply
   wait for the run.
+
+Every completed run stores `answer.md`, `run.json`, `session.json` and `capsule.md`. Use
+`session__read_capsule` for the compact checked record. `session__propose` can place that capsule
+on a branch and open a PR in the research repository; it never promotes content directly.
+
+## Repository boundary
+
+`repos__list_repositories`, `repos__search_code` and `repos__read_file` operate only inside
+`GITHUB_MCP_ORGS`. Authentication is inherited from GitHub CLI's credential store. With
+`GITHUB_MCP_ALLOW_WRITE=1`, `repos__propose_files` accepts complete text replacements, creates a
+new `agent/*` branch and opens a pull request. There is deliberately no merge, deletion, settings,
+or default-branch-write tool.
 
 ## The evidence tools on their own
 

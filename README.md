@@ -32,6 +32,14 @@ There are two ways to use it:
   (`projects/*/calculators/*.md`, found through `$RESEARCH_CORPUS` or a sibling `research/` checkout)
   and returns their sections verbatim with the corpus commit; `math__bionumber` returns a BioNumbers
   entry by BNID, verbatim, fetched once and cached. No model is involved in either.
+- **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
+  and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
+  research results and code changes cross into repositories only as pull-request proposals.
+
+The pipeline reads general role briefs from `PIPELINE_AGENT_PROFILES_DIR` and optional private
+`extends: researcher` briefs from `PIPELINE_AGENT_EXTENSIONS_DIR`. It records the selected file
+versions and uses their short `Pipeline guidance` sections in planning and synthesis without
+relaxing evidence checks. Configure both directories locally; see [MCP clients](docs/mcp-clients.md).
 
 Finding and indexing papers is not done here. That is the paper library,
 [paper-fetch](https://github.com/polarizetech/paper-fetch), reached over MCP: it searches the
@@ -106,8 +114,19 @@ Each run writes `runs/<timestamp>-<slug>/answer.md` and `run.json`. An online ru
 open-access papers into the paper library; `PIPELINE_MAX_FETCH` bounds how many. Every search is
 remembered by the library, so a later run on the same concept is told what earlier ones found.
 
+MCP runs also write `session.json` and `capsule.md`, and index the client, project, strictness and
+run location in `data/pipeline/sessions.sqlite`. The capsule carries the checked bottom line,
+promotion candidates, companion records and exact provenance; it is never automatically added to
+the trusted research corpus. `session__propose` sends it through the research repository's
+branch-and-PR gate when a human chooses to preserve it.
+
 Set `PIPELINE_VERIFIER_MODEL` to a model from a different family than the text model. Without it
 the text model checks its own claims, and every answer says so.
+
+Choose `explore`, `grounded` (default), or `publication` with the `strictness` argument to
+`pipeline__research_start`. Publication mode refuses to start unless a verifier independent of
+the claim-writing model is configured. The response reports checks and remaining risk; it does
+not claim a calibrated probability of hallucination.
 
 ### Companion tools: datasets and patents
 
@@ -132,6 +151,12 @@ for it; most questions call for neither.
   the limits name every patent service that was not asked or did not answer. Without a patent
   service account, patent-fetch can only search life-science patents up to 2012; the answer says
   that too.
+
+The gateway also exposes patent-fetch's full lifecycle as `patents__*`: search, fetch a selected
+publication into the private library, inspect the normalized record, and read its description or
+claims. The dataset upstream similarly exposes its complete reproducible search, describe,
+file-list, fetch-plan, table-read, series and screening tools. These source records remain distinct
+from passage-grounded scientific evidence.
 
 Adding another tool is one entry in `research_pipeline/companions.py`: an MCP server or a command
 line that prints JSON.
@@ -184,7 +209,9 @@ For Claude Desktop or Claude Code, run the gateway over stdio (no port, no token
 ```
 
 It exposes `rag__search`, `rag__retrieve_evidence`, `rag__check_citations`, `rag__save_report`,
-the paper library as `papers__*`, and the whole pipeline as `pipeline__*`. Through MCP the pipeline
+the paper library as `papers__*`, the whole pipeline as `pipeline__*`, patents and datasets,
+session capsules, the research-repository proposal gate, and an organization-scoped GitHub
+adapter. Through MCP the pipeline
 uses the calling model (Claude, ChatGPT) for its model steps by default: code runs every stage and
 hands the client batches of tasks with a JSON schema to answer, and Ollama is only needed for
 embeddings. See [MCP clients](docs/mcp-clients.md) for the workflow and the HTTP transport.
@@ -233,10 +260,12 @@ CI runs the same checks on Python 3.11 to 3.13.
 
 ## Security
 
-Ollama and the gateway's HTTP transport have no meaningful authentication. Keep them on loopback
-(`scripts/mcp-start.sh` refuses any other bind unless `MCP_ALLOW_PUBLIC_BIND=1` is set) and put an
-authenticating proxy in front if remote access is needed. Retrieved papers are untrusted input: the
-pipeline wraps them as data and holds no write tool except the library's own `fetch`.
+Ollama stays on loopback. The local gateway transport also defaults to loopback; when
+`MCP_PUBLIC_URL` is configured it serves OAuth 2.1 authorization with PKCE and an owner consent
+key, while TLS remains the front end's responsibility. Repository writes are bounded separately:
+the research and GitHub tools can create branches and pull requests, but cannot merge or write a
+default branch. Retrieved papers and repository contents are untrusted input, and profile Markdown
+is hashed and routed as data rather than executed as instructions.
 
 ## License
 
