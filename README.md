@@ -36,6 +36,11 @@ There are two ways to use it:
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.
 
+The pipeline reads general role briefs from `PIPELINE_AGENT_PROFILES_DIR` and optional private
+`extends: researcher` briefs from `PIPELINE_AGENT_EXTENSIONS_DIR`. It records the selected file
+versions and uses their short `Pipeline guidance` sections in planning and synthesis without
+relaxing evidence checks. Configure both directories locally; see [MCP clients](docs/mcp-clients.md).
+
 Finding and indexing papers is not done here. That is the paper library,
 [paper-fetch](https://github.com/polarizetech/paper-fetch), reached over MCP: it searches the
 open-access providers, knows how each scientific discipline is indexed (a *profile*: its MeSH

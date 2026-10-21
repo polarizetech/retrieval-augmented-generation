@@ -170,7 +170,13 @@ def propose_files(
     branch = f"agent/{_slug(title)}-{uuid.uuid4().hex[:8]}"
     with tempfile.TemporaryDirectory(prefix="github-mcp-") as tmp:
         root = Path(tmp) / "repo"
-        _gh("repo", "clone", repo, str(root), "--", "--depth", "1", timeout=300)
+        # `gh repo clone owner/name` follows the user's preferred Git protocol. On a machine
+        # authenticated for HTTPS but without an SSH key, that preference can make proposals
+        # fail even though GitHub API reads work. Use the allowlisted repository's HTTPS URL.
+        _run(
+            ["git", "clone", "--depth", "1", f"https://github.com/{repo}.git", str(root)],
+            timeout=300,
+        )
         default = (
             base
             or _json(_gh("repo", "view", repo, "--json", "defaultBranchRef"))["defaultBranchRef"][

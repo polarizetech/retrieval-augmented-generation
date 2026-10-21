@@ -74,6 +74,15 @@ the drafting model. The pipeline deterministically routes the question through t
 scientific agent briefs. An optional domain policy is applied only when its package is installed;
 the suggested route and any generic-policy fallback are recorded.
 
+Set `PIPELINE_AGENT_PROFILES_DIR` to the local scientific-research-agents checkout and, when you
+have a private specialist overlay, set `PIPELINE_AGENT_EXTENSIONS_DIR` to that checkout in the
+gitignored `config/rag.env`. The router reads `agents/*.md` from both, selects a matching
+`extends: researcher` brief, and records each selected file's hash and repository commit. Only
+the brief's bounded `## Pipeline guidance` section shapes search planning and claim synthesis;
+the pipeline's evidence and verification rules still control the result. Use
+`pipeline__profile_route(question)` to inspect selection before a run. A specialist without that
+section is still routed and recorded but adds no model guidance.
+
 Independent calls are batched, at most `PIPELINE_CLIENT_BATCH` (12) per turn. A typical question
 takes about a dozen turns: plan, extraction (with paper classification), synthesis, the
 falsification pass, critique, verification and the summary check.

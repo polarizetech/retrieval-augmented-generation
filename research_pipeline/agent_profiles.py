@@ -1,8 +1,8 @@
 """Read and deterministically route the provider-neutral scientific agent briefs.
 
-The profile repository remains the source of truth.  This adapter does not execute Markdown as a
-prompt.  It records the selected, versioned briefs and translates only their routing boundary into
-the pipeline's small domain vocabulary.
+The public profile repository supplies general roles; an optional private overlay supplies
+researcher extensions. Only the bounded Pipeline guidance section of a selected brief reaches
+the model. The core evidence rules remain controlled by the pipeline.
 """
 
 from __future__ import annotations
@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any
 
 WORD = re.compile(r"[a-z][a-z0-9-]+")
-SPECIALISTS = (
-    "auditory-evoked-potentials",
-    "visual-evoked-potentials",
-    "bone-conduction-auditory",
-)
+MAX_GUIDANCE_CHARS = 2000
+STOPWORDS = {
+    "a", "an", "and", "are", "can", "do", "does", "for", "from", "how", "i", "in",
+    "is", "it", "of", "on", "or", "the", "their", "this", "to", "what", "when", "where",
+    "which", "why", "with",
+}
 SPECIALIST_TERMS = {
     "auditory-evoked-potentials": {
         "abr",
@@ -46,6 +47,14 @@ SPECIALIST_TERMS = {
         "cross-talk",
         "mastoid",
         "transducer",
+    },
+    "honeybee-communications-analyst": {
+        "bee", "bees", "honeybee", "honeybees", "waggle", "colony", "foraging",
+        "electroreception",
+    },
+    "signal-processing": {
+        "fft", "fourier", "frequency", "harmonics", "intermodulation", "mixing",
+        "psychoacoustic", "rf", "signal-processing", "spectral",
     },
 }
 ROLE_TERMS = {
@@ -80,14 +89,17 @@ DOMAIN_TERMS = {
 class Brief:
     name: str
     description: str
+    root: Path
     path: Path
     sha256: str
+    extends: str
+    guidance: str
     positive: tuple[str, ...]
     negative: tuple[str, ...]
 
 
 def _words(text: str) -> set[str]:
-    return set(WORD.findall(text.lower()))
+    return set(WORD.findall(text.lower())) - STOPWORDS
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -113,6 +125,12 @@ def _examples(text: str, heading: str) -> tuple[str, ...]:
     )
 
 
+def _section(text: str, heading: str) -> str:
+    match = re.search(rf"(?ms)^## {re.escape(heading)}\s*$\n(.*?)(?=^## |\Z)", text)
+    section = match.group(1).strip() if match else ""
+    return section if len(section) <= MAX_GUIDANCE_CHARS else ""
+
+
 def load(root: Path) -> dict[str, Brief]:
     briefs: dict[str, Brief] = {}
     for path in sorted((root / "agents").glob("*.md")):
@@ -122,8 +140,11 @@ def load(root: Path) -> dict[str, Brief]:
         briefs[name] = Brief(
             name=name,
             description=meta.get("description", ""),
+            root=root,
             path=path,
             sha256=hashlib.sha256(text.encode()).hexdigest(),
+            extends=meta.get("extends", ""),
+            guidance=_section(text, "Pipeline guidance"),
             positive=_examples(text, "Positive routing examples:"),
             negative=_examples(text, "Negative routing examples:"),
         )
@@ -150,7 +171,12 @@ def _commit(root: Path) -> str:
         return ""
 
 
-def route(question: str, root: Path, explicit_domain: str = "") -> dict[str, Any]:
+def route(
+    question: str,
+    root: Path,
+    explicit_domain: str = "",
+    extensions_root: Path | None = None,
+) -> dict[str, Any]:
     """Return an auditable route; never silently invent a missing profile."""
     if not root.is_dir():
         return {
@@ -162,21 +188,36 @@ def route(question: str, root: Path, explicit_domain: str = "") -> dict[str, Any
             "reason": "agent profile repository is unavailable",
         }
     briefs = load(root)
+    extensions_available = extensions_root is None or extensions_root.is_dir()
+    if extensions_root is not None and extensions_available:
+        for name, brief in load(extensions_root).items():
+            if brief.extends == "researcher" and name not in briefs:
+                briefs[name] = brief
     words = _words(question)
     roles = ["researcher"]
     roles.extend(name for name, terms in ROLE_TERMS.items() if words & terms and name in briefs)
     ranked = sorted(
-        ((name, _score(question, briefs[name])) for name in SPECIALISTS if name in briefs),
+        (
+            (name, _score(question, brief))
+            for name, brief in briefs.items()
+            if brief.extends == "researcher" or name in SPECIALIST_TERMS
+        ),
         key=lambda row: (-row[1], row[0]),
     )
     # Profile prose contains intentionally broad research vocabulary, so overlap against the
     # prose alone is too permissive. Require at least one specialist anchor term as well; the
     # score then breaks ties and remains useful in the provenance record.
-    anchored = [row for row in ranked if words & SPECIALIST_TERMS.get(row[0], set())]
+    anchored = [
+        row for row in ranked
+        if words & SPECIALIST_TERMS.get(row[0], set(row[0].split("-")))
+    ]
     specialist = anchored[0][0] if anchored and anchored[0][1] >= 3 else None
     domain = explicit_domain
     if not domain:
-        if specialist:
+        if specialist in {
+            "auditory-evoked-potentials", "visual-evoked-potentials",
+            "bone-conduction-auditory",
+        }:
             domain = "neuroscience"
         else:
             scored = sorted(
@@ -188,7 +229,9 @@ def route(question: str, root: Path, explicit_domain: str = "") -> dict[str, Any
     records = [
         {
             "name": name,
-            "path": str(briefs[name].path.relative_to(root)),
+            "repository": str(briefs[name].root),
+            "commit": _commit(briefs[name].root),
+            "path": str(briefs[name].path.relative_to(briefs[name].root)),
             "sha256": briefs[name].sha256,
             "description": briefs[name].description,
         }
@@ -199,11 +242,21 @@ def route(question: str, root: Path, explicit_domain: str = "") -> dict[str, Any
         "available": True,
         "repository": str(root),
         "commit": _commit(root),
+        "extensions_repository": str(extensions_root) if extensions_root else "",
+        "extensions_available": extensions_available,
+        "extensions_commit": (
+            _commit(extensions_root) if extensions_root and extensions_root.is_dir() else ""
+        ),
         "roles": roles,
         "specialist": specialist,
+        "guidance": briefs[specialist].guidance if specialist else "",
         "domain": domain,
         "profiles": records,
         "reason": (
-            f"specialist score {ranked[0][1]} for {specialist}" if specialist else "general route"
+            f"specialist score {next(score for name, score in ranked if name == specialist)} "
+            f"for {specialist}" if specialist else "general route"
+        ) + (
+            f"; private overlay unavailable at {extensions_root}"
+            if not extensions_available else ""
         ),
     }
