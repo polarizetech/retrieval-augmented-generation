@@ -94,6 +94,30 @@ SPECIALIST_TERMS = {
         "signal-processing",
         "spectral",
     },
+    "relative-mapping": {
+        "azimuth",
+        "bearing",
+        "bearings",
+        "relative-mapping",
+        "straightedge",
+        "triangulation",
+        "trilateration",
+    },
+}
+RELATIVE_MAP_WORDS = {"landmark", "landmarks", "layout", "map", "mapping", "sketch", "sketches"}
+RELATIVE_METHOD_WORDS = {
+    "angle",
+    "angles",
+    "baseline",
+    "bearing",
+    "bearings",
+    "compass",
+    "coordinates",
+    "geometry",
+    "reference",
+    "ruler",
+    "scale",
+    "straightedge",
 }
 ROLE_TERMS = {
     "analyst": {"analysis", "dataset", "data", "statistics", "statistical", "regression"},
@@ -144,6 +168,15 @@ def _words(text: str) -> set[str]:
 def _has_specialist_anchor(name: str, words: set[str]) -> bool:
     if name == "bone-conduction-auditory":
         return {"bone", "conduction"} <= words or "mastoid" in words
+    if name == "relative-mapping":
+        return (
+            bool(words & (SPECIALIST_TERMS[name] - {"straightedge"}))
+            or {"relative", "mapping"} <= words
+            or {"relative", "map"} <= words
+            or bool(words & RELATIVE_MAP_WORDS and words & RELATIVE_METHOD_WORDS)
+            or {"compass", "ruler"} <= words
+            or {"compass", "straightedge"} <= words
+        )
     return bool(words & SPECIALIST_TERMS.get(name, set(name.split("-"))))
 
 
