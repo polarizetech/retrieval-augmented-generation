@@ -17,9 +17,33 @@ from typing import Any
 WORD = re.compile(r"[a-z][a-z0-9-]+")
 MAX_GUIDANCE_CHARS = 2000
 STOPWORDS = {
-    "a", "an", "and", "are", "can", "do", "does", "for", "from", "how", "i", "in",
-    "is", "it", "of", "on", "or", "the", "their", "this", "to", "what", "when", "where",
-    "which", "why", "with",
+    "a",
+    "an",
+    "and",
+    "are",
+    "can",
+    "do",
+    "does",
+    "for",
+    "from",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "the",
+    "their",
+    "this",
+    "to",
+    "what",
+    "when",
+    "where",
+    "which",
+    "why",
+    "with",
 }
 SPECIALIST_TERMS = {
     "auditory-evoked-potentials": {
@@ -49,12 +73,26 @@ SPECIALIST_TERMS = {
         "transducer",
     },
     "honeybee-communications-analyst": {
-        "bee", "bees", "honeybee", "honeybees", "waggle", "colony", "foraging",
+        "bee",
+        "bees",
+        "honeybee",
+        "honeybees",
+        "waggle",
+        "colony",
+        "foraging",
         "electroreception",
     },
     "signal-processing": {
-        "fft", "fourier", "frequency", "harmonics", "intermodulation", "mixing",
-        "psychoacoustic", "rf", "signal-processing", "spectral",
+        "fft",
+        "fourier",
+        "frequency",
+        "harmonics",
+        "intermodulation",
+        "mixing",
+        "psychoacoustic",
+        "rf",
+        "signal-processing",
+        "spectral",
     },
 }
 ROLE_TERMS = {
@@ -208,14 +246,14 @@ def route(
     # prose alone is too permissive. Require at least one specialist anchor term as well; the
     # score then breaks ties and remains useful in the provenance record.
     anchored = [
-        row for row in ranked
-        if words & SPECIALIST_TERMS.get(row[0], set(row[0].split("-")))
+        row for row in ranked if words & SPECIALIST_TERMS.get(row[0], set(row[0].split("-")))
     ]
     specialist = anchored[0][0] if anchored and anchored[0][1] >= 3 else None
     domain = explicit_domain
     if not domain:
         if specialist in {
-            "auditory-evoked-potentials", "visual-evoked-potentials",
+            "auditory-evoked-potentials",
+            "visual-evoked-potentials",
             "bone-conduction-auditory",
         }:
             domain = "neuroscience"
@@ -254,9 +292,13 @@ def route(
         "profiles": records,
         "reason": (
             f"specialist score {next(score for name, score in ranked if name == specialist)} "
-            f"for {specialist}" if specialist else "general route"
-        ) + (
+            f"for {specialist}"
+            if specialist
+            else "general route"
+        )
+        + (
             f"; private overlay unavailable at {extensions_root}"
-            if not extensions_available else ""
+            if not extensions_available
+            else ""
         ),
     }
