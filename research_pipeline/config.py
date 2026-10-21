@@ -33,6 +33,14 @@ def _path(name: str, default: str) -> Path:
     return p if p.is_absolute() else ROOT / p
 
 
+def _optional_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    p = Path(value).expanduser()
+    return p if p.is_absolute() else ROOT / p
+
+
 def _ollama_url() -> str:
     explicit = os.environ.get("PIPELINE_OLLAMA_URL", "").strip()
     if explicit:
@@ -105,6 +113,9 @@ class Settings:
         default_factory=lambda: _path(
             "PIPELINE_AGENT_PROFILES_DIR", "../scientific-research-agents"
         )
+    )
+    agent_extensions_dir: Path | None = field(
+        default_factory=lambda: _optional_path("PIPELINE_AGENT_EXTENSIONS_DIR")
     )
 
     # Budgets. Every one of these bounds work on a slow local model; none is a quality claim.

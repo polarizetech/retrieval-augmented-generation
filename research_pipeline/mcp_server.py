@@ -171,7 +171,9 @@ async def research_start(
             }
         )
     policy = resolve_strictness(strictness or settings.strictness)
-    routed = agent_profiles.route(question, settings.agent_profiles_dir, domain)
+    routed = agent_profiles.route(
+        question, settings.agent_profiles_dir, domain, settings.agent_extensions_dir
+    )
     pipeline_domain: Any = domain or None
     if not domain and (suggested_domain := routed.get("domain")):
         try:
@@ -362,7 +364,11 @@ async def research_status(run_id: str) -> str:
 async def profile_route(question: str, domain: str = "") -> str:
     """Show the deterministic agent-profile/domain route without starting a run."""
     settings = Settings()
-    return json.dumps(agent_profiles.route(question, settings.agent_profiles_dir, domain))
+    return json.dumps(
+        agent_profiles.route(
+            question, settings.agent_profiles_dir, domain, settings.agent_extensions_dir
+        )
+    )
 
 
 @mcp.tool()

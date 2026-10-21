@@ -115,7 +115,9 @@ class Pipeline:
         # the engine answers a question on its own, it just answers it without a field's rules.
         self.domain = domain if isinstance(domain, Domain) else active(domain or settings.domain)
         self.policy = self.domain.policy
-        self.prompts = Prompts(self.policy)
+        self.prompts = Prompts(
+            self.policy, agent_guidance=str(self.agent_route.get("guidance") or "")
+        )
 
     # -- setup -----------------------------------------------------------------------------
     def _resolve_models(self, st: State) -> list[str]:
@@ -877,7 +879,12 @@ class Pipeline:
                     )
             # Companion tools reach outside the library, so an offline run has none.
             self.companions = {} if self.offline else companions.configured(self.s.gateway_config)
-            self.prompts = Prompts(self.policy, self.profile, self.companions)
+            self.prompts = Prompts(
+                self.policy,
+                self.profile,
+                self.companions,
+                agent_guidance=str(self.agent_route.get("guidance") or ""),
+            )
 
             self.progress("plan", f"decomposing the question ({self.policy.label})")
             await asyncio.to_thread(self.plan, st)
