@@ -93,3 +93,37 @@ def test_missing_private_overlay_keeps_public_route(tmp_path: Path) -> None:
     assert result["extensions_commit"] == ""
     assert result["extensions_available"] is False
     assert "private overlay unavailable" in result["reason"]
+
+
+def test_relative_mapping_routes_geometric_layouts_not_compass_widgets(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    private = tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    agents = private / "agents"
+    agents.mkdir(parents=True)
+    (agents / "relative-mapping.md").write_text(
+        "---\nname: relative-mapping\n"
+        "description: Use first for relative spatial mapping with compass bearings, "
+        "ruler measurements, scale drawings, and coordinate geometry.\n"
+        "extends: researcher\n---\n"
+        "Positive routing examples:\n\n"
+        "- Map these landmarks from two bearings and a baseline.\n"
+        "- Use a straightedge and drawing compass to place the vertices.\n\n"
+        "Negative routing examples:\n\n"
+        "- Build a compass widget for a web app.\n\n"
+        "## Pipeline guidance\n\nDefine the frame and check closure.\n"
+    )
+    for question in (
+        "I need an expert in relative mapping using a compass, ruler, and geometry",
+        "Map these landmarks from two bearings and a baseline",
+        "Use a straightedge and drawing compass to place the vertices",
+    ):
+        selected = route(question, public, extensions_root=private)
+        assert selected["specialist"] == "relative-mapping"
+        assert selected["guidance"] == "Define the frame and check closure."
+        assert selected["profiles"][-1]["repository"] == str(private)
+    for question in (
+        "Build a compass widget for a web app",
+        "Prove a theorem in Euclidean geometry",
+    ):
+        assert route(question, public, extensions_root=private)["specialist"] is None
