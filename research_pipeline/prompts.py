@@ -70,7 +70,8 @@ class Prompts:
             (
                 "Use this selected specialist's decomposition and controls where relevant: "
                 + self.agent_guidance
-                if self.agent_guidance else ""
+                if self.agent_guidance
+                else ""
             ),
             self._companion_guidance(),
         )
@@ -229,7 +230,8 @@ class Prompts:
             (
                 "Apply this selected specialist's distinctions only where the findings support "
                 "them; they never supply evidence themselves: " + self.agent_guidance
-                if self.agent_guidance else ""
+                if self.agent_guidance
+                else ""
             ),
         )
 
