@@ -52,7 +52,10 @@ async def _status(settings: Settings) -> dict[str, object]:
         "library_works": library.get("works"),
         "domain": settings.domain or "(generic)",
         "collection": settings.collection or None,
-        "text_model": settings.text_model,
+        "model_backend": settings.llm_backend,
+        "text_model": settings.endpoint_model
+        if settings.llm_backend == "endpoint"
+        else settings.text_model,
         "verifier_model": settings.verifier_model or "(same as text)",
     }
 
