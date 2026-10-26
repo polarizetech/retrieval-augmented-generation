@@ -1,14 +1,16 @@
 """The research pipeline as MCP tools, for federation behind the gateway as `pipeline__*`.
 
-By default the calling model is the pipeline's model (PIPELINE_MCP_LLM=client). Code runs every
-stage (search, fetch, retrieval, quote and number checks, grading, the run log); whenever a stage
-needs a model, the next tool result hands the calling model a batch of tasks, each with its prompt,
-its input and the JSON schema its answer must match. Answers are validated before the run uses them.
+Code runs every stage (search, fetch, retrieval, quote and number checks, grading, the run log).
+Who does the model steps is set per server (PIPELINE_MCP_LLM) and can be overridden per run
+(research_start's `model`). The default, "auto", is your configured endpoint (PIPELINE_ENDPOINT_*)
+when there is one, else the calling model. With the calling model ("client"), whenever a stage needs
+a model the next tool result hands it a batch of tasks, each with its prompt, its input and the JSON
+schema its answer must match. Answers are validated before the run uses them.
 
     research_start(question)          -> first batch of tasks (or "working" while it searches)
     research_continue(run_id, answers) -> the next batch, ... -> finally the answer
 
-With PIPELINE_MCP_LLM=ollama the run uses the local model instead, and the same two calls simply
+With the endpoint or a local model ("ollama") doing the model steps, the same two calls simply
 wait for it. Either way no single call blocks for longer than PIPELINE_CLIENT_TURN_WAIT seconds,
 because a chat client will not hold a tool call open for the minutes a run takes.
 
@@ -32,7 +34,7 @@ from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
 from .domains import UnknownDomain
 from .domains import active as active_domain
-from .llm import LLMError, Ollama, make_llm
+from .llm import LLMError, Ollama, make_llm, resolve_backend
 from .papers import PaperLibrary, PapersError
 from .pipeline import Pipeline
 from .sessions import SessionStore
@@ -80,6 +82,7 @@ class Run:
     strictness: str = "grounded"
     agent_route: dict[str, Any] = field(default_factory=dict)
     capsule_path: str = ""
+    backend: str = ""  # who does the model steps: client, endpoint or ollama
 
 
 RUNS: dict[str, Run] = {}
@@ -143,6 +146,7 @@ async def research_start(
     strictness: str = "",
     session_id: str = "",
     project: str = "",
+    model: str = "",
     ctx: Context | None = None,
 ) -> str:
     """Start a research run and return its first step.
@@ -158,8 +162,16 @@ async def research_start(
             independent verifier and refuses to run without one.
         session_id: optional conversation identifier from the host, stored only for provenance.
         project: optional research-repository project slug for the generated session capsule.
+        model: who does the model steps. Leave empty to use the provider this server is set up
+            with (the user's default). Pass "client" only when the user asks you, the calling
+            assistant, to do the writing or run the pipeline yourself: the replies then hand you
+            tasks to answer. "endpoint" or "ollama" force those providers.
     """
     settings = Settings()
+    try:
+        backend = resolve_backend(settings, model or settings.mcp_llm, otherwise="client")
+    except LLMError as exc:
+        return json.dumps({"error": str(exc)})
     _tidy(settings)
     if len(active := _active()) >= settings.max_runs:
         return json.dumps(
@@ -196,11 +208,12 @@ async def research_start(
         project=project.strip(),
         strictness=policy.name,
         agent_route=routed,
+        backend=backend,
     )
-    if settings.mcp_llm == "client":
+    if backend == "client":
         run.client = ClientLLM(Ollama(settings), _client_name(ctx), settings.client_timeout)
     try:
-        llm = run.client or make_llm(settings, settings.mcp_llm)
+        llm = run.client or make_llm(settings, backend)
     except LLMError as exc:
         return json.dumps({"error": str(exc)})
 
@@ -281,6 +294,7 @@ async def _turn(run_id: str, run: Run, errors: list[str], wait: float) -> dict[s
         "run_id": run_id,
         "stage": run.stage,
         "detail": run.detail,
+        "model_backend": run.backend,
         "elapsed_s": round(time.time() - run.started),
     }
     if errors:
@@ -385,11 +399,15 @@ async def corpus_status() -> str:
         index: Any = library.get("passages")
     except (PapersError, OSError) as exc:
         index = f"paper library unavailable: {exc}"
+    backend = resolve_backend(s, s.mcp_llm, otherwise="client")
     return json.dumps(
         {
             "index": index,
-            "model_backend": "mcp-client" if s.mcp_llm == "client" else s.mcp_llm,
-            "text_model": s.endpoint_model if s.mcp_llm == "endpoint" else s.text_model,
+            "model_backend": "mcp-client" if backend == "client" else backend,
+            "text_model": {"endpoint": s.endpoint_model, "client": "(the calling model)"}.get(
+                backend, s.text_model
+            ),
+            "endpoint": s.endpoint_url if backend == "endpoint" else None,
             "verifier_model": s.verifier_model or "(same as text)",
         }
     )

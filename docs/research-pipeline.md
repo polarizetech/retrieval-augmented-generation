@@ -227,18 +227,20 @@ cases right instead of 7, so it stays on. Models are kept loaded for 30 minutes
 
 ### Your own endpoint for the model steps
 
-The calling model is the default behind MCP (`PIPELINE_MCP_LLM=client`), and stays so. The other
-backends exist for one reason: keeping a question and its intermediate work off a hosted assistant.
-Besides Ollama on this machine, the text model can run on any OpenAI-compatible chat API: a hosted
-open-weight model with zero data retention, or a GPU server of your own.
+Once an endpoint is configured it is the default everywhere: on the command line and behind MCP
+(`PIPELINE_LLM` and `PIPELINE_MCP_LLM` both default to `auto`, which means "the configured endpoint,
+if any"). Without one, MCP runs fall back to the calling model and command-line runs to Ollama. A
+single MCP run can still be handed to the calling assistant with `research_start(..., model="client")`,
+for when you ask it to do the writing itself. The endpoint keeps a question and its intermediate
+work off a hosted assistant: the text model runs on any OpenAI-compatible chat API, such as a
+hosted open-weight model with zero data retention, or a GPU server of your own.
 
 ```bash
 # config/rag.env (gitignored)
 PIPELINE_ENDPOINT_URL=https://openrouter.ai/api/v1
 PIPELINE_ENDPOINT_MODEL=qwen/qwen3.8-27b   # default; moonshotai/kimi-k3 for important questions
 PIPELINE_ENDPOINT_KEY_FILE=~/.config/polarize/openrouter.key   # or PIPELINE_ENDPOINT_KEY=...
-PIPELINE_LLM=endpoint          # the command line and benchmarks
-# PIPELINE_MCP_LLM=endpoint    # behind MCP too (default stays client)
+# PIPELINE_LLM and PIPELINE_MCP_LLM default to auto: this endpoint, on the CLI and behind MCP.
 ```
 
 What it does (`research_pipeline/llm.py`, `Endpoint`):

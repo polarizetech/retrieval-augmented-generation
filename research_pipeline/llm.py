@@ -578,11 +578,26 @@ def parse_json(text: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None
     return value, ""
 
 
+BACKENDS = ("auto", "client", "endpoint", "ollama")
+
+
+def resolve_backend(settings: Settings, requested: str, *, otherwise: str) -> str:
+    """Who does a run's model steps. "auto" (or empty) is your configured endpoint when one is
+    set, else `otherwise`: the calling model behind MCP, local Ollama on the command line."""
+    choice = (requested or "auto").strip().lower()
+    if choice not in BACKENDS:
+        raise LLMError(f"unknown model backend {requested!r}: use one of {', '.join(BACKENDS)}")
+    if choice == "auto":
+        configured = bool(settings.endpoint_url and settings.endpoint_model)
+        return "endpoint" if configured else otherwise
+    return choice
+
+
 def make_llm(settings: Settings, backend: str | None = None) -> Ollama | Endpoint:
     """The configured model backend: PIPELINE_LLM (CLI, benchmarks) or the one asked for."""
-    backend = backend or settings.llm_backend
+    backend = resolve_backend(settings, backend or settings.llm_backend, otherwise="ollama")
     if backend == "ollama":
         return Ollama(settings)
     if backend == "endpoint":
         return Endpoint(settings)
-    raise LLMError(f"unknown model backend {backend!r}: use ollama or endpoint")
+    raise LLMError(f"the {backend!r} backend needs an MCP client; use ollama or endpoint here")

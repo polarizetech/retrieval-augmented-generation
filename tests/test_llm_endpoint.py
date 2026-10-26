@@ -306,3 +306,13 @@ def test_dropped_connections_are_retried_until_the_limit() -> None:
         pytest.raises(LLMError, match="after 3 tries"),
     ):
         Endpoint(settings(endpoint_retries=3)).chat_json("verify", "s", "u", SCHEMA)
+
+
+def test_auto_means_the_configured_endpoint_when_there_is_one() -> None:
+    from research_pipeline.llm import resolve_backend
+
+    assert resolve_backend(settings(), "auto", otherwise="client") == "endpoint"
+    assert resolve_backend(settings(), "client", otherwise="ollama") == "client"
+    assert isinstance(make_llm(settings(llm_backend="auto")), Endpoint)
+    with pytest.raises(LLMError, match="needs an MCP client"):
+        make_llm(settings(), "client")
