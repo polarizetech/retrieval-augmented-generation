@@ -87,11 +87,12 @@ class Settings:
     ollama_keep_alive: str = field(
         default_factory=lambda: os.environ.get("PIPELINE_OLLAMA_KEEP_ALIVE", "30m")
     )
-    # Behind the MCP server: "client" = the calling model fills in the forms; "ollama" = local;
-    # "endpoint" = the OpenAI-compatible endpoint below.
-    mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "client"))
-    # The CLI's and benchmarks' model: "ollama" (local) or "endpoint".
-    llm_backend: str = field(default_factory=lambda: os.environ.get("PIPELINE_LLM", "ollama"))
+    # Who does the model steps behind the MCP server, unless a run asks otherwise: "auto" = your
+    # endpoint below when one is configured, else the calling model; "client" = the calling model
+    # fills in the forms; "endpoint"; "ollama" = local.
+    mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "auto"))
+    # The CLI's and benchmarks' model: "auto" = your endpoint when configured, else "ollama".
+    llm_backend: str = field(default_factory=lambda: os.environ.get("PIPELINE_LLM", "auto"))
 
     # Your own endpoint: any OpenAI-compatible chat API (OpenRouter, Fireworks, vLLM, Ollama's
     # /v1). Only the text model moves there; embeddings and a local verifier stay on this machine.

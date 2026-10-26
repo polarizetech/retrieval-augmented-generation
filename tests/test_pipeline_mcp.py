@@ -276,3 +276,70 @@ def test_concurrent_model_calls_never_touch_the_note_store(
     # Stages run one after another (in the event loop or an asyncio.to_thread worker); only the
     # model-call pool runs concurrently, and it must never reach the note store.
     assert not any(name.startswith("ThreadPoolExecutor") for name in threads), threads
+
+
+ENDPOINT = {
+    "PIPELINE_MCP_LLM": "auto",
+    "PIPELINE_ENDPOINT_URL": "https://openrouter.ai/api/v1",
+    "PIPELINE_ENDPOINT_MODEL": "qwen/qwen3.8-27b",
+}
+
+
+def test_a_configured_provider_is_the_default(
+    env: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key, value in ENDPOINT.items():
+        monkeypatch.setenv(key, value)
+    asked: list[str | None] = []
+
+    def fake_make_llm(settings: Any, backend: str | None = None) -> ScriptedModel:
+        asked.append(backend)
+        return ScriptedModel()
+
+    monkeypatch.setattr(mcp_server, "make_llm", fake_make_llm)
+
+    async def run() -> dict[str, Any]:
+        reply = json.loads(await mcp_server.research_start(QUESTION, offline=True))
+        while reply["status"] == "working":
+            assert "tasks" not in reply  # the provider answers; nothing is handed to the client
+            reply = json.loads(await mcp_server.research_continue(reply["run_id"], []))
+        return reply
+
+    final = asyncio.run(run())
+    assert final["status"] == "done", final
+    assert asked == ["endpoint"]
+    assert final["model_backend"] == "endpoint"
+
+
+def test_the_calling_assistant_can_still_do_the_model_steps(
+    env: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key, value in ENDPOINT.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(
+        mcp_server, "make_llm", lambda *_: pytest.fail("model='client' must not use the provider")
+    )
+    real_start = mcp_server.research_start
+
+    async def start_as_client(question: str, **kw: Any) -> str:
+        return await real_start(question, model="client", **kw)
+
+    monkeypatch.setattr(mcp_server, "research_start", start_as_client)
+    final, _ = drive(CorrectingModel())
+    assert final["status"] == "done", final
+    assert final["stats"]["model_backend"] == "mcp-client"
+
+
+def test_without_a_configured_provider_the_calling_model_answers(env: Library) -> None:
+    # env sets PIPELINE_MCP_LLM=client; "auto" with no endpoint must behave the same.
+    from research_pipeline.config import Settings
+    from research_pipeline.llm import resolve_backend
+
+    bare = Settings(endpoint_url="", endpoint_model="")
+    assert resolve_backend(bare, "auto", otherwise="client") == "client"
+    assert resolve_backend(bare, "", otherwise="ollama") == "ollama"
+
+
+def test_an_unknown_model_choice_is_refused(env: Library) -> None:
+    reply = json.loads(asyncio.run(mcp_server.research_start(QUESTION, model="gpt-9")))
+    assert "unknown model backend" in reply["error"]

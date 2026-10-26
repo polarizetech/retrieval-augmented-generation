@@ -10,7 +10,7 @@
       "open_world_tools": ["search", "fetch", "citations"]
     },
     "pipeline": {
-      "_comment": "The full pipeline as start/continue tools. By default the calling model answers its model steps (PIPELINE_MCP_LLM=client). Give an absolute path if research-pipeline-mcp is not on PATH.",
+      "_comment": "The full pipeline as start/continue tools. Model steps go to the configured endpoint when one is set, else the calling model (PIPELINE_MCP_LLM=auto); research_start(model='client') hands one run to the caller. Give an absolute path if research-pipeline-mcp is not on PATH.",
       "command": "research-pipeline-mcp",
       "args": [],
       "write_tools": ["research_start", "research_continue"],
