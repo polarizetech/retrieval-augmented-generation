@@ -1,17 +1,26 @@
-"""Minimal Ollama client: schema-constrained JSON chat.
+"""The pipeline's model backends: schema-constrained JSON chat.
 
-Uses the native API rather than the OpenAI-compatible surface because `format` (JSON schema
-constrained decoding) and `options.num_ctx` are only reliable there. A small model that is merely
-*asked* for JSON drifts; one that is *constrained* to a schema cannot.
+Ollama (local) uses the native API rather than the OpenAI-compatible surface because `format` (JSON
+schema constrained decoding) and `options.num_ctx` are only reliable there. A small model that is
+merely *asked* for JSON drifts; one that is *constrained* to a schema cannot.
+
+Endpoint is any OpenAI-compatible chat API (OpenRouter, Fireworks, vLLM...): a hosted model that is
+large enough to follow a schema it is asked for, checked against that schema on every answer. Only
+the text model moves there; a configured local verifier (MiniCheck) still runs on Ollama.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Any, Protocol
+from urllib.parse import urlparse
+
+import jsonschema
 
 from .config import Settings
 
@@ -41,6 +50,8 @@ class ChatModel(Protocol):
 
 
 class Ollama:
+    backend = "ollama"
+
     def __init__(self, settings: Settings):
         self.s = settings
         self.calls: list[dict[str, Any]] = []  # per-run accounting for the reproducibility log
@@ -226,3 +237,281 @@ class Ollama:
                 return json.load(response)
         except (urllib.error.URLError, TimeoutError) as exc:
             raise LLMError(f"ollama unreachable at {self.s.ollama_url}: {exc}") from exc
+
+
+class EndpointHTTPError(LLMError):
+    def __init__(self, status: int, detail: str):
+        super().__init__(f"endpoint -> HTTP {status}: {detail}")
+        self.status = status
+        self.detail = detail
+
+
+# Statuses worth another try: rate limits and an overloaded or restarting upstream.
+RETRY_STATUS = {408, 429, 500, 502, 503, 504}
+SCHEMA_NOTE = (
+    "\n\nAnswer with one JSON object and nothing else: no prose, no code fence. It must match "
+    "this JSON schema:\n"
+)
+
+
+class Endpoint:
+    """The text model on any OpenAI-compatible chat API ("your own endpoint").
+
+    Calls naming another model (a local verifier such as MiniCheck) go to Ollama, so claim checking
+    can stay on this machine while drafting runs on hosted open weights.
+    """
+
+    backend = "endpoint"
+
+    def __init__(self, settings: Settings, local: Ollama | None = None):
+        if not settings.endpoint_url or not settings.endpoint_model:
+            raise LLMError(
+                "the endpoint backend needs PIPELINE_ENDPOINT_URL and PIPELINE_ENDPOINT_MODEL "
+                "(and usually PIPELINE_ENDPOINT_KEY or PIPELINE_ENDPOINT_KEY_FILE)"
+            )
+        self.s = settings
+        self.name = settings.endpoint_model
+        self.url = settings.endpoint_url
+        self.concurrency = max(1, settings.endpoint_concurrency)
+        self.openrouter = (urlparse(self.url).hostname or "").endswith("openrouter.ai")
+        self.calls: list[dict[str, Any]] = []
+        self._local = local
+        self._lock = threading.Lock()
+        # What this endpoint turned out to accept; each is dropped once on a 400 naming it.
+        self._json_mode = "json_schema"
+        self._send_reasoning_off = settings.endpoint_reasoning == "off"
+        self.notes: list[str] = []
+
+    @property
+    def local(self) -> Ollama:
+        if self._local is None:
+            self._local = Ollama(self.s)
+            # One call log per run: local verifier calls belong in it too.
+            self._local.calls = self.calls
+        return self._local
+
+    # -- the ChatModel interface -----------------------------------------------------------
+    def chat_json(
+        self,
+        task: str,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        *,
+        model: str | None = None,
+        temperature: float = 0.0,
+        timeout: float = 600.0,
+    ) -> dict[str, Any]:
+        if model and model != self.name:
+            return self.local.chat_json(task, system, user, schema, model=model)
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system + SCHEMA_NOTE + json.dumps(schema)},
+            {"role": "user", "content": user},
+        ]
+        problem = ""
+        for _ in range(2):  # one corrected retry, as an MCP client gets
+            text, finish = self._complete(task, messages, temperature, timeout, schema=schema)
+            if finish == "length":
+                raise ModelOutputError(
+                    f"{task}: cut off at the {self.s.max_output_tokens}-token cap "
+                    f"({len(text)} chars): {text[:200]!r}"
+                )
+            value, problem = parse_json(text, schema)
+            if value is not None:
+                return value
+            messages += [
+                {"role": "assistant", "content": text},
+                {
+                    "role": "user",
+                    "content": f"That answer was rejected: {problem}. Reply again with only the "
+                    "corrected JSON object.",
+                },
+            ]
+        raise ModelOutputError(f"{task}: no valid JSON answer after a retry: {problem}")
+
+    def chat_text(
+        self, task: str, model: str, user: str, *, num_predict: int = 8, timeout: float = 300.0
+    ) -> str:
+        if model != self.name:
+            return self.local.chat_text(task, model, user, num_predict=num_predict, timeout=timeout)
+        text, _ = self._complete(
+            task, [{"role": "user", "content": user}], 0.0, timeout, max_tokens=num_predict
+        )
+        return text.strip()
+
+    def resolve(self, model: str) -> tuple[str, str | None]:
+        """A hosted model has no digest to pin; each call logs the version the host served."""
+        if model == self.name:
+            return model, None
+        return self.local.resolve(model)
+
+    # -- HTTP --------------------------------------------------------------------------------
+    def _complete(
+        self,
+        task: str,
+        messages: list[dict[str, str]],
+        temperature: float,
+        timeout: float,
+        *,
+        schema: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[str, str]:
+        started = time.time()
+        while True:
+            body = self._body(task, messages, temperature, schema, max_tokens)
+            try:
+                out = self._post(body, timeout)
+                break
+            except EndpointHTTPError as exc:
+                if not self._relax(exc, body):
+                    raise
+        choice = (out.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content") or ""
+        usage = out.get("usage") or {}
+        self.calls.append(
+            {
+                "task": task,
+                "model": self.name,
+                "served_model": out.get("model"),
+                "provider": out.get("provider"),
+                "prompt_chars": sum(len(m["content"]) for m in messages),
+                "output_chars": len(text),
+                "input_tokens": usage.get("prompt_tokens"),
+                "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+                "output_tokens": usage.get("completion_tokens"),
+                "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get(
+                    "reasoning_tokens"
+                ),
+                "cost": usage.get("cost"),
+                "seconds": round(time.time() - started, 2),
+            }
+        )
+        return text, choice.get("finish_reason") or ""
+
+    def _body(
+        self,
+        task: str,
+        messages: list[dict[str, str]],
+        temperature: float,
+        schema: dict[str, Any] | None,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens or self.s.max_output_tokens,
+            "seed": 7,
+        }
+        if schema is not None and self._json_mode == "json_schema":
+            name = re.sub(r"[^A-Za-z0-9_-]", "_", task)[:64] or "answer"
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": name, "schema": schema, "strict": False},
+            }
+        elif schema is not None and self._json_mode == "json_object":
+            body["response_format"] = {"type": "json_object"}
+        if self._send_reasoning_off:
+            # OpenRouter's field; also passed through by vLLM-style servers that ignore it.
+            body["reasoning"] = {"effort": "none"}
+        if self.openrouter:
+            body["usage"] = {"include": True}
+            if self.s.endpoint_zdr:
+                body["provider"] = {"zdr": True}
+        return body
+
+    def _relax(self, exc: EndpointHTTPError, body: dict[str, Any]) -> bool:
+        """Drop one optional field the endpoint rejected. False when there is nothing to drop."""
+        if exc.status not in (400, 404, 422):
+            return False
+        detail = exc.detail.lower()
+        with self._lock:
+            if "reasoning" in body and ("reasoning" in detail or "effort" in detail):
+                self._send_reasoning_off = False
+                self.notes.append(
+                    f"{self.name} rejected reasoning off ({exc.status}); it ran with its default "
+                    "reasoning, which costs extra output tokens."
+                )
+                return True
+            format_words = ("response_format", "json", "schema", "structured")
+            if not any(w in detail for w in format_words):
+                return False
+            if "response_format" in body and self._json_mode == "json_schema":
+                self._json_mode = "json_object"
+                self.notes.append(
+                    f"{self.name} rejected json_schema output ({exc.status}); answers were asked "
+                    "for as JSON objects and checked against the schema afterwards."
+                )
+                return True
+            if "response_format" in body and self._json_mode == "json_object":
+                self._json_mode = "none"
+                return True
+        return False
+
+    def _post(self, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+        headers = {"Content-Type": "application/json"}
+        if self.s.endpoint_key:
+            headers["Authorization"] = f"Bearer {self.s.endpoint_key}"
+        if self.openrouter:
+            headers["X-Title"] = "research-pipeline"
+        data = json.dumps(body).encode()
+        for attempt in range(4):
+            req = urllib.request.Request(self.url + "/chat/completions", data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    out = json.load(response)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read()[:500].decode(errors="replace")
+                if exc.code in RETRY_STATUS and attempt < 3:
+                    time.sleep(2 * 2**attempt)
+                    continue
+                raise EndpointHTTPError(exc.code, detail) from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt < 3:
+                    time.sleep(2 * 2**attempt)
+                    continue
+                raise LLMError(f"endpoint unreachable at {self.url}: {exc}") from exc
+            # OpenRouter reports some upstream failures inside a 200 response.
+            error = out.get("error")
+            if error:
+                raw_code = str(error.get("code", ""))
+                code = int(raw_code) if raw_code.isdigit() else 500
+                if code in RETRY_STATUS and attempt < 3:
+                    time.sleep(2 * 2**attempt)
+                    continue
+                raise EndpointHTTPError(code, str(error.get("message", error))[:500])
+            return out
+        raise LLMError("endpoint: retries exhausted")  # pragma: no cover
+
+
+def parse_json(text: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """The JSON object in a reply, checked against `schema`; or (None, what was wrong)."""
+    raw = text.strip()
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
+    if fence:
+        raw = fence.group(1)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        try:
+            value = json.loads(raw[start : end + 1]) if 0 <= start < end else None
+        except json.JSONDecodeError:
+            value = None
+    if not isinstance(value, dict):
+        return None, f"not a JSON object: {text[:120]!r}"
+    try:
+        jsonschema.validate(value, schema)
+    except jsonschema.ValidationError as exc:
+        return None, f"does not match the schema: {exc.message}"
+    return value, ""
+
+
+def make_llm(settings: Settings, backend: str | None = None) -> Ollama | Endpoint:
+    """The configured model backend: PIPELINE_LLM (CLI, benchmarks) or the one asked for."""
+    backend = backend or settings.llm_backend
+    if backend == "ollama":
+        return Ollama(settings)
+    if backend == "endpoint":
+        return Endpoint(settings)
+    raise LLMError(f"unknown model backend {backend!r}: use ollama or endpoint")

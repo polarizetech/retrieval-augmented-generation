@@ -50,6 +50,15 @@ def _ollama_url() -> str:
     return host if host.startswith("http") else f"http://{host}"
 
 
+def _endpoint_key() -> str:
+    """The endpoint's API key, from PIPELINE_ENDPOINT_KEY or the file PIPELINE_ENDPOINT_KEY_FILE."""
+    key = os.environ.get("PIPELINE_ENDPOINT_KEY", "").strip()
+    if key:
+        return key
+    path = _optional_path("PIPELINE_ENDPOINT_KEY_FILE")
+    return path.read_text().strip() if path and path.exists() else ""
+
+
 @dataclass
 class Settings:
     ollama_url: str = field(default_factory=_ollama_url)
@@ -78,8 +87,33 @@ class Settings:
     ollama_keep_alive: str = field(
         default_factory=lambda: os.environ.get("PIPELINE_OLLAMA_KEEP_ALIVE", "30m")
     )
-    # Behind the MCP server: "client" = the calling model fills in the forms; "ollama" = local.
+    # Behind the MCP server: "client" = the calling model fills in the forms; "ollama" = local;
+    # "endpoint" = the OpenAI-compatible endpoint below.
     mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "client"))
+    # The CLI's and benchmarks' model: "ollama" (local) or "endpoint".
+    llm_backend: str = field(default_factory=lambda: os.environ.get("PIPELINE_LLM", "ollama"))
+
+    # Your own endpoint: any OpenAI-compatible chat API (OpenRouter, Fireworks, vLLM, Ollama's
+    # /v1). Only the text model moves there; embeddings and a local verifier stay on this machine.
+    endpoint_url: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_URL", "").rstrip("/")
+    )
+    endpoint_model: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_MODEL", "")
+    )
+    endpoint_key: str = field(default_factory=_endpoint_key, repr=False)
+    # "off" asks the model not to reason (the pipeline's forms need none); "default" sends nothing.
+    endpoint_reasoning: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_REASONING", "off")
+    )
+    # On OpenRouter, route only to providers that keep no data. Other hosts: a contract term.
+    endpoint_zdr: bool = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_ZDR", "1") != "0"
+    )
+    # Concurrent calls to the endpoint (a local model answers one at a time; a hosted one not).
+    endpoint_concurrency: int = field(
+        default_factory=lambda: _int("PIPELINE_ENDPOINT_CONCURRENCY", 8)
+    )
     # Seconds a pipeline tool call waits for the run to need the client again before returning.
     client_turn_wait: int = field(default_factory=lambda: _int("PIPELINE_CLIENT_TURN_WAIT", 40))
     # Most tasks handed to the client in one turn.

@@ -32,7 +32,7 @@ from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
 from .domains import UnknownDomain
 from .domains import active as active_domain
-from .llm import Ollama
+from .llm import LLMError, Ollama, make_llm
 from .papers import PaperLibrary, PapersError
 from .pipeline import Pipeline
 from .sessions import SessionStore
@@ -199,6 +199,10 @@ async def research_start(
     )
     if settings.mcp_llm == "client":
         run.client = ClientLLM(Ollama(settings), _client_name(ctx), settings.client_timeout)
+    try:
+        llm = run.client or make_llm(settings, settings.mcp_llm)
+    except LLMError as exc:
+        return json.dumps({"error": str(exc)})
 
     def progress(stage: str, detail: str) -> None:
         run.stage, run.detail = stage, detail
@@ -208,7 +212,7 @@ async def research_start(
         progress,
         offline=offline,
         domain=pipeline_domain,
-        llm=run.client,
+        llm=llm,
         collection=collection or None,
         strictness=policy.name,
         agent_route=routed,
@@ -384,8 +388,8 @@ async def corpus_status() -> str:
     return json.dumps(
         {
             "index": index,
-            "model_backend": "mcp-client" if s.mcp_llm == "client" else "ollama",
-            "text_model": s.text_model,
+            "model_backend": "mcp-client" if s.mcp_llm == "client" else s.mcp_llm,
+            "text_model": s.endpoint_model if s.mcp_llm == "endpoint" else s.text_model,
             "verifier_model": s.verifier_model or "(same as text)",
         }
     )
