@@ -162,7 +162,14 @@ async def _web_search(base: str, arguments: dict[str, Any]) -> CallToolResult:
     if not base:
         return CallToolResult(
             isError=True,
-            content=[TextContent(type="text", text="SEARXNG_URL is not configured")],
+            content=[
+                TextContent(
+                    type="text",
+                    text="web__search is off: no SearXNG instance is configured (SEARXNG_URL). "
+                    "Search the web with your own tool instead and pass the URLs you find to "
+                    "papers__leads; then papers__fetch the identifiers it returns.",
+                )
+            ],
         )
     query = str(arguments.get("query", "")).strip()
     limit = max(1, min(int(arguments.get("max_results", 8)), 20))
@@ -586,10 +593,13 @@ def build_server(
         upstream = [entry[2] for entry in federation.tools.values()]
         if not builtin_tools:
             return [status, *upstream]
-        return [status, web, *rag_tools, *math_tools, *session_tools, *upstream]
+        # web__search is listed only when it can work: without SearXNG, a client that can
+        # search the web does it itself and hands the URLs to papers__leads (see ask_the_web).
+        web_tools = [web] if searxng else []
+        return [status, *web_tools, *rag_tools, *math_tools, *session_tools, *upstream]
 
-    # gateway_status, web__search, five rag__, two math__, and two session tools.
-    builtin = 11 if builtin_tools else 1
+    # gateway_status, web__search (with SearXNG), five rag__, two math__, and two session tools.
+    builtin = (10 + bool(searxng)) if builtin_tools else 1
 
     rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]] = {
         "rag__retrieve_evidence": (

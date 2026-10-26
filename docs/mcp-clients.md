@@ -6,12 +6,12 @@ One gateway process (`research-rag-gateway`) exposes:
 |---|---|---|
 | `rag__search`, `rag__retrieve_evidence`, `rag__check_citations`, `rag__save_report` | this repository | no (embedding only, for hybrid retrieval) |
 | `papers__*` | the paper library upstream | no |
-| `pipeline__research_start`, `_continue`, `_status` | the pipeline upstream | yes: by default the calling model; optionally a local Ollama model |
+| `pipeline__research_start`, `_continue`, `_status` | the pipeline upstream | yes: your configured endpoint when set, else the calling model; `model="client"` hands one run to the caller |
 | `datasets__*`, `patents__*` | dataset-fetch and patent-fetch adapters | no |
 | `session__read_capsule`, `session__propose` | session store and research PR gate | no |
 | `research__*` | trusted research-repository reads and proposals | no |
 | `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
-| `web__search` | an optional SearXNG instance | no |
+| `web__search` | an optional SearXNG instance; listed only when `SEARXNG_URL` is set | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
 
 Upstreams are stdio MCP servers listed in `config/mcp-gateway.json`. The gateway spawns them once,
@@ -19,6 +19,14 @@ namespaces their tools as `<upstream>__<tool>`, forwards calls unchanged, and ad
 annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) from the config so that clients
 can decide what needs approval. One broken upstream is reported by `gateway_status` and does not
 take the others down.
+
+**Web search without SearXNG.** The scholarly indexes rarely miss an open copy (1.2% of searches
+across 265 runs, October 2026), so no web search engine is required. When `papers__search` wants
+the web fallback and no SearXNG is configured, its result carries `ask_the_web`: a client that can
+search the web does so itself and passes the URLs it finds to `papers__leads`, which parses paper
+identifiers out of them; `papers__fetch` then lets the open-access providers decide what may be
+kept. Nothing is downloaded from a web page. Runs whose model has no web access (your endpoint,
+Ollama) skip the fallback and say so in their Limits section.
 
 ## A second instance for other upstreams
 
