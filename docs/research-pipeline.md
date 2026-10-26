@@ -260,6 +260,10 @@ What it does (`research_pipeline/llm.py`, `Endpoint`):
   client.
 - **The run log** records, under `endpoint`, the model version and provider that served each call,
   tokens (including any reasoning tokens) and OpenRouter's reported cost.
+- **Cheapest provider first.** On OpenRouter, `PIPELINE_ENDPOINT_SORT=price` (the default) tries the
+  cheapest zero-retention provider first and falls back to the next if it fails. For Qwen3.8 27B
+  that is about 1.3 cents a question instead of about 2.2 with OpenRouter's load balancing
+  (October 2026). Set it empty for load balancing, or `throughput` / `latency`.
 - Calls run 8 at a time (`PIPELINE_ENDPOINT_CONCURRENCY`).
 
 Sizing: a run without reranking is about 42,000 input and 10,000 output tokens, which is cents on
@@ -283,6 +287,11 @@ open-access text):
 | `deepseek/deepseek-v4.1-flash` | 1 / 4 | **no** | 54 / 64 | ~1.2¢ |
 | `anthropic/claude-opus-5.5` (reference; cannot turn reasoning off) | 1 / 4 | no | 39 / 62 | ~55¢ |
 
+- Cost against the alternatives (October 2026): research runs are small, so OpenRouter is cheap
+  here, about $7 a month at 500 questions. A rented GPU kept on costs $245-640 a month (RunPod
+  4090) and a bought one never pays back at this volume; both make sense only to keep prompts off
+  third-party hardware entirely. Coding is the opposite case: at Claude Code volumes per-token
+  pricing costs more than a Claude Max plan.
 - Qwen3.8 27B ties for the best score at the lowest cost and broke no schema in either round. At
   27B it can also run on one rented GPU if the model should ever be fully under your control.
 - Kimi K3 wrote the most complete syntheses (on the alcohol case it alone of the open models

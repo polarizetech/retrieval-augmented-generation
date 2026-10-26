@@ -416,8 +416,13 @@ class Endpoint:
             body["reasoning"] = {"effort": "none"}
         if self.openrouter:
             body["usage"] = {"include": True}
+            provider: dict[str, Any] = {}
             if self.s.endpoint_zdr:
-                body["provider"] = {"zdr": True}
+                provider["zdr"] = True
+            if self.s.endpoint_sort:
+                provider["sort"] = self.s.endpoint_sort
+            if provider:
+                body["provider"] = provider
         return body
 
     def _relax(self, exc: EndpointHTTPError, body: dict[str, Any]) -> bool:
