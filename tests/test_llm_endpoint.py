@@ -75,7 +75,7 @@ def test_request_asks_for_schema_zero_retention_and_no_reasoning() -> None:
     assert body["model"] == "deepseek/deepseek-v4-pro"
     assert body["response_format"]["json_schema"]["schema"] == SCHEMA
     assert body["reasoning"] == {"effort": "none"}
-    assert body["provider"] == {"zdr": True}
+    assert body["provider"] == {"zdr": True, "sort": "price"}
     assert rec.headers[0]["Authorization"] == "Bearer sk-test"
     call = ep.calls[0]
     assert call["served_model"] == "deepseek/deepseek-v4-pro-0813"
@@ -205,3 +205,10 @@ def test_local_verifier_calls_land_in_the_same_call_log() -> None:
     ep = Endpoint(settings())
     ep.local.calls.append({"task": "verify", "model": "bespoke-minicheck:latest"})
     assert ep.calls == [{"task": "verify", "model": "bespoke-minicheck:latest"}]
+
+
+def test_provider_sort_can_be_turned_off_without_losing_zero_retention() -> None:
+    rec = Recorder(reply('{"verdict": "SUPPORTED"}'))
+    with mock.patch("urllib.request.urlopen", side_effect=rec):
+        Endpoint(settings(endpoint_sort="")).chat_json("verify", "s", "u", SCHEMA)
+    assert rec.sent[0]["provider"] == {"zdr": True}

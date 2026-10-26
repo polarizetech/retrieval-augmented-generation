@@ -111,6 +111,11 @@ class Settings:
         default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_ZDR", "1") != "0"
     )
     # Concurrent calls to the endpoint (a local model answers one at a time; a hosted one not).
+    # On OpenRouter, which providers to try first: "price" (cheapest first, falling back to the
+    # next on failure), "throughput", "latency", or "" for OpenRouter's load balancing.
+    endpoint_sort: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_SORT", "price")
+    )
     endpoint_concurrency: int = field(
         default_factory=lambda: _int("PIPELINE_ENDPOINT_CONCURRENCY", 8)
     )
