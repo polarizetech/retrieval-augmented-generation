@@ -29,10 +29,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, companions, grading, integrity, safety, verify
+from . import __version__, agent_profiles, companions, grading, integrity, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
-from .domains import Domain, active
+from .domains import Domain, UnknownDomain, active
 from .llm import Endpoint, ModelOutputError, Ollama, make_llm
 from .notes import NoteStore
 from .papers import PaperLibrary, PapersError, Passage
@@ -1028,6 +1028,35 @@ class Pipeline:
         }
         log["run_dir"] = str(write_run(self.s, log))
         return log
+
+
+def route_question(
+    settings: Settings, question: str, domain: str = ""
+) -> tuple[Domain | str | None, dict[str, Any]]:
+    """The agent briefs (scientific-research-agents, plus any private extensions) for a question,
+    and the domain to apply: the one asked for, else the route's suggestion when installed.
+
+    Every entry point (the MCP research tool, the command line) routes through here, so a run
+    gets the same specialist guidance whichever model does its model steps.
+    """
+    routed = agent_profiles.route(
+        question, settings.agent_profiles_dir, domain, settings.agent_extensions_dir
+    )
+    chosen: Domain | str | None = domain or None
+    if not domain and (suggested := routed.get("domain")):
+        try:
+            chosen = active(str(suggested))
+            routed["domain_applied"] = suggested
+        except UnknownDomain:
+            # A profile route is advice, not a dependency declaration. Keep the suggestion in
+            # provenance and use the generic evidence policy until that optional domain package
+            # is installed. An explicitly requested unknown domain still fails loudly.
+            chosen = None
+            routed["domain_applied"] = ""
+            routed["domain_note"] = (
+                f"suggested domain {suggested!r} is not installed; used generic policy"
+            )
+    return chosen, routed
 
 
 def write_run(settings: Settings, log: dict[str, Any]) -> Path:
