@@ -108,9 +108,9 @@ def anyio_backend() -> str:
 async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -> None:
     async def body(session: ClientSession) -> None:
         tools = {t.name: t for t in (await session.list_tools()).tools}
+        assert "web__search" not in tools  # no SearXNG configured: not offered
         assert {
             "gateway_status",
-            "web__search",
             "rag__search",
             "rag__retrieve_evidence",
             "rag__check_citations",
@@ -133,7 +133,7 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
         status = payload(await session.call_tool("gateway_status", {}))
         assert status["connected"] == {"papers": len(library_tools)}
         assert set(status["errors"]) == {"broken"}
-        assert status["total_tools"] == len(library_tools) + 11
+        assert status["total_tools"] == len(library_tools) + 10  # built-ins, no web__search
 
     await with_session(config, tmp_path, body)
 
@@ -215,7 +215,10 @@ async def test_search_is_forwarded_and_errors_are_reported(config: Path, tmp_pat
         assert found["data"]["providers"]["doaj"]["status"] == "unavailable"
         assert found["data"]["search_id"]  # and the library remembered the search
         web = await session.call_tool("web__search", {"query": "x"})
-        assert web.isError
+        assert web.isError  # called anyway: says how to search instead
+        first = web.content[0]
+        assert isinstance(first, TextContent)
+        assert "papers__leads" in first.text
         unknown = await session.call_tool("nope__tool", {})
         assert unknown.isError
 
@@ -287,5 +290,21 @@ async def test_index_paper_makes_a_fetched_paper_citable(config: Path, tmp_path:
             await session.call_tool("rag__index_paper", {"identifiers": ["10.1000/open"]})
         )
         assert again["results"][0]["status"] == "already_indexed"
+
+    await with_session(config, tmp_path, body)
+
+
+@pytest.mark.anyio
+async def test_web_search_is_offered_once_searxng_is_configured(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SEARXNG_URL", "http://searx.test")
+
+    async def body(session: ClientSession) -> None:
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert "web__search" in names
+        status = payload(await session.call_tool("gateway_status", {}))
+        assert status["web_search_configured"] is True
+        assert status["total_tools"] == len(names)
 
     await with_session(config, tmp_path, body)
