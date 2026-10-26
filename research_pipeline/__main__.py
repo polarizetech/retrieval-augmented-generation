@@ -134,8 +134,17 @@ def main() -> int:
 
     if args.rounds:
         settings.max_rounds = args.rounds
+    from .pipeline import route_question
+
+    # The same agent-brief routing as the MCP research tool, whichever model runs.
+    domain, routed = route_question(settings, args.question, args.domain or "")
     pipe = Pipeline(
-        settings, _progress, offline=args.offline, domain=args.domain, collection=args.collection
+        settings,
+        _progress,
+        offline=args.offline,
+        domain=domain,
+        collection=args.collection,
+        agent_route=routed,
     )
     log = asyncio.run(pipe.run(args.question))
     print(log["answer"])

@@ -32,11 +32,9 @@ from mcp.server.fastmcp import Context, FastMCP
 from . import agent_profiles
 from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
-from .domains import UnknownDomain
-from .domains import active as active_domain
 from .llm import LLMError, Ollama, make_llm, resolve_backend
 from .papers import PaperLibrary, PapersError
-from .pipeline import Pipeline
+from .pipeline import Pipeline, route_question
 from .sessions import SessionStore
 from .strictness import resolve as resolve_strictness
 
@@ -183,23 +181,7 @@ async def research_start(
             }
         )
     policy = resolve_strictness(strictness or settings.strictness)
-    routed = agent_profiles.route(
-        question, settings.agent_profiles_dir, domain, settings.agent_extensions_dir
-    )
-    pipeline_domain: Any = domain or None
-    if not domain and (suggested_domain := routed.get("domain")):
-        try:
-            pipeline_domain = active_domain(str(suggested_domain))
-            routed["domain_applied"] = suggested_domain
-        except UnknownDomain:
-            # A profile route is advice, not a dependency declaration. Keep the suggestion in
-            # provenance and use the generic evidence policy until that optional domain package
-            # is installed. An explicitly requested unknown domain still fails loudly below.
-            pipeline_domain = None
-            routed["domain_applied"] = ""
-            routed["domain_note"] = (
-                f"suggested domain {suggested_domain!r} is not installed; used generic policy"
-            )
+    pipeline_domain, routed = route_question(settings, question, domain)
     client_name = _client_name(ctx)
     run = Run(
         question.strip(),
