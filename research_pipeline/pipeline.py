@@ -33,7 +33,7 @@ from . import __version__, companions, grading, integrity, safety, verify
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, active
-from .llm import ModelOutputError, Ollama
+from .llm import Endpoint, ModelOutputError, Ollama, make_llm
 from .notes import NoteStore
 from .papers import PaperLibrary, PapersError, Passage
 from .prompts import Prompts, wrap
@@ -53,7 +53,7 @@ from .strictness import resolve as resolve_strictness
 from .upstream import UpstreamError
 
 Progress = Callable[[str, str], None]
-Model = Ollama | ClientLLM
+Model = Ollama | Endpoint | ClientLLM
 
 
 @dataclass
@@ -95,10 +95,11 @@ class Pipeline:
         self.s = settings
         self.offline = offline  # answer from the already-indexed corpus; no discovery, no fetching
         self.progress = progress or (lambda stage, detail: None)
-        self.llm: Model = llm or Ollama(settings)
+        self.llm: Model = llm or make_llm(settings)
         self.client = isinstance(self.llm, ClientLLM)
-        # A client answers a batch per turn; a single resident local model answers one at a time.
-        self.concurrency = 32 if self.client else 1
+        # A client answers a batch per turn; a single resident local model answers one at a time;
+        # a hosted endpoint takes as many at once as it is configured for.
+        self.concurrency = 32 if self.client else getattr(self.llm, "concurrency", 1)
         self.notes = NoteStore(settings.notes_path)
         self.collection = settings.collection if collection is None else collection
         # What the library said about each paper a passage came from (title, doi, retraction,
@@ -120,8 +121,31 @@ class Pipeline:
         )
 
     # -- setup -----------------------------------------------------------------------------
+    def _endpoint_summary(self) -> dict[str, Any] | None:
+        """Where a hosted text model ran, and what it cost: for the run log."""
+        if not isinstance(self.llm, Endpoint):
+            return None
+        calls = [c for c in self.llm.calls if c["model"] == self.llm.name]
+
+        def total(key: str) -> float:
+            return sum(c.get(key) or 0 for c in calls)
+
+        return {
+            "url": self.llm.url,
+            "zdr_required": self.llm.openrouter and self.s.endpoint_zdr,
+            "reasoning": self.s.endpoint_reasoning,
+            "served_models": sorted({str(c.get("served_model")) for c in calls}),
+            "providers": sorted({str(c.get("provider")) for c in calls}),
+            "calls": len(calls),
+            "input_tokens": int(total("input_tokens")),
+            "output_tokens": int(total("output_tokens")),
+            "reasoning_tokens": int(total("reasoning_tokens")),
+            "cost_usd": round(total("cost"), 6),
+            "notes": list(self.llm.notes),
+        }
+
     def _resolve_models(self, st: State) -> list[str]:
-        name = self.llm.name if isinstance(self.llm, ClientLLM) else self.s.text_model
+        name = self.llm.name if isinstance(self.llm, (ClientLLM, Endpoint)) else self.s.text_model
         text, digest = self.llm.resolve(name)
         self.s.text_model = text
         self.models["text"] = {"name": text, "digest": digest}
@@ -957,7 +981,10 @@ class Pipeline:
             "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "seconds": round(time.time() - started, 1),
             "question": st.question,
-            "model_backend": "mcp-client" if self.client else "ollama",
+            "model_backend": "mcp-client"
+            if self.client
+            else getattr(self.llm, "backend", "ollama"),
+            "endpoint": self._endpoint_summary(),
             "models": self.models,
             "strictness": {
                 "name": self.strictness.name,
@@ -1005,8 +1032,18 @@ class Pipeline:
 
 def write_run(settings: Settings, log: dict[str, Any]) -> Path:
     slug = re.sub(r"[^a-z0-9]+", "-", log["question"].lower()).strip("-")[:48] or "run"
-    run_dir = settings.runs_dir / f"{log['date'].replace(':', '')}-{slug}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    base = settings.runs_dir / f"{log['date'].replace(':', '')}-{slug}"
+    settings.runs_dir.mkdir(parents=True, exist_ok=True)
+    # Two runs of one question started in the same second must not overwrite each other's log
+    # (observed with parallel benchmark streams). mkdir without exist_ok claims a folder atomically.
+    run_dir, n = base, 1
+    while True:
+        try:
+            run_dir.mkdir()
+            break
+        except FileExistsError:
+            n += 1
+            run_dir = base.with_name(f"{base.name}-{n}")
     (run_dir / "answer.md").write_text(log["answer"])
     (run_dir / "run.json").write_text(json.dumps(log, indent=1, ensure_ascii=False))
     return run_dir

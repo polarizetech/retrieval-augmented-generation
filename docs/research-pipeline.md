@@ -225,18 +225,83 @@ several hundred tokens of hidden reasoning before the constrained answer, and ig
 cases right instead of 7, so it stays on. Models are kept loaded for 30 minutes
 (`PIPELINE_OLLAMA_KEEP_ALIVE`) so that a run's network-bound stages do not unload them.
 
-### Planned: your own endpoint for the model steps
+### Your own endpoint for the model steps
 
 The calling model is the default behind MCP (`PIPELINE_MCP_LLM=client`), and stays so. The other
-backend today is Ollama on the same machine, which exists for one reason: keeping a question and
-its intermediate work off a hosted assistant. That backend should become "any OpenAI-compatible
-endpoint" (one setting each for URL, key and model), so the same option covers local Ollama, a
-hosted open-weight model with zero data retention (OpenRouter with ZDR-only routing, DigitalOcean
-serverless inference), or a self-hosted GPU server. Sizing: a run without reranking is about
-42,000 input and 10,000 output tokens, which is cents on hosted open-weight models. Note that a
-run started from a chat client still shows that client the question and the final answer; a
-fully private run starts from the command line. Not built yet; nothing else needs to change for
-it, since every model step already goes through one `ChatModel` interface.
+backends exist for one reason: keeping a question and its intermediate work off a hosted assistant.
+Besides Ollama on this machine, the text model can run on any OpenAI-compatible chat API: a hosted
+open-weight model with zero data retention, or a GPU server of your own.
+
+```bash
+# config/rag.env (gitignored)
+PIPELINE_ENDPOINT_URL=https://openrouter.ai/api/v1
+PIPELINE_ENDPOINT_MODEL=qwen/qwen3.8-27b   # default; moonshotai/kimi-k3 for important questions
+PIPELINE_ENDPOINT_KEY_FILE=~/.config/polarize/openrouter.key   # or PIPELINE_ENDPOINT_KEY=...
+PIPELINE_LLM=endpoint          # the command line and benchmarks
+# PIPELINE_MCP_LLM=endpoint    # behind MCP too (default stays client)
+```
+
+What it does (`research_pipeline/llm.py`, `Endpoint`):
+
+- **Only the text model moves.** Embeddings and reranking stay in the paper library, and a
+  configured verifier such as `bespoke-minicheck` still runs on Ollama, so claim checking never
+  leaves the machine and stays independent of the model that wrote the claims.
+- **Reasoning off** (`PIPELINE_ENDPOINT_REASONING=off`, the default) sends
+  `reasoning: {effort: "none"}`: the pipeline's forms need no reasoning, and reasoning tokens are
+  billed as output. A model that cannot turn it off (Claude Opus/Sonnet 5.5 on OpenRouter) rejects
+  the field; the call is retried without it and the run log says so.
+- **Zero data retention.** On OpenRouter every request carries `provider: {zdr: true}`, so it is
+  routed only to providers with a zero-retention policy, or fails (`PIPELINE_ENDPOINT_ZDR=0` turns
+  that off). Other hosts have no such field: retention there is a contract term. Do not use
+  DeepSeek's own API for unpublished material: it stores data in China and trains on API inputs by
+  default.
+- **Schemas.** Each call asks for `json_schema` output (falling back to `json_object` where the host
+  rejects it) and validates the answer against the schema, with one corrected retry, as for an MCP
+  client.
+- **The run log** records, under `endpoint`, the model version and provider that served each call,
+  tokens (including any reasoning tokens) and OpenRouter's reported cost.
+- Calls run 8 at a time (`PIPELINE_ENDPOINT_CONCURRENCY`).
+
+Sizing: a run without reranking is about 42,000 input and 10,000 output tokens, which is cents on
+hosted open-weight models. A run started from a chat client still shows that client the question
+and the final answer; a fully private run starts from the command line.
+
+#### Which model
+
+**Default: `qwen/qwen3.8-27b`. For questions whose write-up matters: `moonshotai/kimi-k3`.** Backup
+from another family: `deepseek/deepseek-v4-pro`. Comparison of October 2026 (the four regression
+cases, offline, reasoning off, every call on a zero-retention provider, MiniCheck verifying
+locally; 3 of the 4 expected papers indexed, as the blood-pressure meta-analysis has no
+open-access text):
+
+| Model | Cases passed | Declined the unanswerable case | Claims kept | Cost per question |
+|---|---|---|---|---|
+| `qwen/qwen3.8-27b` | 2 / 4 | yes | 44 / 47 | ~1.7¢ |
+| `moonshotai/kimi-k3` | 2 / 4 | yes | 44 / 56 | ~14¢ |
+| `deepseek/deepseek-v4-pro` | 2 / 4 | yes | 30 / 34 | ~3.4¢ |
+| `z-ai/glm-5.2` | 1 / 4 | **no** | 39 / 52 | ~4¢ |
+| `deepseek/deepseek-v4.1-flash` | 1 / 4 | **no** | 54 / 64 | ~1.2¢ |
+| `anthropic/claude-opus-5.5` (reference; cannot turn reasoning off) | 1 / 4 | no | 39 / 62 | ~55¢ |
+
+- Qwen3.8 27B ties for the best score at the lowest cost and broke no schema in either round. At
+  27B it can also run on one rented GPU if the model should ever be fully under your control.
+- Kimi K3 wrote the most complete syntheses (on the alcohol case it alone of the open models
+  brought in the Mendelian randomization evidence). It is about 8x the cost, broke a schema limit
+  twice on its first attempt (which ends a run), and still produced a few hundred reasoning tokens
+  with reasoning off, as some of its many providers ignore the setting.
+- GLM-5.2 and DeepSeek V4.1 Flash kept loosely related claims for a question the literature cannot
+  answer. That is the failure that matters most here, so they are not recommended.
+- Kimi-K3.1-Pro has no published weights; the largest Qwen3.8 and GLM-5.3 cannot turn reasoning
+  off; Qwen3.8-Flash has no zero-retention provider. Nemotron 3 Ultra and MiniMax M3 were not run
+  to completion.
+
+Four cases and one or two runs per model is a strong hint, not an accuracy estimate (see the
+docstring of `eval_pipeline.py`). Rerun the comparison on your own questions before relying on it:
+
+```bash
+python benchmarks/research/eval_pipeline.py --backend endpoint --model qwen/qwen3.8-27b --label qwen
+python benchmarks/research/eval_pipeline.py --backend endpoint --model moonshotai/kimi-k3 --label kimi
+```
 
 ## Alternatives considered (as of September 2026)
 

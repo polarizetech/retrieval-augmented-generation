@@ -5,6 +5,9 @@
     python benchmarks/research/eval_pipeline.py --only exercise-blood-pressure
     python benchmarks/research/eval_pipeline.py --score-only     # re-score the last results file
 
+    # the same cases on a hosted model (PIPELINE_ENDPOINT_URL and key set; see docs):
+    python benchmarks/research/eval_pipeline.py --backend endpoint --model deepseek/deepseek-v4-pro
+
 Offline is the default so that a change in score reflects a change in the pipeline, not in what
 the search providers returned that day. Index the expected papers first (research-pipeline index).
 
@@ -80,6 +83,9 @@ def main() -> int:
     parser.add_argument("--only")
     parser.add_argument("--online", action="store_true", help="allow discovery and fetching")
     parser.add_argument("--score-only", action="store_true")
+    parser.add_argument("--backend", choices=["ollama", "endpoint"], help="override PIPELINE_LLM")
+    parser.add_argument("--model", help="text model: PIPELINE_ENDPOINT_MODEL or TEXT_MODEL")
+    parser.add_argument("--label", default="", help="tag for the results file name")
     args = parser.parse_args()
     results_dir = ROOT / "benchmarks/results"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -91,11 +97,19 @@ def main() -> int:
         latest = sorted(results_dir.glob("research-pipeline-*.jsonl"))[-1]
         rows = [json.loads(line) for line in latest.read_text().splitlines()]
     else:
-        out = results_dir / f"research-pipeline-{time.strftime('%Y%m%dT%H%M%S')}.jsonl"
+        tag = f"-{args.label}" if args.label else ""
+        out = results_dir / f"research-pipeline-{time.strftime('%Y%m%dT%H%M%S')}{tag}.jsonl"
         rows = []
         for case in cases:
             print(f"== {case['id']}", file=sys.stderr, flush=True)
-            pipeline = Pipeline(Settings(), offline=not args.online)
+            settings = Settings()
+            if args.backend:
+                settings.llm_backend = args.backend
+            if args.model and settings.llm_backend == "endpoint":
+                settings.endpoint_model = args.model
+            elif args.model:
+                settings.text_model = args.model
+            pipeline = Pipeline(settings, offline=not args.online)
             log = asyncio.run(pipeline.run(case["question"]))
             row = score(case, log) | {
                 "run_dir": log["run_dir"],
@@ -104,6 +118,7 @@ def main() -> int:
                 "reranker": log["reranker"],
                 "prompt_version": log["prompt_version"],
                 "index": log["index"],
+                "endpoint": log.get("endpoint"),
             }
             rows.append(row)
             with out.open("a") as fh:
@@ -111,12 +126,14 @@ def main() -> int:
         print(f"results: {out}", file=sys.stderr)
 
     header = f"{'case':<28}{'pass':<6}{'recall':<8}{'kept/drafted':<14}{'conflict':<10}"
-    print(header + f"{'abstain':<9}{'forbid':<8}sec")
+    print(header + f"{'abstain':<9}{'forbid':<8}{'sec':<8}cost")
     for r in rows:
+        cost = (r.get("endpoint") or {}).get("cost_usd")
         print(
             f"{r['id']:<28}{'yes' if r['pass'] else 'NO':<6}{r['source_recall']!s:<8}"
             f"{str(r['kept']) + '/' + str(r['drafted']):<14}{r.get('conflict_shown', '-')!s:<10}"
-            f"{r.get('abstained', '-')!s:<9}{r['forbidden']:<8}{r['seconds']}"
+            f"{r.get('abstained', '-')!s:<9}{r['forbidden']:<8}{r['seconds']!s:<8}"
+            f"{'-' if cost is None else f'${cost:.4f}'}"
         )
     passed = sum(r["pass"] for r in rows)
     print(f"\n{passed}/{len(rows)} cases pass. n is far too small for a rate; see the docstring.")
