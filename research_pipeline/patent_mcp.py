@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-COMMAND = os.environ.get("PATENT_FETCH_COMMAND", "/Users/joshuaanderton/.local/bin/patent-fetch")
+COMMAND = (
+    os.environ.get("PATENT_FETCH_COMMAND")
+    or shutil.which("patent-fetch")
+    or str(Path.home() / ".local/bin/patent-fetch")
+)
 READ = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
 SEARCH = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True)
 FETCH = ToolAnnotations(

@@ -116,6 +116,13 @@ class Settings:
     endpoint_sort: str = field(
         default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_SORT", "price")
     )
+    # Prices for hosts that do not report cost (USD per million tokens, "input,output"). Near AI's
+    # are read from its public model list when this is empty; OpenRouter reports cost itself.
+    endpoint_price: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_PRICE", "")
+    )
+    # Tries per call when the endpoint drops the connection or is overloaded (429/5xx).
+    endpoint_retries: int = field(default_factory=lambda: _int("PIPELINE_ENDPOINT_RETRIES", 8))
     endpoint_concurrency: int = field(
         default_factory=lambda: _int("PIPELINE_ENDPOINT_CONCURRENCY", 8)
     )

@@ -11,7 +11,9 @@ the text model moves there; a configured local verifier (MiniCheck) still runs o
 
 from __future__ import annotations
 
+import http.client
 import json
+import random
 import re
 import threading
 import time
@@ -273,7 +275,12 @@ class Endpoint:
         self.name = settings.endpoint_model
         self.url = settings.endpoint_url
         self.concurrency = max(1, settings.endpoint_concurrency)
-        self.openrouter = (urlparse(self.url).hostname or "").endswith("openrouter.ai")
+        host = urlparse(self.url).hostname or ""
+        self.openrouter = host.endswith("openrouter.ai")
+        self.nearai = host.endswith("near.ai")
+        # Hosts other than OpenRouter route to one provider and do not name it in the response.
+        self.host_label = "Near AI" if self.nearai else host
+        self._prices: tuple[float, float, float] | None = None  # USD per token: in, out, cached
         self.calls: list[dict[str, Any]] = []
         self._local = local
         self._lock = threading.Lock()
@@ -373,7 +380,7 @@ class Endpoint:
                 "task": task,
                 "model": self.name,
                 "served_model": out.get("model"),
-                "provider": out.get("provider"),
+                "provider": out.get("provider") or self.host_label,
                 "prompt_chars": sum(len(m["content"]) for m in messages),
                 "output_chars": len(text),
                 "input_tokens": usage.get("prompt_tokens"),
@@ -382,7 +389,7 @@ class Endpoint:
                 "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get(
                     "reasoning_tokens"
                 ),
-                "cost": usage.get("cost"),
+                "cost": usage.get("cost") if "cost" in usage else self._cost(usage),
                 "seconds": round(time.time() - started, 2),
             }
         )
@@ -460,33 +467,92 @@ class Endpoint:
         if self.openrouter:
             headers["X-Title"] = "research-pipeline"
         data = json.dumps(body).encode()
-        for attempt in range(4):
+        attempts = max(1, self.s.endpoint_retries)
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
             req = urllib.request.Request(self.url + "/chat/completions", data=data, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as response:
                     out = json.load(response)
             except urllib.error.HTTPError as exc:
                 detail = exc.read()[:500].decode(errors="replace")
-                if exc.code in RETRY_STATUS and attempt < 3:
-                    time.sleep(2 * 2**attempt)
+                if exc.code in RETRY_STATUS and not last:
+                    _backoff(attempt)
                     continue
+                if exc.code == 402 or any(
+                    w in detail.lower() for w in ("insufficient", "credit", "balance", "quota")
+                ):
+                    detail = f"out of credits at {self.host_label}? {detail}"
                 raise EndpointHTTPError(exc.code, detail) from exc
-            except (urllib.error.URLError, TimeoutError) as exc:
-                if attempt < 3:
-                    time.sleep(2 * 2**attempt)
+            except (OSError, http.client.HTTPException) as exc:
+                # A dropped connection or TLS handshake (URLError, SSLError, reset, cut-off body):
+                # observed from Near AI on 2026-10-26 for 20-65% of requests, so retry patiently.
+                if not last:
+                    _backoff(attempt)
                     continue
-                raise LLMError(f"endpoint unreachable at {self.url}: {exc}") from exc
+                raise LLMError(
+                    f"endpoint unreachable at {self.url} after {attempts} tries: {exc}"
+                ) from exc
             # OpenRouter reports some upstream failures inside a 200 response.
             error = out.get("error")
             if error:
                 raw_code = str(error.get("code", ""))
                 code = int(raw_code) if raw_code.isdigit() else 500
-                if code in RETRY_STATUS and attempt < 3:
-                    time.sleep(2 * 2**attempt)
+                if code in RETRY_STATUS and not last:
+                    _backoff(attempt)
                     continue
                 raise EndpointHTTPError(code, str(error.get("message", error))[:500])
             return out
         raise LLMError("endpoint: retries exhausted")  # pragma: no cover
+
+    # -- cost, for hosts that do not report it -------------------------------------------------
+    def _cost(self, usage: dict[str, Any]) -> float | None:
+        prices = self._price_table()
+        if prices is None:
+            return None
+        per_in, per_out, per_cached = prices
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+        fresh = (usage.get("prompt_tokens") or 0) - cached
+        output = usage.get("completion_tokens") or 0
+        return round(fresh * per_in + cached * per_cached + output * per_out, 9)
+
+    def _price_table(self) -> tuple[float, float, float] | None:
+        """USD per token from PIPELINE_ENDPOINT_PRICE, or Near AI's public model list."""
+        if self._prices is not None:
+            return self._prices
+        configured = self.s.endpoint_price.strip()
+        if configured:
+            per_in, per_out = (float(x) / 1e6 for x in configured.split(","))
+            self._prices = (per_in, per_out, per_in)
+        elif self.nearai:
+            self._prices = nearai_prices(self.url, self.name)
+        return self._prices
+
+
+def _backoff(attempt: int) -> None:
+    """Wait 1, 2, 4, 8, 16, 30, 30... s, jittered so concurrent calls do not retry in step."""
+    time.sleep(min(30.0, 2.0**attempt) * random.uniform(0.5, 1.5))  # noqa: S311
+
+
+def nearai_prices(url: str, model: str) -> tuple[float, float, float] | None:
+    """A model's per-token prices from Near AI's public catalogue; None if it cannot be read."""
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/model/list", timeout=10) as response:
+            rows = json.load(response)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    for row in rows if isinstance(rows, list) else rows.get("models", []):
+        if row.get("modelId") == model:
+            per_in = _per_token(row.get("inputCostPerToken"))
+            cached = _per_token(row.get("cacheReadCostPerToken")) or per_in
+            return per_in, _per_token(row.get("outputCostPerToken")), cached
+    return None
+
+
+def _per_token(cost: dict[str, Any] | None) -> float:
+    """Near AI writes prices as {"amount": 40, "scale": 9}: 40e-9 USD per token."""
+    cost = cost or {}
+    return float(cost.get("amount", 0)) / 10 ** int(cost.get("scale", 0))
 
 
 def parse_json(text: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
