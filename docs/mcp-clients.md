@@ -142,10 +142,24 @@ on a branch and open a PR in the research repository; it never promotes content 
 ## Repository boundary
 
 `repos__list_repositories`, `repos__search_code` and `repos__read_file` operate only inside
-`GITHUB_MCP_ORGS`. Authentication is inherited from GitHub CLI's credential store. With
+`GITHUB_MCP_ORGS`. Authentication is GitHub CLI's login, or, with `GITHUB_MCP_TOKEN_FILE`, a token
+of the tool's own: a fine-grained token limited to the repositories it may change (Contents and
+Pull requests read/write, Metadata read, no Workflows), kept outside any repository. With
 `GITHUB_MCP_ALLOW_WRITE=1`, `repos__propose_files` accepts complete text replacements, creates a
 new `agent/*` branch and opens a pull request. There is deliberately no merge, deletion, settings,
 or default-branch-write tool.
+
+A proposal is written by a model that may have read untrusted text, so `propose_files` refuses:
+
+- any path with a `.git` component, since git's own files can make the next git command run a
+  program on the host;
+- `.github/workflows/` and `.github/actions/`, since a workflow on a pushed branch runs with the
+  repository's secrets before anyone reviews the PR;
+- writing through a symbolic link.
+
+Paths are compared case-insensitively, and every git command runs with hooks disabled. A
+workflow that already runs on every push still runs the proposed code with whatever secrets it
+can reach; keep deploy secrets in GitHub environments that require approval.
 
 ## The evidence tools on their own
 
