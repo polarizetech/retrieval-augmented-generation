@@ -87,11 +87,12 @@ class Settings:
     ollama_keep_alive: str = field(
         default_factory=lambda: os.environ.get("PIPELINE_OLLAMA_KEEP_ALIVE", "30m")
     )
-    # Behind the MCP server: "client" = the calling model fills in the forms; "ollama" = local;
-    # "endpoint" = the OpenAI-compatible endpoint below.
-    mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "client"))
-    # The CLI's and benchmarks' model: "ollama" (local) or "endpoint".
-    llm_backend: str = field(default_factory=lambda: os.environ.get("PIPELINE_LLM", "ollama"))
+    # Who does the model steps behind the MCP server, unless a run asks otherwise: "auto" = your
+    # endpoint below when one is configured, else the calling model; "client" = the calling model
+    # fills in the forms; "endpoint"; "ollama" = local.
+    mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "auto"))
+    # The CLI's and benchmarks' model: "auto" = your endpoint when configured, else "ollama".
+    llm_backend: str = field(default_factory=lambda: os.environ.get("PIPELINE_LLM", "auto"))
 
     # Your own endpoint: any OpenAI-compatible chat API (OpenRouter, Fireworks, vLLM, Ollama's
     # /v1). Only the text model moves there; embeddings and a local verifier stay on this machine.
@@ -111,6 +112,18 @@ class Settings:
         default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_ZDR", "1") != "0"
     )
     # Concurrent calls to the endpoint (a local model answers one at a time; a hosted one not).
+    # On OpenRouter, which providers to try first: "price" (cheapest first, falling back to the
+    # next on failure), "throughput", "latency", or "" for OpenRouter's load balancing.
+    endpoint_sort: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_SORT", "price")
+    )
+    # Prices for hosts that do not report cost (USD per million tokens, "input,output"). Near AI's
+    # are read from its public model list when this is empty; OpenRouter reports cost itself.
+    endpoint_price: str = field(
+        default_factory=lambda: os.environ.get("PIPELINE_ENDPOINT_PRICE", "")
+    )
+    # Tries per call when the endpoint drops the connection or is overloaded (429/5xx).
+    endpoint_retries: int = field(default_factory=lambda: _int("PIPELINE_ENDPOINT_RETRIES", 8))
     endpoint_concurrency: int = field(
         default_factory=lambda: _int("PIPELINE_ENDPOINT_CONCURRENCY", 8)
     )

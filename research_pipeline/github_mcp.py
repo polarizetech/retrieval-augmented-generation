@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -19,7 +20,8 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-GH = os.environ.get("GITHUB_MCP_GH", "/Users/joshuaanderton/.local/bin/gh")
+# The gh CLI: GITHUB_MCP_GH, else PATH, else ~/.local/bin (MCP hosts often start without PATH).
+GH = os.environ.get("GITHUB_MCP_GH") or shutil.which("gh") or str(Path.home() / ".local/bin/gh")
 ORGS = frozenset(
     item.strip().lower()
     for item in os.environ.get("GITHUB_MCP_ORGS", "polarizetech").split(",")

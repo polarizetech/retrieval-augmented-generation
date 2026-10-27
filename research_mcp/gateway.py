@@ -162,7 +162,14 @@ async def _web_search(base: str, arguments: dict[str, Any]) -> CallToolResult:
     if not base:
         return CallToolResult(
             isError=True,
-            content=[TextContent(type="text", text="SEARXNG_URL is not configured")],
+            content=[
+                TextContent(
+                    type="text",
+                    text="web__search is off: no SearXNG instance is configured (SEARXNG_URL). "
+                    "Search the web with your own tool instead and pass the URLs you find to "
+                    "papers__leads; then papers__fetch the identifiers it returns.",
+                )
+            ],
         )
     query = str(arguments.get("query", "")).strip()
     limit = max(1, min(int(arguments.get("max_results", 8)), 20))
@@ -317,10 +324,13 @@ def build_server(
         or (
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
-            "pipeline__research_start(question), then answer each batch of tasks it returns and "
-            "send them with pipeline__research_continue until status is 'done'. You act as its "
-            "model; code runs the searches, checks and log. Relay the final answer with its "
-            "Limits section. Without the pipeline: rag__search finds papers, rag__index_paper "
+            "pipeline__research_start(question), then call pipeline__research_continue until "
+            "status is 'done'. Code runs the searches, checks and log; the model steps go to the "
+            "provider the user configured, and the calls just wait for it. Only when the user "
+            "asks you to do the writing or run it yourself, pass model='client': then answer "
+            "each batch of tasks it returns and send them with pipeline__research_continue. "
+            "Relay the final answer with its Limits section. Without the pipeline: rag__search "
+            "finds papers, rag__index_paper "
             "adds open-access full text to the passage index (fetching alone does not), "
             "rag__retrieve_evidence returns verbatim passages with evidence ids, and only those "
             "passages may ground a claim; quote each passage you rely on, run "
@@ -583,10 +593,13 @@ def build_server(
         upstream = [entry[2] for entry in federation.tools.values()]
         if not builtin_tools:
             return [status, *upstream]
-        return [status, web, *rag_tools, *math_tools, *session_tools, *upstream]
+        # web__search is listed only when it can work: without SearXNG, a client that can
+        # search the web does it itself and hands the URLs to papers__leads (see ask_the_web).
+        web_tools = [web] if searxng else []
+        return [status, *web_tools, *rag_tools, *math_tools, *session_tools, *upstream]
 
-    # gateway_status, web__search, five rag__, two math__, and two session tools.
-    builtin = 11 if builtin_tools else 1
+    # gateway_status, web__search (with SearXNG), five rag__, two math__, and two session tools.
+    builtin = (10 + bool(searxng)) if builtin_tools else 1
 
     rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]] = {
         "rag__retrieve_evidence": (

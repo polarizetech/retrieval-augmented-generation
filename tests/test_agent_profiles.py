@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from research_pipeline.agent_profiles import route
 from research_pipeline.prompts import Prompts
 
@@ -127,3 +129,38 @@ def test_relative_mapping_routes_geometric_layouts_not_compass_widgets(tmp_path:
         "Prove a theorem in Euclidean geometry",
     ):
         assert route(question, public, extensions_root=private)["specialist"] is None
+
+
+def test_the_command_line_routes_like_the_research_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`research-pipeline ask` gets the same specialist briefs as pipeline__research_start."""
+    from research_pipeline import __main__ as cli
+    from research_pipeline import pipeline as pipeline_module
+
+    _brief(tmp_path, "researcher", "general literature researcher")
+    _brief(
+        tmp_path,
+        "auditory-evoked-potentials",
+        "scientific evidence electrophysiology researcher",
+        "Compare ABR latency after cochlear stimulation",
+    )
+    monkeypatch.setenv("PIPELINE_AGENT_PROFILES_DIR", str(tmp_path))
+    monkeypatch.delenv("PIPELINE_AGENT_EXTENSIONS_DIR", raising=False)
+    seen: dict[str, object] = {}
+
+    class FakePipeline:
+        def __init__(self, settings: object, progress: object, **kw: object) -> None:
+            seen.update(kw)
+
+        async def run(self, question: str) -> dict[str, object]:
+            return {"answer": "", "run_dir": "", "seconds": 0}
+
+    monkeypatch.setattr(pipeline_module, "Pipeline", FakePipeline)
+    monkeypatch.setattr(
+        "sys.argv", ["research-pipeline", "ask", "Compare ABR latency after cochlear stimulation"]
+    )
+    assert cli.main() == 0
+    route = seen["agent_route"]
+    assert isinstance(route, dict)
+    assert route["specialist"] == "auditory-evoked-potentials"
