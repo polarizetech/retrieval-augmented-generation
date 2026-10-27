@@ -58,8 +58,9 @@ class Recorder:
         self.headers: list[dict[str, str]] = []
 
     def __call__(self, request: Any, timeout: float) -> Any:
-        self.sent.append(json.loads(request.data))
-        self.headers.append(dict(request.header_items()))
+        if not isinstance(request, str):  # a plain URL is a GET, e.g. a price catalogue
+            self.sent.append(json.loads(request.data))
+            self.headers.append(dict(request.header_items()))
         out = self.responses.pop(0)
         if isinstance(out, Exception):
             raise out
@@ -75,7 +76,7 @@ def test_request_asks_for_schema_zero_retention_and_no_reasoning() -> None:
     assert body["model"] == "deepseek/deepseek-v4-pro"
     assert body["response_format"]["json_schema"]["schema"] == SCHEMA
     assert body["reasoning"] == {"effort": "none"}
-    assert body["provider"] == {"zdr": True}
+    assert body["provider"] == {"zdr": True, "sort": "price"}
     assert rec.headers[0]["Authorization"] == "Bearer sk-test"
     call = ep.calls[0]
     assert call["served_model"] == "deepseek/deepseek-v4-pro-0813"
@@ -205,3 +206,113 @@ def test_local_verifier_calls_land_in_the_same_call_log() -> None:
     ep = Endpoint(settings())
     ep.local.calls.append({"task": "verify", "model": "bespoke-minicheck:latest"})
     assert ep.calls == [{"task": "verify", "model": "bespoke-minicheck:latest"}]
+
+
+def test_provider_sort_can_be_turned_off_without_losing_zero_retention() -> None:
+    rec = Recorder(reply('{"verdict": "SUPPORTED"}'))
+    with mock.patch("urllib.request.urlopen", side_effect=rec):
+        Endpoint(settings(endpoint_sort="")).chat_json("verify", "s", "u", SCHEMA)
+    assert rec.sent[0]["provider"] == {"zdr": True}
+
+
+NEARAI_CATALOGUE = [
+    {
+        "modelId": "Qwen/Qwen3.8-27B",
+        "inputCostPerToken": {"amount": 40, "scale": 9, "currency": "USD"},
+        "outputCostPerToken": {"amount": 1350, "scale": 9, "currency": "USD"},
+        "cacheReadCostPerToken": {"amount": 18, "scale": 9, "currency": "USD"},
+    }
+]
+
+
+def nearai_settings(**kw: Any) -> Settings:
+    base: dict[str, Any] = {
+        "endpoint_url": "https://cloud-api.near.ai/v1",
+        "endpoint_model": "Qwen/Qwen3.8-27B",
+        "endpoint_key": "sk-test",
+    }
+    return settings(**(base | kw))
+
+
+def nearai_reply(content: str) -> mock.MagicMock:
+    payload = {
+        "model": "Qwen/Qwen3.8-27B",
+        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": None},
+    }
+    response = mock.MagicMock()
+    response.__enter__.return_value = io.BytesIO(json.dumps(payload).encode())
+    return response
+
+
+def catalogue() -> mock.MagicMock:
+    response = mock.MagicMock()
+    response.__enter__.return_value = io.BytesIO(json.dumps(NEARAI_CATALOGUE).encode())
+    return response
+
+
+def test_nearai_calls_are_priced_from_its_catalogue_and_named() -> None:
+    rec = Recorder(nearai_reply('{"verdict": "SUPPORTED"}'), catalogue())
+    ep = Endpoint(nearai_settings())
+    with mock.patch("urllib.request.urlopen", side_effect=rec):
+        ep.chat_json("verify", "s", "u", SCHEMA)
+    body = rec.sent[0]
+    assert "provider" not in body  # OpenRouter-only fields stay off
+    assert body["reasoning"] == {"effort": "none"}  # Near AI honours it
+    call = ep.calls[0]
+    assert call["provider"] == "Near AI"
+    assert call["cost"] == pytest.approx(1000 * 40e-9 + 100 * 1350e-9)
+
+
+def test_a_configured_price_is_used_for_any_host() -> None:
+    rec = Recorder(nearai_reply('{"verdict": "SUPPORTED"}'))
+    ep = Endpoint(settings(endpoint_url="http://gpu.test/v1", endpoint_price="0.5,2"))
+    with mock.patch("urllib.request.urlopen", side_effect=rec):
+        ep.chat_json("verify", "s", "u", SCHEMA)
+    assert ep.calls[0]["provider"] == "gpu.test"
+    assert ep.calls[0]["cost"] == pytest.approx(1000 * 0.5e-6 + 100 * 2e-6)
+
+
+def test_an_unknown_price_is_none_not_zero() -> None:
+    rec = Recorder(nearai_reply('{"verdict": "SUPPORTED"}'))
+    ep = Endpoint(settings(endpoint_url="http://gpu.test/v1"))
+    with mock.patch("urllib.request.urlopen", side_effect=rec):
+        ep.chat_json("verify", "s", "u", SCHEMA)
+    assert ep.calls[0]["cost"] is None
+
+
+def test_running_out_of_credits_says_so() -> None:
+    rec = Recorder(http_error(402, '{"error":"insufficient balance"}'))
+    with (
+        mock.patch("urllib.request.urlopen", side_effect=rec),
+        pytest.raises(LLMError, match="out of credits at Near AI"),
+    ):
+        Endpoint(nearai_settings()).chat_json("verify", "s", "u", SCHEMA)
+
+
+def test_dropped_connections_are_retried_until_the_limit() -> None:
+    import ssl
+
+    drop = urllib.error.URLError(ssl.SSLError("UNEXPECTED_EOF_WHILE_READING"))
+    rec = Recorder(drop, ConnectionResetError(), reply('{"verdict": "SUPPORTED"}'))
+    with mock.patch("urllib.request.urlopen", side_effect=rec), mock.patch("time.sleep"):
+        assert Endpoint(settings()).chat_json("verify", "s", "u", SCHEMA) == {
+            "verdict": "SUPPORTED"
+        }
+    rec = Recorder(*([drop] * 3))
+    with (
+        mock.patch("urllib.request.urlopen", side_effect=rec),
+        mock.patch("time.sleep"),
+        pytest.raises(LLMError, match="after 3 tries"),
+    ):
+        Endpoint(settings(endpoint_retries=3)).chat_json("verify", "s", "u", SCHEMA)
+
+
+def test_auto_means_the_configured_endpoint_when_there_is_one() -> None:
+    from research_pipeline.llm import resolve_backend
+
+    assert resolve_backend(settings(), "auto", otherwise="client") == "endpoint"
+    assert resolve_backend(settings(), "client", otherwise="ollama") == "client"
+    assert isinstance(make_llm(settings(llm_backend="auto")), Endpoint)
+    with pytest.raises(LLMError, match="needs an MCP client"):
+        make_llm(settings(), "client")

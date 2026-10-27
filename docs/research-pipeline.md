@@ -227,18 +227,20 @@ cases right instead of 7, so it stays on. Models are kept loaded for 30 minutes
 
 ### Your own endpoint for the model steps
 
-The calling model is the default behind MCP (`PIPELINE_MCP_LLM=client`), and stays so. The other
-backends exist for one reason: keeping a question and its intermediate work off a hosted assistant.
-Besides Ollama on this machine, the text model can run on any OpenAI-compatible chat API: a hosted
-open-weight model with zero data retention, or a GPU server of your own.
+Once an endpoint is configured it is the default everywhere: on the command line and behind MCP
+(`PIPELINE_LLM` and `PIPELINE_MCP_LLM` both default to `auto`, which means "the configured endpoint,
+if any"). Without one, MCP runs fall back to the calling model and command-line runs to Ollama. A
+single MCP run can still be handed to the calling assistant with `research_start(..., model="client")`,
+for when you ask it to do the writing itself. The endpoint keeps a question and its intermediate
+work off a hosted assistant: the text model runs on any OpenAI-compatible chat API, such as a
+hosted open-weight model with zero data retention, or a GPU server of your own.
 
 ```bash
 # config/rag.env (gitignored)
 PIPELINE_ENDPOINT_URL=https://openrouter.ai/api/v1
 PIPELINE_ENDPOINT_MODEL=qwen/qwen3.8-27b   # default; moonshotai/kimi-k3 for important questions
 PIPELINE_ENDPOINT_KEY_FILE=~/.config/polarize/openrouter.key   # or PIPELINE_ENDPOINT_KEY=...
-PIPELINE_LLM=endpoint          # the command line and benchmarks
-# PIPELINE_MCP_LLM=endpoint    # behind MCP too (default stays client)
+# PIPELINE_LLM and PIPELINE_MCP_LLM default to auto: this endpoint, on the CLI and behind MCP.
 ```
 
 What it does (`research_pipeline/llm.py`, `Endpoint`):
@@ -260,7 +262,31 @@ What it does (`research_pipeline/llm.py`, `Endpoint`):
   client.
 - **The run log** records, under `endpoint`, the model version and provider that served each call,
   tokens (including any reasoning tokens) and OpenRouter's reported cost.
+- **Cheapest provider first.** On OpenRouter, `PIPELINE_ENDPOINT_SORT=price` (the default) tries the
+  cheapest zero-retention provider first and falls back to the next if it fails. For Qwen3.8 27B
+  that is about 1.3 cents a question instead of about 2.2 with OpenRouter's load balancing
+  (October 2026). Set it empty for load balancing, or `throughput` / `latency`.
 - Calls run 8 at a time (`PIPELINE_ENDPOINT_CONCURRENCY`).
+- **Cost for other hosts.** OpenRouter reports each call's cost. For Near AI it is computed from
+  Near AI's public model list; for any other host set `PIPELINE_ENDPOINT_PRICE` (USD per million
+  tokens, `input,output`). Without a price, the log records the cost as unknown, not zero.
+
+#### Providers
+
+A provider is configuration, not code: a URL, a model name as that host spells it, and a key file
+outside the repository. Two are tested:
+
+| | OpenRouter (default) | Near AI direct |
+|---|---|---|
+| `PIPELINE_ENDPOINT_URL` | `https://openrouter.ai/api/v1` | `https://cloud-api.near.ai/v1` |
+| `PIPELINE_ENDPOINT_MODEL` | `qwen/qwen3.8-27b` | `Qwen/Qwen3.8-27B` |
+| Price (Qwen3.8 27B, Oct 2026) | Near AI's price via `sort: price`, plus a ~5% fee on buying credits | $0.04 / $1.35 per million tokens in / out |
+| Retention | Zero-retention routing, enforced per request | Runs in an attested hardware enclave (TEE); its terms state no zero-retention commitment |
+| If it fails | Falls back to the next zero-retention provider | The run fails; out-of-credit errors say so |
+
+Through OpenRouter, Qwen3.8 27B already goes to Near AI first, so going direct is worth it mainly
+to use prepaid Near AI credits. Near AI honours `reasoning: {effort: "none"}` (without it Qwen3.8
+reasons), and accepts `json_schema` output.
 
 Sizing: a run without reranking is about 42,000 input and 10,000 output tokens, which is cents on
 hosted open-weight models. A run started from a chat client still shows that client the question
@@ -283,6 +309,11 @@ open-access text):
 | `deepseek/deepseek-v4.1-flash` | 1 / 4 | **no** | 54 / 64 | ~1.2¢ |
 | `anthropic/claude-opus-5.5` (reference; cannot turn reasoning off) | 1 / 4 | no | 39 / 62 | ~55¢ |
 
+- Cost against the alternatives (October 2026): research runs are small, so OpenRouter is cheap
+  here, about $7 a month at 500 questions. A rented GPU kept on costs $245-640 a month (RunPod
+  4090) and a bought one never pays back at this volume; both make sense only to keep prompts off
+  third-party hardware entirely. Coding is the opposite case: at Claude Code volumes per-token
+  pricing costs more than a Claude Max plan.
 - Qwen3.8 27B ties for the best score at the lowest cost and broke no schema in either round. At
   27B it can also run on one rented GPU if the model should ever be fully under your control.
 - Kimi K3 wrote the most complete syntheses (on the alcohol case it alone of the open models

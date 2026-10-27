@@ -6,12 +6,12 @@ One gateway process (`research-rag-gateway`) exposes:
 |---|---|---|
 | `rag__search`, `rag__retrieve_evidence`, `rag__check_citations`, `rag__save_report` | this repository | no (embedding only, for hybrid retrieval) |
 | `papers__*` | the paper library upstream | no |
-| `pipeline__research_start`, `_continue`, `_status` | the pipeline upstream | yes: by default the calling model; optionally a local Ollama model |
+| `pipeline__research_start`, `_continue`, `_status` | the pipeline upstream | yes: your configured endpoint when set, else the calling model; `model="client"` hands one run to the caller |
 | `datasets__*`, `patents__*` | dataset-fetch and patent-fetch adapters | no |
 | `session__read_capsule`, `session__propose` | session store and research PR gate | no |
 | `research__*` | trusted research-repository reads and proposals | no |
 | `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
-| `web__search` | an optional SearXNG instance | no |
+| `web__search` | an optional SearXNG instance; listed only when `SEARXNG_URL` is set | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
 
 Upstreams are stdio MCP servers listed in `config/mcp-gateway.json`. The gateway spawns them once,
@@ -19,6 +19,14 @@ namespaces their tools as `<upstream>__<tool>`, forwards calls unchanged, and ad
 annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) from the config so that clients
 can decide what needs approval. One broken upstream is reported by `gateway_status` and does not
 take the others down.
+
+**Web search without SearXNG.** The scholarly indexes rarely miss an open copy (1.2% of searches
+across 265 runs, October 2026), so no web search engine is required. When `papers__search` wants
+the web fallback and no SearXNG is configured, its result carries `ask_the_web`: a client that can
+search the web does so itself and passes the URLs it finds to `papers__leads`, which parses paper
+identifiers out of them; `papers__fetch` then lets the open-access providers decide what may be
+kept. Nothing is downloaded from a web page. Runs whose model has no web access (your endpoint,
+Ollama) skip the fallback and say so in their Limits section.
 
 ## A second instance for other upstreams
 
@@ -51,11 +59,23 @@ Use stdio: nothing listens on a port and no token is involved.
 An app bundle does not inherit a login shell's `PATH`. If an upstream is started by name (for
 example `paper-fetch-mcp`), give its absolute path in the gateway config or add an `env.PATH` entry.
 
-## The full pipeline, with the client as its model
+## The full pipeline
 
 `pipeline__research_start(question)` starts a run and returns its first step. Code runs every
 stage: planning, searching, fetching, retrieval, reranking, quote and number checks, grading, the
-retraction check and the run log. Whenever a stage needs a model, the result has status `tasks`:
+retraction check and the run log.
+
+**Who does the model steps.** By default, the provider configured on the server
+(`PIPELINE_MCP_LLM=auto`): your own endpoint when `PIPELINE_ENDPOINT_*` is set (see
+[Your own endpoint](research-pipeline.md#your-own-endpoint-for-the-model-steps)), otherwise the
+calling model. With a provider, `research_start` and `research_continue` simply return `working`
+until the run is `done`. To have the calling assistant do the writing for one run, for example
+when you ask Claude to run the pipeline itself, it passes `model="client"`; `"endpoint"` and
+`"ollama"` force those. Every reply carries `model_backend`.
+
+### With the client as its model
+
+Whenever a stage needs a model, the result has status `tasks`:
 
 ```json
 {"status": "tasks", "instructions": "...", "prompts": {"extract": "..."},
@@ -92,8 +112,8 @@ falsification pass, critique, verification and the summary check.
 - It still checks its own claims, and every answer says so. Set `PIPELINE_VERIFIER_MODEL` to a
   local model to add an independent verifier that must also accept each claim.
 - Ollama still computes embeddings (a chat model cannot produce the index's vectors).
-- `PIPELINE_MCP_LLM=ollama` makes the local model answer instead; the same two tools then simply
-  wait for the run.
+- `PIPELINE_MCP_LLM=client` makes the calling model the default even with an endpoint configured;
+  `PIPELINE_MCP_LLM=ollama` makes the local model answer instead.
 
 Every completed run stores `answer.md`, `run.json`, `session.json` and `capsule.md`. Use
 `session__read_capsule` for the compact checked record. `session__propose` can place that capsule
