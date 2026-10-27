@@ -82,7 +82,12 @@ class SingleUserOAuthProvider:
     """DCR + PKCE provider whose consent page is unlocked by one private access key."""
 
     def __init__(
-        self, public_url: str, access_key: str, state_path: Path, resource_path: str = "/mcp"
+        self,
+        public_url: str,
+        access_key: str,
+        state_path: Path,
+        resource_path: str = "/mcp",
+        local_token: str = "",
     ):
         if len(access_key) < MIN_ACCESS_KEY_CHARS:
             raise ValueError(
@@ -91,6 +96,9 @@ class SingleUserOAuthProvider:
         self.public_url = public_url.rstrip("/")
         self.resource_url = self.public_url + resource_path
         self.access_key = access_key
+        # A fixed bearer token for clients on this machine (the stdio bridge). The gateway refuses
+        # it on any request that did not come straight from loopback; see gateway.LocalOnly.
+        self.local_token = local_token if len(local_token) >= MIN_ACCESS_KEY_CHARS else ""
         self.store = OAuthStore(state_path)
 
     # -- clients -----------------------------------------------------------------------------
@@ -207,6 +215,10 @@ class SingleUserOAuthProvider:
         )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
+        if self.local_token and secrets.compare_digest(token, self.local_token):
+            return AccessToken(
+                token=token, client_id="local", scopes=[SCOPE], resource=self.resource_url
+            )
         value = self.store.get("access", _hash(token))
         if not value:
             return None
