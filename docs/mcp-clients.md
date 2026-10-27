@@ -59,6 +59,26 @@ Use stdio: nothing listens on a port and no token is involved.
 An app bundle does not inherit a login shell's `PATH`. If an upstream is started by name (for
 example `paper-fetch-mcp`), give its absolute path in the gateway config or add an `env.PATH` entry.
 
+### Many sessions: share one gateway
+
+Each stdio gateway starts its own upstreams, and the paper library alone holds its passage vectors
+and a reranker (well over a gigabyte) in every process. With many Claude sessions open, that is
+one copy per session, and retrieval slows into timeouts as the machine swaps. When an HTTP gateway
+is already running on this machine (as for remote access below), add `--connect` and each session
+becomes a small proxy to it instead:
+
+```json
+"args": ["--config", "/absolute/path/to/config/mcp-gateway.json",
+         "--connect", "http://127.0.0.1:8891/"]
+```
+
+The bridge passes tool names, schemas and instructions through unchanged, so clients see the same
+tools. It authenticates with the local token in `config/.mcp-token`. A gateway with OAuth (with
+`MCP_PUBLIC_URL` set) also accepts that token, but only on requests addressed to `127.0.0.1` or
+`localhost` that Tailscale Funnel has not marked; through the public URL the token is refused. A call
+made while the gateway restarts fails on its own, and the next one works. If the gateway is not
+running when a session starts, the bridge waits about 30 seconds and then reports how to start it.
+
 ## The full pipeline
 
 `pipeline__research_start(question)` starts a run and returns its first step. Code runs every
