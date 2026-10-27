@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -252,3 +253,70 @@ def test_the_whole_flow_through_the_http_gateway(
         assert call.status_code == 200, call.text
         # Built-ins only: no upstreams, and web__search is hidden without SearXNG.
         assert call.json()["result"]["structuredContent"]["total_tools"] == 10
+
+
+LOCAL = "a-local-bridge-token-that-is-long-enough-123"
+CALL = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+
+
+class TestLocalToken:
+    """The stdio bridge's fixed token: accepted from this machine, refused through the Funnel."""
+
+    @pytest.fixture
+    def app(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        monkeypatch.setenv("PIPELINE_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("MCP_PUBLIC_URL", PUBLIC)
+        monkeypatch.setenv("MCP_RESOURCE_PATH", "")
+        monkeypatch.setenv("MCP_OAUTH_ACCESS_KEY", KEY)
+        monkeypatch.setenv("MCP_OAUTH_STATE", str(tmp_path / "oauth.sqlite"))
+        monkeypatch.setenv("MCP_TOKEN", LOCAL)
+        config = tmp_path / "gateway.json"
+        config.write_text(json.dumps({"upstreams": {}}))
+        server, _ = gateway.build_server(config, "127.0.0.1", 0, tmp_path / "token", http=True)
+        return TestClient(gateway.LocalOnly(server.streamable_http_app(), LOCAL))
+
+    def test_accepted_from_loopback(self, app: TestClient) -> None:
+        with app as http:
+            reply = http.post(
+                "http://127.0.0.1:8891/",
+                json=CALL,
+                headers={**MCP_HEADERS, "Authorization": f"Bearer {LOCAL}"},
+            )
+        assert reply.status_code == 200
+        assert "gateway_status" in reply.text
+
+    def test_refused_with_the_public_host(self, app: TestClient) -> None:
+        with app as http:
+            reply = http.post(
+                "https://mcp.example.org/",
+                json=CALL,
+                headers={**MCP_HEADERS, "Authorization": f"Bearer {LOCAL}"},
+            )
+        assert reply.status_code == 403
+
+    def test_refused_when_funnel_marks_the_request(self, app: TestClient) -> None:
+        with app as http:
+            reply = http.post(
+                "http://127.0.0.1:8891/",
+                json=CALL,
+                headers={
+                    **MCP_HEADERS,
+                    "Authorization": f"Bearer {LOCAL}",
+                    "Tailscale-Funnel-Request": "?1",
+                },
+            )
+        assert reply.status_code == 403
+
+    def test_a_wrong_token_is_still_unauthorized(self, app: TestClient) -> None:
+        with app as http:
+            reply = http.post(
+                "http://127.0.0.1:8891/",
+                json=CALL,
+                headers={**MCP_HEADERS, "Authorization": f"Bearer {LOCAL}x"},
+            )
+        assert reply.status_code == 401
+
+    def test_a_short_local_token_is_ignored(self, tmp_path: Path) -> None:
+        provider = SingleUserOAuthProvider(PUBLIC, KEY, tmp_path / "o.sqlite", "", local_token="x")
+        assert asyncio.run(provider.load_access_token("x")) is None

@@ -275,6 +275,7 @@ def build_server(
             os.environ.get("MCP_OAUTH_ACCESS_KEY", ""),
             Path(os.environ.get("MCP_OAUTH_STATE", ROOT / "run/oauth.sqlite")),
             resource_path,
+            local_token=_token(token_file),
         )
         auth = AuthSettings(
             issuer_url=public_url,  # type: ignore[arg-type]
@@ -738,6 +739,33 @@ def _write_children_pidfile(path: Path) -> None:
         pass  # best effort: the pid file only helps reap orphans after a hard crash
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+class LocalOnly:
+    """Refuse the local token on any request that did not come straight from this machine.
+
+    The public gateway sits behind Tailscale Funnel, which connects from loopback too, so the
+    peer address proves nothing. Funnel keeps the public Host header and marks its requests;
+    a local client (the stdio bridge) addresses 127.0.0.1 directly.
+    """
+
+    def __init__(self, app: Any, token: str):
+        self.app = app
+        self.bearer = f"Bearer {token}".encode()
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            if secrets.compare_digest(headers.get(b"authorization", b""), self.bearer):
+                host = headers.get(b"host", b"").decode("latin-1").rsplit(":", 1)[0]
+                if host not in LOOPBACK_HOSTS or b"tailscale-funnel-request" in headers:
+                    response = Response("local token refused off this machine", status_code=403)
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
 def main() -> int:
     load_env()
     parser = argparse.ArgumentParser()
@@ -748,6 +776,12 @@ def main() -> int:
     parser.add_argument(
         "--token-file", default=os.environ.get("MCP_TOKEN_FILE", "config/.mcp-token")
     )
+    parser.add_argument(
+        "--connect",
+        metavar="URL",
+        help="serve stdio as a bridge to an already-running HTTP gateway at URL "
+        "(e.g. http://127.0.0.1:8891/) instead of starting the upstreams here",
+    )
     args = parser.parse_args()
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -755,6 +789,10 @@ def main() -> int:
     token_file = Path(args.token_file)
     if not token_file.is_absolute():
         token_file = ROOT / token_file
+    if args.connect:
+        from research_mcp import bridge
+
+        return bridge.run(args.connect, _token(token_file))
     if not config_path.exists():
         parser.error(f"missing gateway config: {config_path}")
     server, federation = build_server(config_path, args.host, args.port, token_file, args.http)
@@ -784,7 +822,10 @@ def main() -> int:
             children_pidfile.unlink(missing_ok=True)
 
     app.router.lifespan_context = app_lifespan
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    served: Any = app
+    if os.environ.get("MCP_PUBLIC_URL", "").strip():
+        served = LocalOnly(app, _token(token_file))
+    uvicorn.run(served, host=args.host, port=args.port, log_level="info")
     return 0
 
 
