@@ -9,6 +9,7 @@ checks call the local verifier by name, which goes to Ollama as before.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, TypeVar
@@ -20,6 +21,17 @@ from research_pipeline.usage import Breakers, Meters, _read_key, load_config
 T = TypeVar("T")
 # Tries per call on a rung that has another below it: fall down rather than wait minutes.
 RUNG_RETRIES = 3
+
+# Model calls at once per provider, shared by every run in this process ([limits.providers]).
+_SLOTS: dict[str, threading.BoundedSemaphore] = {}
+_SLOTS_LOCK = threading.Lock()
+
+
+def provider_slot(name: str, limit: int) -> threading.BoundedSemaphore:
+    with _SLOTS_LOCK:
+        if name not in _SLOTS:
+            _SLOTS[name] = threading.BoundedSemaphore(max(1, limit))
+        return _SLOTS[name]
 
 
 def configured_provider(settings: Settings, config: dict[str, Any]) -> str | None:
@@ -61,6 +73,9 @@ class Ladder(Endpoint):
             str(spec.get("model")) for spec in self.providers.values() if spec.get("model")
         }
         self.ladder_log: list[dict[str, Any]] = []
+        self.limits: dict[str, int] = {
+            str(k): int(v) for k, v in config.get("limits", {}).get("providers", {}).items()
+        }
 
     # -- rungs ---------------------------------------------------------------------------------
     def rung(self, name: str) -> Endpoint | Ollama:
@@ -115,7 +130,11 @@ class Ladder(Endpoint):
                     passed.append((name, why))
                     continue
             try:
-                out = call(self.rung(name))
+                if name in self.limits:
+                    with provider_slot(name, self.limits[name]):
+                        out = call(self.rung(name))
+                else:
+                    out = call(self.rung(name))
             except ModelOutputError:
                 raise  # the model's answer was wrong, not the provider: the pipeline handles it
             except LLMError as exc:

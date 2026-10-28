@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from research_mcp.hub.ledger import Ledger
+from research_mcp.hub.overlap import Overlap, Post, http_post
+from research_mcp.hub.queue import Lanes, free_memory_percent
 from research_pipeline.config import Settings
 from research_pipeline.usage import Breakers, Fetch, Meters, http_json
 
@@ -50,6 +52,8 @@ class Hub:
         meters: Meters | None = None,
         breakers: Breakers | None = None,
         fetch: Fetch = http_json,
+        post: Post = http_post,
+        memory: Callable[[], int | None] = free_memory_percent,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.ledger = ledger
@@ -63,6 +67,12 @@ class Hub:
         self.clock = clock
         self.meters = meters or Meters(config, settings, fetch=fetch)
         self.breakers = breakers or Breakers(config, clock=clock)
+        self.lanes = Lanes(config, memory=memory, clock=clock)
+        self.overlap = Overlap(config, settings.ollama_url, post=post)
+        deadlines = config.get("deadlines", {})
+        self.deadline = float(deadlines.get("reply_seconds", 45))
+        self.research_retry = float(deadlines.get("research_retry_seconds", 20))
+        self.research_wait = float(deadlines.get("research_wait_seconds", 7200))
         health = config.get("health", {})
         self.embed_model = str(health.get("embed_model", "bge-m3"))
         # What retrieval looked like when it last worked: a reranker name, hybrid or lexical.
