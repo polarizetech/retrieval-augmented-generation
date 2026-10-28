@@ -167,3 +167,17 @@ def test_local_discovery_prefers_the_named_main_checkout(tmp_path: Path) -> None
         )
     found = reuse.discover_local(tmp_path)
     assert found == {"org/tool": tmp_path / "tool"}
+
+
+def test_dashboard_rows_are_flat(repo: Path, catalogue: dict, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    report = reuse.build_report({"org/repo": (repo, "local")}, catalogue, home)
+    reuse.append_history(home, "2026-10-28", report["repos"], report["totals"])
+    rows = reuse.dashboard_rows(report, home / "history.csv")
+    assert rows["summary"][0]["repos"] == 1
+    assert {c["id"] for c in rows["custom"]} == {"repo#0", "repo#1", "repo#2", "repo#3"}
+    assert rows["history"][0]["peer_reviewed_percent"] == 62
+    for table in rows.values():
+        for row in table:
+            assert all(not isinstance(v, (list, dict)) for v in row.values())
