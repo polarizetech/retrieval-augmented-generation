@@ -124,6 +124,9 @@ class Settings:
     )
     # Tries per call when the endpoint drops the connection or is overloaded (429/5xx).
     endpoint_retries: int = field(default_factory=lambda: _int("PIPELINE_ENDPOINT_RETRIES", 8))
+    # Climb each step's provider ladder (config/hub.default.toml) when the endpoint is one of
+    # the hub's providers: on failure or low credit, the next provider, ending at the local model.
+    ladder: bool = field(default_factory=lambda: os.environ.get("PIPELINE_LADDER", "1") != "0")
     endpoint_concurrency: int = field(
         default_factory=lambda: _int("PIPELINE_ENDPOINT_CONCURRENCY", 8)
     )

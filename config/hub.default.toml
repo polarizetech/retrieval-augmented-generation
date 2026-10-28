@@ -1,0 +1,57 @@
+# The hub's providers, ladders, thresholds and breakers (docs/hub-plan.md, phase 1).
+# Put your own values in the gitignored config/hub.toml in the same shape: its tables are merged
+# over these, key by key. No secrets here: key files live in ~/.config/polarize/ (chmod 600).
+
+[breaker]
+# A component is skipped after this many failures in a row, for the cool-down, then probed again.
+failures = 3
+cooldown_seconds = 120
+
+[usage]
+# How long a meter reading is reused before the provider is read again.
+ttl_seconds = 300
+
+# Model providers. `kind` is "openai" (any OpenAI-compatible chat API) or "ollama" (local).
+[providers.openrouter]
+kind = "openai"
+label = "OpenRouter Qwen3.8 27B (zero retention)"
+url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3.8-27b"
+key_file = "~/.config/polarize/openrouter.key"
+# Low when this many USD or less are left, or this fraction of a key limit is used.
+min_usd = 1.0
+max_used_fraction = 0.95
+
+[providers.nearai]
+kind = "openai"
+label = "NEAR AI direct, Qwen3.8 27B"
+url = "https://cloud-api.near.ai/v1"
+model = "Qwen/Qwen3.8-27B"
+key_file = "~/.config/polarize/nearai.key"
+# The API key cannot read the balance (401). The balance needs the organisation id and a
+# reporting token from the dashboard, as NEARAI_ORG_ID=... and NEARAI_REPORTING_TOKEN=... lines.
+reporting_file = "~/.config/polarize/nearai-reporting.env"
+min_usd = 1.0
+max_used_fraction = 0.95
+
+[providers.local]
+kind = "ollama"
+label = "local qwen3:4b-instruct-2507"
+model = "qwen3:4b-instruct-2507-q4_K_M"
+
+# Each pipeline step's providers, best first. The last rung is the free local model.
+# Checking runs on the local verifier (PIPELINE_VERIFIER_MODEL) and is not laddered: when the
+# verifier is down, runs drop to explore strictness and claims are marked unverified.
+[ladders]
+planning = ["openrouter", "nearai", "local"]
+extraction = ["openrouter", "nearai", "local"]
+writing = ["openrouter", "nearai", "local"]
+
+# Which step each model task belongs to.
+[steps]
+plan = "planning"
+classify_paper = "extraction"
+extract = "extraction"
+synthesise = "writing"
+critique = "writing"
+summarise = "writing"

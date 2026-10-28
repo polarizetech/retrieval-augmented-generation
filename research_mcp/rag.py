@@ -50,7 +50,17 @@ class EvidenceStore:
         self.runs_dir = runs_dir
 
     # -- retrieval ---------------------------------------------------------------------------
-    async def retrieve(self, query: str, limit: int = 8, max_chars: int = 1800) -> dict[str, Any]:
+    async def retrieve(
+        self,
+        query: str,
+        limit: int = 8,
+        max_chars: int = 1800,
+        *,
+        rerank: bool | None = None,
+        dense: bool | None = None,
+    ) -> dict[str, Any]:
+        """Ranked passages. `rerank=False` or `dense=False` turn off a broken part of the
+        library's ranking, when its retrieve tool accepts them."""
         query = query.strip()
         if not query:
             raise ValueError("query is required")
@@ -59,7 +69,9 @@ class EvidenceStore:
         # Over-fetch a little so that excluded passages rarely shrink the result below `limit`.
         # Not more: the library reranks three candidates per passage asked for, on the CPU, at
         # about 0.3 s each, and a client's MCP call times out after 60 s.
-        res = await self.library().retrieve([query], limit=limit + OVERFETCH)
+        res = await self.library().retrieve(
+            [query], limit=limit + OVERFETCH, rerank=rerank, dense=dense
+        )
         results, excluded = [], []
         for passage in (Passage.from_json(p) for p in res["results"][0]["passages"]):
             paper = passage.paper
@@ -90,7 +102,10 @@ class EvidenceStore:
         index = res.get("index") or {}
         return {
             "query": query,
-            "retrieval": "hybrid" if index.get("embedding_model") else "lexical",
+            "retrieval": "hybrid"
+            if index.get("embedding_model") and dense is not False
+            else "lexical",
+            "reranker": res.get("reranker"),
             "n": len(results),
             "results": results,
             "excluded": excluded,

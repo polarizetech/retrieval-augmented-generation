@@ -96,8 +96,14 @@ class PaperLibrary(Upstream):
         collection: str = "",
         limit: int = 20,
         per_paper: int = 0,
+        rerank: bool | None = None,
+        dense: bool | None = None,
     ) -> dict[str, Any]:
-        """Passages that best answer each query: `{"results": [{"query", "passages"}], ...}`."""
+        """Passages that best answer each query: `{"results": [{"query", "passages"}], ...}`.
+
+        `rerank` and `dense` are sent only when given: the hub's fallbacks switch off a broken
+        part of the library's ranking when its retrieve tool accepts them."""
+        switches = {k: v for k, v in (("rerank", rerank), ("dense", dense)) if v is not None}
         return (
             await self._call(
                 "retrieve",
@@ -106,6 +112,7 @@ class PaperLibrary(Upstream):
                 collection=collection,
                 limit=limit,
                 per_paper=per_paper,
+                **switches,
             )
         )["data"]
 
