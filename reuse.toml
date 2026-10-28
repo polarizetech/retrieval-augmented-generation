@@ -1,0 +1,130 @@
+# Build-vs-reuse register: our own scientific code, and the open-source, peer-reviewed tool that
+# does (or could do) the same job. States: tandem | candidate | none-found | replaced.
+# Format: docs/reuse-register.md
+# Seeded from the 2026-10-28 review of this repo; check entries as you touch the code.
+
+[[custom]]
+name = "Quote anchoring"
+path = "research_pipeline/verify.py"
+does = "anchor_quote: difflib ratio >= 0.85 repair, minimum 5-word quote, negation and number equality between quote and passage"
+state = "candidate"
+alternative = "SciFact"
+check = ""
+note = "Score accept/reject on SciFact (Wadden et al., EMNLP 2020) rationale sentences with quotes perturbed (paraphrase, dropped negation, changed number); sweep the 0.85 threshold and 5-word minimum"
+
+[[custom]]
+name = "Number-in-source check"
+path = "research_pipeline/verify.py"
+does = "unsupported_numbers: flags numbers in a claim that do not appear in the cited passage"
+state = "candidate"
+alternative = "LLM-AggreFact"
+check = ""
+note = "Precision/recall on the numeric-error subset of LLM-AggreFact (Tang et al. 2024); currently only tests/test_verify.py own cases"
+
+[[custom]]
+name = "Second-hand citation detector"
+path = "research_pipeline/verify.py"
+does = "CITES regex: flags passages that report another paper's finding (numeric and author-year citation styles)"
+state = "none-found"
+alternative = ""
+check = ""
+note = "Motivated by Jergas 2015 and Greenberg 2009, heuristic unvalidated; ask the gateway for a citation-context classifier or labelled citation-function corpus to score against"
+
+[[custom]]
+name = "LLM-judge entailment verifier"
+path = "research_pipeline/verify.py"
+does = "judge: model verdict on whether a passage supports a claim (the non-MiniCheck path)"
+state = "candidate"
+alternative = "LLM-AggreFact"
+check = ""
+note = "Balanced accuracy on LLM-AggreFact, side by side with Bespoke-MiniCheck on the same items; also SciFact SUPPORT/CONTRADICT/NEI"
+
+[[custom]]
+name = "Verdict settlement"
+path = "research_pipeline/verify.py"
+does = "settle and check_claims: combine anchor, number check and judge into a claim verdict"
+state = "candidate"
+alternative = "SciFact"
+check = ""
+note = "Run the full verifier on SciFact claim/abstract pairs and LLM-AggreFact; replaces the 7 synthetic cases in benchmarks/research/verifier_bench.py"
+
+[[custom]]
+name = "Passage selection"
+path = "research_pipeline/pipeline.py"
+does = "select: at most 2 passages per paper and 6 per sub-question"
+state = "none-found"
+alternative = ""
+check = ""
+note = "Cap motivated by Liu et al. 'Lost in the Middle', not benchmarked; an end-to-end check would vary the caps on LitQA2 or LitSearch questions"
+
+[[custom]]
+name = "Query merging"
+path = "research_pipeline/pipeline.py"
+does = "merges hits from several queries by max score with dedup (CombMAX-style fusion)"
+state = "candidate"
+alternative = "ranx"
+check = ""
+note = "ranx (Bassani, ECIR 2022) fuse() implements max/CombMNZ/RRF; compare rankings and nDCG@10 on a BEIR subset"
+
+[[custom]]
+name = "Contested-claim detection"
+path = "research_pipeline/pipeline.py"
+does = "marks a claim contested when its evidence both affirms and denies or is mixed"
+state = "none-found"
+alternative = ""
+check = ""
+note = "No package found; SciFact SUPPORT vs CONTRADICT labels on the same claim could serve as a labelled test set"
+
+[[custom]]
+name = "Evidence grading"
+path = "research_pipeline/grading.py"
+does = "label: evidence grade from study design, count, consistency and contest (explicitly not GRADE)"
+state = "none-found"
+alternative = ""
+check = ""
+note = "GRADE (Guyatt 2008) is a manual framework, not a package; tests/test_grading.py uses own cases"
+
+[[custom]]
+name = "Source deduplication"
+path = "research_pipeline/schema.py"
+does = "collapses preprint/published versions by title key and component DOIs"
+state = "candidate"
+alternative = "ASySD"
+check = ""
+note = "ASySD (Hair et al. 2023, BMC Biology) deduplicates bibliographic records for systematic reviews; compare duplicate sets on an exported search"
+
+[[custom]]
+name = "Novelty verdict"
+path = "research_pipeline/novelty.py"
+does = "decides whether a question is already answered in the literature"
+state = "none-found"
+alternative = ""
+check = ""
+note = "tests/test_novelty.py uses own cases; ask the gateway for a novelty or prior-art benchmark"
+
+[[custom]]
+name = "Duplicate-question detection"
+path = "research_mcp/hub/overlap.py"
+does = "cosine similarity of question embeddings, attach >= 0.92, warn >= 0.80"
+state = "none-found"
+alternative = ""
+check = ""
+note = "Thresholds uncited; a labelled paraphrase set (e.g. Quora Question Pairs) could calibrate them"
+
+[[custom]]
+name = "Calculator-record lookup ranking"
+path = "research_mcp/quantities.py"
+does = "lookup: ranks calculator records for a query"
+state = "none-found"
+alternative = ""
+check = ""
+note = "No ref; a small labelled query set scored with ranx/BEIR-style nDCG would be the check"
+
+[[custom]]
+name = "Pipeline benchmark metrics"
+path = "benchmarks/research/eval_pipeline.py"
+does = "pipeline scores and the 'n = 10 gives about +/-30-point CI' caveat"
+state = "candidate"
+alternative = "statsmodels"
+check = ""
+note = "statsmodels proportion_confint (Wilson) for the stated interval; 4 own questions only"
