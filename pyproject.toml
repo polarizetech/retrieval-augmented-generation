@@ -26,6 +26,7 @@ research-pipeline-mcp = "research_pipeline.mcp_server:main"
 research-rag-gateway = "research_mcp.gateway:main"
 research-patent-mcp = "research_pipeline.patent_mcp:main"
 research-github-mcp = "research_pipeline.github_mcp:main"
+research-reuse = "research_mcp.reuse:main"
 
 [project.urls]
 Repository = "https://github.com/polarizetech/retrieval-augmented-generation"
