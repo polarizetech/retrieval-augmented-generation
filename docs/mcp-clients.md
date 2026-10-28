@@ -117,6 +117,9 @@ nor held; each works in its own git worktree, and `ask` mentions the other sessi
 work. Fallbacks ask once per session per component. Sessions pass their name or the gateway
 infers it. The ladders and thresholds are as above.
 
+The full plan, with its later phases, is in [hub-plan.md](hub-plan.md); where things can run is
+in [hosting-options.md](hosting-options.md).
+
 ## Claude Desktop and Claude Code
 
 Use stdio: nothing listens on a port and no token is involved.
