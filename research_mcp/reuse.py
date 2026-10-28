@@ -704,6 +704,81 @@ def render_html(report: dict[str, Any]) -> str:
     )
 
 
+def dashboard_rows(report: dict[str, Any], history: Path) -> dict[str, list[dict[str, Any]]]:
+    """Flat tables for the dashboard: one row each, no nesting, no local paths."""
+    t = report["totals"]
+    summary = [{**t, "repos": len(report["repos"]), "generated": report["generated"]}]
+    repos = [
+        {"repo": r["repo"].rsplit("/", 1)[-1], "register": r["register"] or "none", **r["counts"]}
+        for r in report["repos"]
+    ]
+    custom = [
+        {
+            "id": f"{r['repo'].rsplit('/', 1)[-1]}#{i}",
+            "repo": r["repo"].rsplit("/", 1)[-1],
+            **{k: c.get(k, "") for k in ("name", "path", "does", "state", "check", "note")},
+            "alternative": c.get("alternative_name", "") or c.get("alternative", ""),
+            "paper": c.get("alternative_paper", ""),
+            "doi": c.get("alternative_doi", ""),
+            "easy_swap": "yes" if c["easy_swap"] else "",
+            "issues": "; ".join(c["issues"]),
+        }
+        for r in report["repos"]
+        for i, c in enumerate(r["custom"])
+    ]
+    used: dict[str, dict[str, Any]] = {}
+    for r in report["repos"]:
+        for u in r["reused"]:
+            row = used.setdefault(
+                u["key"],
+                {
+                    "package": u["name"],
+                    "paper": u["paper"],
+                    "doi": u["doi"],
+                    "kind": "foundation" if u["foundation"] else "method",
+                    "repo_count": 0,
+                    "repos": [],
+                },
+            )
+            row["repo_count"] += 1
+            row["repos"].append(r["repo"].rsplit("/", 1)[-1])
+    packages = [{**u, "repos": ", ".join(u["repos"])} for u in used.values()]
+    rows: list[dict[str, Any]] = []
+    if history.exists():
+        with history.open() as handle:
+            rows = [
+                {k: (v if k in ("date", "repo") else int(v or 0)) for k, v in row.items()}
+                for row in csv.DictReader(handle)
+                if row["repo"] == "ALL"
+            ]
+    trend = [
+        {
+            **row,
+            "peer_reviewed_percent": round(
+                100
+                * (row["reused_methods"] + row["tandem"])
+                / max(
+                    1, row["reused_methods"] + row["tandem"] + row["candidate"] + row["none_found"]
+                )
+            ),
+        }
+        for row in rows
+    ]
+    return {
+        "summary": summary,
+        "repos": repos,
+        "custom": custom,
+        "packages": packages,
+        "history": trend,
+    }
+
+
+def write_dashboard_data(folder: Path, report: dict[str, Any], history: Path) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, rows in dashboard_rows(report, history).items():
+        (folder / f"{name}.json").write_text(json.dumps(rows, indent=1) + "\n")
+
+
 def build_report(
     repos: dict[str, tuple[Path, str]], catalogue: dict[str, dict[str, Any]], home: Path
 ) -> dict[str, Any]:
@@ -771,6 +846,7 @@ def main(argv: list[str] | None = None) -> int:
     (home / "report.html").write_text(render_html(report))
     if not args.no_history:
         append_history(home, report["generated"][:10], report["repos"], report["totals"])
+    write_dashboard_data(home / "dashboard", report, home / "history.csv")
     sys.stdout.write(markdown.split("\n## ")[0] + f"\nReport: {home / 'report.md'}\n")
     return 0
 

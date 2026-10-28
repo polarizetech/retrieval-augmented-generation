@@ -56,8 +56,12 @@ skipped), shallow-cloned into `$REUSE_HOME/clones`. No AI is used. For each repo
 2. reads the register and checks each entry: the path still exists; a tandem entry's test exists and
    mentions the alternative; whether a candidate's alternative is already a dependency of the repo
    (an easy swap);
-3. writes `report.json`, `report.md` and `report.html` to `$REUSE_HOME`, and appends one row per
-   repository to `history.csv`, the running tally.
+3. writes `report.json`, `report.md` and `report.html` to `$REUSE_HOME`, appends one row per
+   repository to `history.csv`, the running tally, and writes flat tables for the dashboard to
+   `$REUSE_HOME/dashboard/` (`summary`, `repos`, `custom`, `packages`, `history`, as JSON).
+
+The dashboard is a private claude.ai page made from those five tables. To refresh it after a run,
+ask Claude to upload the new `dashboard/*.json` files to it.
 
 Reports name private repositories and stay in `$REUSE_HOME`; never commit them to this public repo.
 
