@@ -7,6 +7,37 @@
 failures = 3
 cooldown_seconds = 120
 
+# Phase 2: limits and queues per scarce resource, reply deadlines, duplicates.
+[limits]
+# Retrievals at once: the library's reranker shares the CPU.
+retrieval = 2
+
+[limits.providers]
+# Model calls at once per provider, across every run in the pipeline process. Ollama answers one
+# call at a time.
+openrouter = 8
+nearai = 4
+local = 1
+
+[memory]
+# Heavy requests (retrieval, research) wait while less than this percentage of memory is free.
+min_free_percent = 10
+
+[deadlines]
+# Every ask answers within this many seconds (under a client's 60 s MCP timeout). Longer work
+# answers "queued" or "working" with an id for hub__result, and carries on.
+reply_seconds = 45
+# A research request the pipeline turns away (PIPELINE_MAX_RUNS) is retried this often, in order,
+# for at most research_wait_seconds.
+research_retry_seconds = 20
+research_wait_seconds = 7200
+
+[duplicates]
+# A research question this similar (bge-m3 cosine) to one on the go attaches to it; from `warn`
+# up, it runs with a warning. The same words always attach.
+attach = 0.92
+warn = 0.80
+
 [usage]
 # How long a meter reading is reused before the provider is read again.
 ttl_seconds = 300

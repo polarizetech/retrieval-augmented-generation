@@ -166,7 +166,14 @@ class Rig:
             has_tool=self.has_tool,
             corpus=lambda: self.corpus,
             fetch=self.world.fetch,
+            post=self.embed,
+            memory=lambda: self.free_memory,
         )
+        self.hub.deadline = 5.0
+        self.hub.research_retry = 0.05
+        self.free_memory = 50
+        # bge-m3 stand-in: each question's vector, set by a test; others are orthogonal.
+        self.vectors: dict[str, list[float]] = {}
         public, private = tmp_path / "public", tmp_path / "private"
         brief(public, "researcher", "literature", "")
         brief(private, "noise-engineering", "noise colour pink brown", "Name the domain.")
@@ -184,6 +191,15 @@ class Rig:
             can_switch=lambda _c: switchable,
         )
 
+    def embed(self, url: str, body: dict[str, Any]) -> Any:
+        texts = body["input"]
+        return {
+            "embeddings": [
+                self.vectors.get(t, [0.0] * i + [1.0] + [0.0] * (len(texts) - i))
+                for i, t in enumerate(texts)
+            ]
+        }
+
     def has_tool(self, name: str) -> bool:
         if name == "pipeline__research_start":
             return self.pipeline
@@ -193,9 +209,12 @@ class Rig:
         self.calls.append((name, arguments))
         if name == "repos__auth_status":
             return self.github
-        if isinstance(self.run_reply, Exception):
-            raise self.run_reply
-        return self.run_reply
+        reply: Any = self.run_reply
+        if isinstance(reply, list):  # a sequence of replies; the last one repeats
+            reply = reply.pop(0) if len(reply) > 1 else reply[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
     def ask(self, question: str, **kw: Any) -> dict[str, Any]:
         kw.setdefault("session", "s1")
@@ -439,10 +458,12 @@ def test_pipeline_dying_mid_call_and_a_full_pipeline_are_reported(tmp_path: Path
     assert rig.hub.breakers["upstream"].count == 1
 
     rig.run_reply = {"error": "4 runs at once is the limit; wait for one to finish"}
+    rig.hub.deadline = 0.2
+    rig.hub.research_wait = 0.5
     full = rig.ask("research: is pink noise safe?")
-    assert_contract(full, "refused", "upstream")
-    assert full["error"]["retry_after"] == 60
-    assert "`hub__status`" in full["relay"]
+    assert_contract(full, "queued", "queue")
+    assert "The research pipeline is full (4 runs at once). Position 1 in line" in full["relay"]
+    assert f"`hub__result` with id `{full['request_id']}`" in full["relay"]
 
 
 # -- GitHub -----------------------------------------------------------------------------------
@@ -748,6 +769,7 @@ def test_the_gateway_lists_hub_tools_and_asks_through_the_contract(tmp_path: Pat
             assert status["active"][0]["session"].startswith("stdio-")
             assert status["active"][0]["session_inferred"] is True
             assert set(status["health"]) >= {"library", "provider", "github", "corpus"}
+            assert status["queues"]["retrieval"]["limit"] == 2
 
             got = await session.call_tool("hub__result", {"id": out["request_id"]})
             assert (got.structuredContent or {})["status"] == "needs_decision"
@@ -756,6 +778,7 @@ def test_the_gateway_lists_hub_tools_and_asks_through_the_contract(tmp_path: Pat
             assert '"status": "refused"' in missing.content[0].text  # type: ignore[union-attr]
 
             board = (await session.call_tool("hub__board", {})).structuredContent or {}
+            assert isinstance(board["processes"], list)
             assert sum(p["counts"].get("needs_decision", 0) for p in board["projects"].values())
 
             usage = (await session.call_tool("hub__usage", {})).structuredContent or {}
