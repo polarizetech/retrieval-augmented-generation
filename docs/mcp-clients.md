@@ -65,6 +65,9 @@ lists the passages with their evidence ids, and ends with a Limits line. Anythin
 goes after it, labelled as its own. The gateway does not make code changes itself yet: on the code
 route it gives context and names the tools, and the assistant makes the change.
 
+Plans for the gateway as a hub (a request ledger, queues, fallbacks, usage meters, project capsules) are in
+[hub-plan.md](hub-plan.md); where things can run is in [hosting-options.md](hosting-options.md).
+
 ## Claude Desktop and Claude Code
 
 Use stdio: nothing listens on a port and no token is involved.
