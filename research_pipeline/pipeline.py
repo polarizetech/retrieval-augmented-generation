@@ -125,7 +125,8 @@ class Pipeline:
         """Where a hosted text model ran, and what it cost: for the run log."""
         if not isinstance(self.llm, Endpoint):
             return None
-        calls = [c for c in self.llm.calls if c["model"] == self.llm.name]
+        text_models = getattr(self.llm, "text_models", {self.llm.name})
+        calls = [c for c in self.llm.calls if c["model"] in text_models]
 
         def total(key: str) -> float:
             return sum(c.get(key) or 0 for c in calls)
@@ -142,6 +143,7 @@ class Pipeline:
             "reasoning_tokens": int(total("reasoning_tokens")),
             "cost_usd": round(total("cost"), 6),
             "notes": list(self.llm.notes),
+            "ladder": list(getattr(self.llm, "ladder_log", [])),
         }
 
     def _resolve_models(self, st: State) -> list[str]:

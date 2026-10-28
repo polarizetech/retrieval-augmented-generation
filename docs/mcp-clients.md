@@ -65,6 +65,58 @@ lists the passages with their evidence ids, and ends with a Limits line. Anythin
 goes after it, labelled as its own. The gateway does not make code changes itself yet: on the code
 route it gives context and names the tools, and the assistant makes the change.
 
+## The hub: ledger, failures and usage
+
+Phase 1 of the [hub plan](hub-plan.md) is built. `ask` takes three more optional arguments:
+`session` and `project` (else inferred: the stdio bridge sends its own id and folder, a direct
+HTTP client is known by its MCP client name, and the ledger marks the session as inferred) and
+`decisions`, described below.
+
+**Ledger.** Every `ask` gets a `request_id` and a row in `data/pipeline/hub.sqlite` (`HUB_LEDGER`
+moves it): client, session, project, repository, route, specialist, question fingerprint, the
+files it names, status, timings, problems, and for a research run its provider, tokens and cost
+once the run's calls pass through the gateway. `hub__status` lists what is running and each
+component's health and circuit breaker; `hub__board` summarises per project; `hub__result(id)`
+returns a request's result, including a research run's answer after the call that started it.
+
+**One error contract.** Every non-success reply carries `status` (`queued`, `degraded`, `refused`,
+`failed` or `needs_decision`), `component`, `what_failed`, `impact`, `fallback_used`, `options`,
+`recommendation` and `retry_after`. The relay puts it first in plain words; tool errors carry the
+same JSON after their text, and upstream errors keep their own text first.
+
+**Failures and fallbacks.** Each component (reranker, embeddings, paper library, model provider,
+verifier, upstream process, GitHub, research corpus) has a check and a circuit breaker: three
+failures in a row and it is skipped for two minutes, then probed. The first time a component
+fails in a session, `ask` stops and asks (`needs_decision`) whether to `fallback` or `stop`; the
+client passes the answer back as `decisions={"<component>": "fallback"}`, and it holds for the
+rest of that session. Fallbacks follow the plan's table. Two need a paper-library change first:
+switching off only the reranker or only the embeddings (the library's `retrieve` tool would need
+`rerank` and `dense` flags; the gateway sends them as soon as the tool lists them). Until then
+those two fall back to scholarly search results, and the relay says so. A part the library dropped
+by itself (no reranker, lexical only) is labelled as detected. An upstream that is down fails
+with the restart command; restarting it with backoff is phase 3.
+
+**Usage.** `hub__usage` reads OpenRouter (`/api/v1/key` and `/api/v1/credits`: balance, spend
+today, this week and this month, burn per day and projected run-out), NEAR AI (needs the
+organisation id and a reporting token in `~/.config/polarize/nearai-reporting.env`; the API key is
+refused), local Ollama (up, installed, loaded), and says which plans it cannot read (Claude,
+ChatGPT). Readings are cached for five minutes, and each relay ends with a one-line readout from
+the cache, so a reply never waits on a provider.
+
+**Provider ladders.** `config/hub.default.toml` (your own values in the gitignored
+`config/hub.toml`) gives each pipeline step its providers in order: planning, extraction and
+writing go OpenRouter Qwen3.8 27B (zero retention), then NEAR AI direct, then the local
+`qwen3:4b-instruct-2507`. A provider counts as low at USD 1 left or 95 % of a key limit used.
+Checking stays on the local verifier and is not laddered: when it is down, runs drop to explore
+strictness and claims are marked unverified. Inside a run, a failing or low provider moves the
+step down at once and the run log's notes say so; before a run starts, `ask` checks the ladder
+and asks the session once, as above.
+
+Decisions taken 2026-10-28: code work by two sessions on the same repository is neither blocked
+nor held; each works in its own git worktree, and `ask` mentions the other session's recent
+work. Fallbacks ask once per session per component. Sessions pass their name or the gateway
+infers it. The ladders and thresholds are as above.
+
 ## Claude Desktop and Claude Code
 
 Use stdio: nothing listens on a port and no token is involved.
