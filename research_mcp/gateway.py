@@ -32,6 +32,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from research_mcp import oauth
+from research_mcp.ask import Asker, parse_tool_text
 from research_mcp.quantities import QuantityStore, corpus_root
 from research_mcp.rag import EvidenceStore
 from research_pipeline.config import ROOT, Settings, load_env
@@ -246,6 +247,18 @@ def build_server(
         return PaperLibrary.over(federation.sessions[upstream])
 
     evidence_store = EvidenceStore(papers_library, settings.runs_dir)
+
+    async def call_upstream(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return parse_tool_text(await federation.call(name, arguments))
+
+    asker = Asker(
+        retrieve=evidence_store.retrieve,
+        call_tool=call_upstream,
+        has_tool=lambda name: name in federation.tools,
+        rules_paths=(ROOT / "config" / "routing.default.toml", ROOT / "config" / "routing.toml"),
+        profiles_dir=settings.agent_profiles_dir,
+        extensions_dir=settings.agent_extensions_dir,
+    )
     quantities = QuantityStore(corpus_root(), settings.data_dir)
 
     @asynccontextmanager
@@ -323,6 +336,12 @@ def build_server(
         str(server_cfg.get("name") or SERVER_NAME),
         instructions=server_cfg.get("instructions")
         or (
+            "Start every request with ask(question): it decides which parts of this server run "
+            "(a passage retrieval for a question, the research pipeline for an evidence question, "
+            "the coder's tools only for a task or code review), runs them, and returns `relay`. "
+            "Show `relay` to the person exactly as written, and add anything of your own only "
+            "after it, labelled as yours. Pass repo when the request is about a repository, and "
+            "a prefix such as research: or code: only when the person used one. "
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
             "pipeline__research_start(question), then call pipeline__research_continue until "
@@ -597,10 +616,41 @@ def build_server(
         # web__search is listed only when it can work: without SearXNG, a client that can
         # search the web does it itself and hands the URLs to papers__leads (see ask_the_web).
         web_tools = [web] if searxng else []
-        return [status, *web_tools, *rag_tools, *math_tools, *session_tools, *upstream]
+        return [status, ask_tool, *web_tools, *rag_tools, *math_tools, *session_tools, *upstream]
 
-    # gateway_status, web__search (with SearXNG), five rag__, two math__, and two session tools.
-    builtin = (10 + bool(searxng)) if builtin_tools else 1
+    ask_tool = Tool(
+        name="ask",
+        description=(
+            "Start here for every request. Routes it by the operator's trigger words "
+            "(config/routing.default.toml and config/routing.toml) to the cheapest part of this "
+            "server that serves it: one passage retrieval for a question, the research pipeline "
+            "for an evidence question, retrieval plus the coder's repos__ tools for a task or code "
+            "review. Picks the specialist brief the same way. Returns `relay`, a block to show the "
+            "person unchanged: what ran and why, what came back, and its limits."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The person's request, verbatim."},
+                "repo": {"type": "string", "default": "", "description": "owner/name, if any."},
+                "mode": {
+                    "type": "string",
+                    "enum": ["", "quick", "research", "code"],
+                    "default": "",
+                },
+                "strictness": {
+                    "type": "string",
+                    "enum": ["", "explore", "grounded", "publication"],
+                    "default": "",
+                },
+            },
+            "required": ["question"],
+        },
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
+    )
+
+    # gateway_status, ask, web__search (with SearXNG), five rag__, two math__, two session tools.
+    builtin = (11 + bool(searxng)) if builtin_tools else 1
 
     rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]] = {
         "rag__retrieve_evidence": (
@@ -645,9 +695,19 @@ def build_server(
                 "web_search_configured": bool(searxng),
             }
         if not builtin_tools and (
-            name == "web__search" or name.startswith(("rag__", "math__", "session__"))
+            name in ("web__search", "ask") or name.startswith(("rag__", "math__", "session__"))
         ):
             return _tool_error(f"unknown tool: {name}")
+        if name == "ask":
+            try:
+                return await asker.ask(
+                    arguments["question"],
+                    arguments.get("repo", ""),
+                    arguments.get("mode", ""),
+                    arguments.get("strictness", ""),
+                )
+            except (ValueError, KeyError, OSError, PapersError, json.JSONDecodeError) as exc:
+                return _tool_error(f"ask failed: {type(exc).__name__}: {exc}")
         if name == "web__search":
             return await _web_search(searxng, arguments)
         if name == "rag__search":
