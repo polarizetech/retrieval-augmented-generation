@@ -1,8 +1,13 @@
 """Small, PR-only GitHub MCP boundary for repositories in approved organizations.
 
-Authentication remains in GitHub CLI's credential store.  The RAG OAuth key controls who may
-reach this single-user service; GitHub still enforces the signed-in account's repository rights.
+Authentication is GitHub CLI's own login, or a token of its own read from GITHUB_MCP_TOKEN_FILE
+(a fine-grained token limited to chosen repositories, kept outside any repository). The RAG OAuth
+key controls who may reach this single-user service; GitHub still enforces the token's rights.
 No tool pushes to a default branch, deletes a repository, merges a PR, or changes settings.
+
+A proposal is written by a model that may have read untrusted text, so it may not touch git's own
+files (which could run commands on this machine) or the files GitHub Actions runs (which could
+run with the repository's secrets as soon as the branch is pushed, before anyone reviews it).
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +34,10 @@ ORGS = frozenset(
     if item.strip()
 )
 WRITE = os.environ.get("GITHUB_MCP_ALLOW_WRITE", "0") == "1"
+TOKEN_FILE = os.environ.get("GITHUB_MCP_TOKEN_FILE", "").strip()
+# Paths a proposal may not write, compared in lower case: macOS file systems ignore case, so
+# `.GitHub/Workflows/x.yml` would land in `.github/workflows/` in the working copy.
+PROTECTED_PREFIXES = (".github/workflows/", ".github/actions/")
 READ = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True)
 PROPOSE = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
@@ -43,9 +53,38 @@ mcp = FastMCP(
 )
 
 
+def _env() -> dict[str, str]:
+    """The environment for gh and git: with GITHUB_MCP_TOKEN_FILE, that token and no other."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    if TOKEN_FILE:
+        path = Path(TOKEN_FILE).expanduser()
+        try:
+            token = path.read_text().strip()
+        except OSError as exc:
+            raise ValueError(f"GITHUB_MCP_TOKEN_FILE is set but {path} cannot be read") from exc
+        if not token:
+            raise ValueError(f"GITHUB_MCP_TOKEN_FILE is set but {path} is empty")
+        env.pop("GITHUB_TOKEN", None)
+        env["GH_TOKEN"] = token
+    return env
+
+
+def _git(*args: str) -> list[str]:
+    """git with credentials from gh (so the token above applies) and repository hooks off."""
+    helper = f"!{shlex.quote(GH)} auth git-credential"
+    return [
+        "git",
+        "-c", "credential.https://github.com.helper=",
+        "-c", f"credential.https://github.com.helper={helper}",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "core.fsmonitor=false",
+        *args,
+    ]  # fmt: skip
+
+
 def _run(argv: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
     result = subprocess.run(  # noqa: S603 - argv is separated and targets gh/git only
-        argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+        argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False, env=_env()
     )
     if result.returncode:
         raise ValueError((result.stderr or result.stdout or "command failed")[:1200])
@@ -65,6 +104,31 @@ def _repository(value: str) -> str:
     return value
 
 
+def _proposal_path(value: str) -> PurePosixPath:
+    """A repository-relative path a proposal may write, or ValueError."""
+    rel = PurePosixPath(value)
+    if not rel.parts or rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(f"invalid repository path: {value}")
+    if any(part.lower() == ".git" for part in rel.parts):
+        raise ValueError(f"proposals may not write git's own files: {value}")
+    lower = rel.as_posix().lower()
+    if any(lower == p.rstrip("/") or lower.startswith(p) for p in PROTECTED_PREFIXES):
+        raise ValueError(
+            f"proposals may not change GitHub Actions files ({value}); edit those by hand"
+        )
+    return rel
+
+
+def _inside(root: Path, rel: PurePosixPath) -> Path:
+    """The file to write for `rel`, refusing any symbolic link on the way to it."""
+    target = root
+    for part in rel.parts:
+        target = target / part
+        if target.is_symlink():
+            raise ValueError(f"proposals may not write through a symbolic link: {rel}")
+    return target
+
+
 def _json(text: str) -> Any:
     try:
         return json.loads(text)
@@ -75,18 +139,24 @@ def _json(text: str) -> Any:
 @mcp.tool(annotations=READ)
 def auth_status() -> dict[str, Any]:
     """Check GitHub authentication without returning credentials."""
-    result = subprocess.run(  # noqa: S603 - fixed gh command
-        [GH, "auth", "status", "--hostname", "github.com"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    source = "GITHUB_MCP_TOKEN_FILE" if TOKEN_FILE else "gh login"
+    try:
+        _gh("api", "user", "--jq", ".login", timeout=30)
+        ok, detail = True, "authenticated"
+    except ValueError as exc:
+        ok = False
+        detail = (
+            str(exc)[:300]
+            if TOKEN_FILE
+            else "run `gh auth login` on the host, or set GITHUB_MCP_TOKEN_FILE"
+        )
     return {
-        "authenticated": result.returncode == 0,
+        "authenticated": ok,
+        "credential": source,
         "organizations": sorted(ORGS),
         "write_proposals_enabled": WRITE,
-        "detail": "authenticated" if result.returncode == 0 else "run `gh auth login` on the host",
+        "protected_paths": [".git/", *PROTECTED_PREFIXES],
+        "detail": detail,
     }
 
 
@@ -159,7 +229,8 @@ def propose_files(
     """Create a branch and pull request containing complete UTF-8 file replacements.
 
     `files` contains `{path, content}` objects. Deletion, merge and default-branch writes are not
-    supported. Existing files should be read first. The user reviews the resulting PR.
+    supported, and neither are git's own files or GitHub Actions workflows and actions. Existing
+    files should be read first. The user reviews the resulting PR.
     """
     repo = _repository(repository)
     if not WRITE:
@@ -169,6 +240,7 @@ def propose_files(
     total = sum(len(item.get("content", "").encode()) for item in files)
     if total > 1_000_000:
         raise ValueError("the proposed text exceeds the 1 MB limit")
+    paths = [_proposal_path(item.get("path", "")) for item in files]
     branch = f"agent/{_slug(title)}-{uuid.uuid4().hex[:8]}"
     with tempfile.TemporaryDirectory(prefix="github-mcp-") as tmp:
         root = Path(tmp) / "repo"
@@ -176,8 +248,7 @@ def propose_files(
         # authenticated for HTTPS but without an SSH key, that preference can make proposals
         # fail even though GitHub API reads work. Use the allowlisted repository's HTTPS URL.
         _run(
-            ["git", "clone", "--depth", "1", f"https://github.com/{repo}.git", str(root)],
-            timeout=300,
+            _git("clone", "--depth", "1", f"https://github.com/{repo}.git", str(root)), timeout=300
         )
         default = (
             base
@@ -185,32 +256,19 @@ def propose_files(
                 "name"
             ]
         )
-        _run(["git", "switch", "-c", branch, f"origin/{default}"], cwd=root)
+        _run(_git("switch", "-c", branch, f"origin/{default}"), cwd=root)
         written = []
-        for item in files:
-            rel = PurePosixPath(item.get("path", ""))
-            if not rel.parts or rel.is_absolute() or ".." in rel.parts:
-                raise ValueError(f"invalid repository path: {rel}")
-            target = root.joinpath(*rel.parts)
+        for rel, item in zip(paths, files, strict=True):
+            target = _inside(root, rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(item.get("content", ""))
             written.append(rel.as_posix())
-        _run(["git", "add", "--", *written], cwd=root)
-        changed = _run(["git", "diff", "--cached", "--name-only"], cwd=root).splitlines()
+        _run(_git("add", "--", *written), cwd=root)
+        changed = _run(_git("diff", "--cached", "--name-only"), cwd=root).splitlines()
         if not changed:
             raise ValueError("the proposal makes no changes")
-        _run(
-            [
-                "git",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                title[:200],
-            ],
-            cwd=root,
-        )
-        _run(["git", "push", "-u", "origin", branch], cwd=root, timeout=300)
+        _run(_git("-c", "commit.gpgsign=false", "commit", "-m", title[:200]), cwd=root)
+        _run(_git("push", "-u", "origin", branch), cwd=root, timeout=300)
         url = _gh(
             "pr",
             "create",
