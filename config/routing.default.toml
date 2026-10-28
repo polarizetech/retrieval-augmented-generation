@@ -1,0 +1,60 @@
+# Which parts of the pipeline a request recruits (the `ask` tool).
+#
+# Every request is matched against these words, and only what it needs runs:
+#   quick     one passage retrieval (the default: cheap, a few seconds)
+#   research  the full research pipeline (searches, fetching, checks; minutes, and model calls)
+#   code      a task or code review: retrieval for context, then the coder
+# A question never recruits the coder, even about code ("how does the hook work?"). A task or a
+# review does ("fix the hook", "can you review this PR?").
+#
+# Put your own words in config/routing.toml (gitignored), in the same shape. Its lists are added
+# to these; a [profiles] entry there names the specialist its words recruit.
+
+[prefixes]
+# A request that starts with one of these runs that mode, whatever else it says.
+"quick:" = "quick"
+"research:" = "research"
+"deep:" = "research"
+"code:" = "code"
+"review:" = "code"
+
+[code]
+# Verbs that are code work on their own.
+code_verbs = [
+  "implement", "refactor", "debug", "deploy", "migrate", "rename", "lint", "typecheck",
+  "merge", "rebase", "commit", "push", "scaffold", "patch",
+]
+# Verbs that are code work when the request also names code (see code_objects) or a repo.
+task_verbs = [
+  "fix", "add", "change", "update", "remove", "delete", "write", "build", "create", "make",
+  "set", "wire", "move", "split", "upgrade", "bump", "port", "replace", "rewrite", "test",
+]
+code_objects = [
+  "code", "repo", "repository", "function", "method", "class", "module", "file", "files",
+  "script", "bug", "test", "tests", "hook", "branch", "pr", "api", "endpoint", "cli", "tool",
+  "config", "app", "ui", "page", "component", "build", "ci", "workflow", "dependency", "package",
+  "server", "gateway", "pipeline", "schema", "database", "query", "error", "crash", "typo",
+]
+# Phrases that ask for a code review.
+review = [
+  "code review", "review the pr", "review this pr", "review my pr", "review the pull request",
+  "review this pull request", "review the diff", "review this diff", "review the code",
+  "review this code", "review my code", "review the change", "review these changes",
+]
+# Words that turn a question into a request ("can you fix ...").
+request_leads = [
+  "please", "can you", "could you", "would you", "will you", "go ahead and", "let's", "lets",
+  "i need you to", "i want you to", "we need to",
+]
+
+[research]
+triggers = [
+  "evidence", "literature", "study", "studies", "paper", "papers", "research", "peer-reviewed",
+  "meta-analysis", "systematic", "mechanism", "mechanisms", "is it true", "what is known",
+  "what does the science", "citation", "citations", "cite", "hypothesis", "falsify",
+  "replicated", "replication", "consensus",
+]
+
+[profiles]
+# Your own words for a specialist, added to its routing brief, e.g.
+# noise-engineering = ["hiss", "rumble", "entropy source"]

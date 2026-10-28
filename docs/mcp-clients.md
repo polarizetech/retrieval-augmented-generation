@@ -4,6 +4,7 @@ One gateway process (`research-rag-gateway`) exposes:
 
 | Tools | Source | Uses a model? |
 |---|---|---|
+| `ask` | this repository: routes a request and runs only what it needs | no for routing and retrieval; the research route starts the pipeline |
 | `rag__search`, `rag__retrieve_evidence`, `rag__check_citations`, `rag__save_report` | this repository | no (embedding only, for hybrid retrieval) |
 | `papers__*` | the paper library upstream | no |
 | `pipeline__research_start`, `_continue`, `_status` | the pipeline upstream | yes: your configured endpoint when set, else the calling model; `model="client"` hands one run to the caller |
@@ -40,6 +41,29 @@ own OAuth state, port and public URL. Add a `server` section to that instance's 
 
 `builtin_tools: false` drops `web__search` and the `rag__*` tools, so the instance lists only
 `gateway_status` and its upstreams. Omitting the section keeps today's behaviour.
+
+## One entry point: `ask`
+
+Every request can go through `ask(question, repo?)`, and the server instructions tell clients to start
+there. It decides which parts of the server run, using trigger words rather than a model:
+
+| Route | When | What runs |
+|---|---|---|
+| `quick` (default) | a question with no research or code trigger | one passage retrieval (five passages) |
+| `research` | an evidence question ("evidence", "studies", "is it true", ...) | the research pipeline, started on the gateway |
+| `code` | a task on code ("fix the bug", "implement", "add a flag to the cli") or a code review | three passages for context; the assistant then edits through `repos__` tools or its checkout |
+
+A question never recruits the coder, even a question about code ("how does the hook work?"). A
+prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`. The specialist brief
+is chosen by `pipeline__profile_route`, or by the operator's own words. The words are in
+`config/routing.default.toml`; put your own in the gitignored `config/routing.toml` in the same
+shape. Its lists are added to the defaults, and a `[profiles]` entry names the specialist its
+words pick. The file is read on every call, so edits apply without a restart.
+
+`ask` returns `relay`, a Markdown block for the client to show unchanged. It says what ran and why,
+lists the passages with their evidence ids, and ends with a Limits line. Anything the client adds
+goes after it, labelled as its own. The gateway does not make code changes itself yet: on the code
+route it gives context and names the tools, and the assistant makes the change.
 
 ## Claude Desktop and Claude Code
 
