@@ -29,6 +29,8 @@ from research_pipeline.papers import PaperLibrary, PapersError, Passage
 from research_pipeline.verify import anchor_quote, unsupported_numbers
 
 EVIDENCE_ID = re.compile(r"^(?P<work>.+)#p(?P<ord>\d+)\.(?P<digest>[0-9a-f]{8})$")
+# Extra passages fetched beyond `limit`, to stand in for any the safety scan excludes.
+OVERFETCH = 4
 
 
 def evidence_id(passage: Passage) -> str:
@@ -54,8 +56,10 @@ class EvidenceStore:
             raise ValueError("query is required")
         limit = max(1, min(int(limit), 20))
         max_chars = max(400, min(int(max_chars), 4000))
-        # Over-fetch so that excluded passages do not shrink the result below `limit`.
-        res = await self.library().retrieve([query], limit=limit * 3)
+        # Over-fetch a little so that excluded passages rarely shrink the result below `limit`.
+        # Not more: the library reranks three candidates per passage asked for, on the CPU, at
+        # about 0.3 s each, and a client's MCP call times out after 60 s.
+        res = await self.library().retrieve([query], limit=limit + OVERFETCH)
         results, excluded = [], []
         for passage in (Passage.from_json(p) for p in res["results"][0]["passages"]):
             paper = passage.paper
