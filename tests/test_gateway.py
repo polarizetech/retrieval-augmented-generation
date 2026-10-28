@@ -111,6 +111,7 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
         assert "web__search" not in tools  # no SearXNG configured: not offered
         assert {
             "gateway_status",
+            "ask",
             "rag__search",
             "rag__retrieve_evidence",
             "rag__check_citations",
@@ -133,7 +134,7 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
         status = payload(await session.call_tool("gateway_status", {}))
         assert status["connected"] == {"papers": len(library_tools)}
         assert set(status["errors"]) == {"broken"}
-        assert status["total_tools"] == len(library_tools) + 10  # built-ins, no web__search
+        assert status["total_tools"] == len(library_tools) + 11  # built-ins, no web__search
 
     await with_session(config, tmp_path, body)
 
@@ -158,7 +159,9 @@ async def test_a_server_section_names_the_instance_and_can_drop_the_builtin_tool
         names = {t.name for t in (await session.list_tools()).tools}
         assert "gateway_status" in names
         assert "papers__search" in names
-        assert not any(n == "web__search" or n.startswith(("rag__", "math__")) for n in names)
+        assert not any(
+            n in ("web__search", "ask") or n.startswith(("rag__", "math__")) for n in names
+        )
         refused = await session.call_tool("rag__search", {"query": "x"})
         assert refused.isError
         status = payload(await session.call_tool("gateway_status", {}))

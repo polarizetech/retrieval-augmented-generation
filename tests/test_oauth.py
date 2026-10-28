@@ -252,7 +252,7 @@ def test_the_whole_flow_through_the_http_gateway(
         )
         assert call.status_code == 200, call.text
         # Built-ins only: no upstreams, and web__search is hidden without SearXNG.
-        assert call.json()["result"]["structuredContent"]["total_tools"] == 10
+        assert call.json()["result"]["structuredContent"]["total_tools"] == 11
 
 
 LOCAL = "a-local-bridge-token-that-is-long-enough-123"
