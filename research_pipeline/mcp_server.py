@@ -329,6 +329,16 @@ def _result(log: dict[str, Any]) -> dict[str, Any]:
             "independent_verifier": log.get("risk", {}).get("independent_verifier", False),
         },
     }
+    endpoint = log.get("endpoint") or {}
+    if endpoint:
+        # For the hub's ledger and relay: what the run cost and which provider each step used.
+        result["cost"] = {
+            "cost_usd": endpoint.get("cost_usd"),
+            "providers": endpoint.get("providers", []),
+            "tokens": (endpoint.get("input_tokens") or 0) + (endpoint.get("output_tokens") or 0),
+            "notes": endpoint.get("notes", []),
+            "ladder": endpoint.get("ladder", []),
+        }
     capsule = Path(log["run_dir"]) / "capsule.md"
     if capsule.exists():
         result["capsule_path"] = str(capsule)
