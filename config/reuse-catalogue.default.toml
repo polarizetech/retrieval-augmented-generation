@@ -1,0 +1,306 @@
+# Open-source scientific packages with a peer-reviewed paper (or a reviewed registry entry), for the
+# build-vs-reuse register (docs/reuse-register.md). The runner finds them in each repo's dependency
+# files and imports, and names them as alternatives to custom code.
+#
+# Fields:
+#   name     display name
+#   does     the job, in a few words
+#   review   "paper" (a journal or reviewed-proceedings methods paper), "joss" (reviewed by JOSS),
+#            "registry" (listed, not reviewed) or "none"
+#   paper    short citation;  doi  the paper's DOI ("" when it has none). `--check-dois` resolves them.
+#   python   import names;  pypi  package names in dependency files;  npm  package names
+#   markers  plain-text markers for tools that are not packages (MATLAB toolboxes, model names)
+#   foundation = true for general numerical libraries counted apart from method libraries
+#
+# Add your own entries in the gitignored config/reuse-catalogue.toml in the same shape.
+
+[numpy]
+name = "NumPy"
+does = "arrays and numerical routines"
+review = "paper"
+paper = "Harris et al. 2020, Nature"
+doi = "10.1038/s41586-020-2649-2"
+python = ["numpy"]
+pypi = ["numpy"]
+foundation = true
+
+[scipy]
+name = "SciPy"
+does = "filters, spectra (Welch), FFT, statistics, optimisation, ODE solvers"
+review = "paper"
+paper = "Virtanen et al. 2020, Nature Methods"
+doi = "10.1038/s41592-019-0686-2"
+python = ["scipy"]
+pypi = ["scipy"]
+foundation = true
+
+[pandas]
+name = "pandas"
+does = "tables"
+review = "paper"
+paper = "McKinney 2010, SciPy proceedings"
+doi = "10.25080/Majora-92bf1922-00a"
+python = ["pandas"]
+pypi = ["pandas"]
+foundation = true
+
+[sympy]
+name = "SymPy"
+does = "symbolic mathematics"
+review = "paper"
+paper = "Meurer et al. 2017, PeerJ Computer Science"
+doi = "10.7717/peerj-cs.103"
+python = ["sympy"]
+pypi = ["sympy"]
+foundation = true
+
+[statsmodels]
+name = "statsmodels"
+does = "regression, GLMs, multiple-comparison correction (Benjamini-Hochberg), time-series statistics"
+review = "paper"
+paper = "Seabold & Perktold 2010, SciPy proceedings"
+doi = "10.25080/Majora-92bf1922-011"
+python = ["statsmodels"]
+pypi = ["statsmodels"]
+
+[scikit-learn]
+name = "scikit-learn"
+does = "regression (ridge), classification, decomposition, cross-validation"
+review = "paper"
+paper = "Pedregosa et al. 2011, JMLR"
+doi = ""
+python = ["sklearn"]
+pypi = ["scikit-learn", "sklearn"]
+
+[scikit-image]
+name = "scikit-image"
+does = "image processing"
+review = "paper"
+paper = "van der Walt et al. 2014, PeerJ"
+doi = "10.7717/peerj.453"
+python = ["skimage"]
+pypi = ["scikit-image"]
+
+[pingouin]
+name = "Pingouin"
+does = "common statistical tests, effect sizes, circular statistics"
+review = "joss"
+paper = "Vallat 2018, JOSS"
+doi = "10.21105/joss.01026"
+python = ["pingouin"]
+pypi = ["pingouin"]
+
+[pymc]
+name = "PyMC"
+does = "Bayesian models"
+review = "paper"
+paper = "Abril-Pla et al. 2023, PeerJ Computer Science"
+doi = "10.7717/peerj-cs.1516"
+python = ["pymc", "pymc3"]
+pypi = ["pymc", "pymc3"]
+
+[mne]
+name = "MNE-Python"
+does = "EEG/MEG: filtering, PSD (Welch, multitaper), epochs, evoked responses, ICA, time-frequency"
+review = "paper"
+paper = "Gramfort et al. 2013, Frontiers in Neuroscience"
+doi = "10.3389/fnins.2013.00267"
+python = ["mne"]
+pypi = ["mne"]
+
+[mne-bids]
+name = "MNE-BIDS"
+does = "reading and writing BIDS datasets"
+review = "joss"
+paper = "Appelhoff et al. 2019, JOSS"
+doi = "10.21105/joss.01896"
+python = ["mne_bids"]
+pypi = ["mne-bids"]
+
+[nilearn]
+name = "Nilearn"
+does = "neuroimaging GLMs and statistics"
+review = "paper"
+paper = "Abraham et al. 2014, Frontiers in Neuroinformatics"
+doi = "10.3389/fninf.2014.00014"
+python = ["nilearn"]
+pypi = ["nilearn"]
+
+[pynwb]
+name = "PyNWB"
+does = "Neurodata Without Borders files"
+review = "paper"
+paper = "Rübel et al. 2022, eLife"
+doi = "10.7554/eLife.78362"
+python = ["pynwb"]
+pypi = ["pynwb"]
+
+[neo]
+name = "Neo"
+does = "electrophysiology file formats"
+review = "paper"
+paper = "Garcia et al. 2014, Frontiers in Neuroinformatics"
+doi = "10.3389/fninf.2014.00010"
+python = ["neo"]
+pypi = ["neo"]
+
+[specparam]
+name = "specparam (FOOOF)"
+does = "aperiodic (1/f) and periodic components of power spectra"
+review = "paper"
+paper = "Donoghue et al. 2020, Nature Neuroscience"
+doi = "10.1038/s41593-020-00744-x"
+python = ["specparam", "fooof"]
+pypi = ["specparam", "fooof"]
+
+[neurokit2]
+name = "NeuroKit2"
+does = "ECG/EDA/RSP/EMG processing, HRV, complexity measures"
+review = "paper"
+paper = "Makowski et al. 2021, Behavior Research Methods"
+doi = "10.3758/s13428-020-01516-y"
+python = ["neurokit2"]
+pypi = ["neurokit2"]
+
+[tensorpac]
+name = "Tensorpac"
+does = "phase-amplitude coupling (Tort modulation index and others)"
+review = "paper"
+paper = "Combrisson et al. 2020, PLoS Computational Biology"
+doi = "10.1371/journal.pcbi.1008302"
+python = ["tensorpac"]
+pypi = ["tensorpac"]
+
+[ordpy]
+name = "ordpy"
+does = "permutation entropy and ordinal networks"
+review = "paper"
+paper = "Pessa & Ribeiro 2021, Chaos"
+doi = "10.1063/5.0049901"
+python = ["ordpy"]
+pypi = ["ordpy"]
+
+[emd]
+name = "EMD"
+does = "empirical mode decomposition, Hilbert-Huang transform"
+review = "joss"
+paper = "Quinn et al. 2021, JOSS"
+doi = "10.21105/joss.02977"
+python = ["emd"]
+pypi = ["emd"]
+
+[pywavelets]
+name = "PyWavelets"
+does = "wavelet transforms"
+review = "joss"
+paper = "Lee et al. 2019, JOSS"
+doi = "10.21105/joss.01237"
+python = ["pywt"]
+pypi = ["PyWavelets", "pywavelets"]
+
+[ruptures]
+name = "ruptures"
+does = "change-point detection"
+review = "paper"
+paper = "Truong et al. 2020, Signal Processing"
+doi = "10.1016/j.sigpro.2019.107299"
+python = ["ruptures"]
+pypi = ["ruptures"]
+
+[librosa]
+name = "librosa"
+does = "audio features, onset and pitch analysis"
+review = "paper"
+paper = "McFee et al. 2015, SciPy proceedings"
+doi = "10.25080/Majora-7b98e3ed-003"
+python = ["librosa"]
+pypi = ["librosa"]
+
+[wfdb]
+name = "WFDB / PhysioNet"
+does = "physiological signal formats and reference annotations (PhysioNet)"
+review = "paper"
+paper = "Goldberger et al. 2000, Circulation (PhysioNet)"
+doi = "10.1161/01.CIR.101.23.e215"
+python = ["wfdb"]
+pypi = ["wfdb"]
+
+[brian2]
+name = "Brian 2"
+does = "spiking neural network simulation"
+review = "paper"
+paper = "Stimberg, Brette & Goodman 2019, eLife"
+doi = "10.7554/eLife.47314"
+python = ["brian2"]
+pypi = ["brian2", "Brian2"]
+
+[brian2hears]
+name = "Brian Hears"
+does = "auditory periphery filterbanks (gammatone and others)"
+review = "paper"
+paper = "Fontaine et al. 2011, Frontiers in Neuroinformatics"
+doi = "10.3389/fninf.2011.00009"
+python = ["brian2hears"]
+pypi = ["brian2hears"]
+
+[neuron]
+name = "NEURON"
+does = "compartmental neuron simulation"
+review = "paper"
+paper = "Hines & Carnevale 1997, Neural Computation"
+doi = "10.1162/neco.1997.9.6.1179"
+python = ["neuron"]
+pypi = ["neuron", "NEURON"]
+
+[nest]
+name = "NEST"
+does = "large spiking network simulation"
+review = "paper"
+paper = "Gewaltig & Diesmann 2007, Scholarpedia"
+doi = "10.4249/scholarpedia.1430"
+python = ["nest"]
+pypi = ["nest-simulator"]
+
+[tvb]
+name = "The Virtual Brain"
+does = "whole-brain network models"
+review = "paper"
+paper = "Sanz Leon et al. 2013, Frontiers in Neuroinformatics"
+doi = "10.3389/fninf.2013.00010"
+python = ["tvb"]
+pypi = ["tvb-library"]
+
+[amt]
+name = "Auditory Modeling Toolbox"
+does = "auditory periphery models (Zilany 2014, Verhulst 2018 and others)"
+review = "paper"
+paper = "Majdak et al. 2022, Acta Acustica"
+doi = "10.1051/aacus/2022011"
+markers = ["amt_start", "amtoolbox"]
+
+[astropy]
+name = "Astropy"
+does = "astronomy: coordinates, time scales, units"
+review = "paper"
+paper = "Astropy Collaboration 2022, ApJ"
+doi = "10.3847/1538-4357/ac7c74"
+python = ["astropy"]
+pypi = ["astropy"]
+
+[skyfield]
+name = "Skyfield"
+does = "positions of the Sun, Moon and planets from JPL ephemerides"
+review = "registry"
+paper = "Rhodes 2019, Astrophysics Source Code Library ascl:1907.024"
+doi = ""
+python = ["skyfield"]
+pypi = ["skyfield"]
+
+[igrf]
+name = "IGRF geomagnetic field model"
+does = "Earth's main magnetic field at a place and time"
+review = "paper"
+paper = "Alken et al. 2021, Earth, Planets and Space (IGRF-13)"
+doi = "10.1186/s40623-020-01288-x"
+python = ["ppigrf", "pyIGRF", "igrf"]
+pypi = ["ppigrf", "pyIGRF", "igrf"]
