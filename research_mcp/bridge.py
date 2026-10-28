@@ -19,19 +19,28 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import LATEST_PROTOCOL_VERSION, CallToolResult, TextContent, Tool
+from mcp.types import LATEST_PROTOCOL_VERSION, CallToolResult, Tool
+
+from research_mcp.hub.contract import Problem, error_result
 
 # A research run or a large fetch can hold a call open for minutes; the client's own MCP
 # timeout is what bounds a call, not the bridge.
 CALL_SECONDS = 1800.0
 STARTUP_ATTEMPTS = 15
 RESTART_HINT = "launchctl kickstart -k gui/$(id -u)/com.polarizetech.research-rag"
+
+
+def session_headers() -> dict[str, str]:
+    """Who is calling, for the hub's ledger: one bridge per client session, in its project."""
+    return {"X-Hub-Session": f"bridge-{os.getpid()}", "X-Hub-Project": Path.cwd().name}
 
 
 def _log(message: str) -> None:
@@ -51,6 +60,7 @@ class Upstream:
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
             "MCP-Protocol-Version": LATEST_PROTOCOL_VERSION,
+            **session_headers(),
         }
         self.ids = itertools.count(1)
 
@@ -94,7 +104,14 @@ class Upstream:
         try:
             result = await self.request("tools/call", {"name": name, "arguments": arguments})
         except GatewayError as exc:
-            return CallToolResult(isError=True, content=[TextContent(type="text", text=str(exc))])
+            problem = Problem(
+                "failed",
+                "gateway",
+                f"{exc}.",
+                recommendation=f"start or restart it: `{RESTART_HINT}`",
+                retry_after=30,
+            )
+            return error_result(problem)
         return CallToolResult.model_validate(result)
 
 

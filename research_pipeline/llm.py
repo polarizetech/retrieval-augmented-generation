@@ -599,5 +599,7 @@ def make_llm(settings: Settings, backend: str | None = None) -> Ollama | Endpoin
     if backend == "ollama":
         return Ollama(settings)
     if backend == "endpoint":
-        return Endpoint(settings)
+        from research_pipeline.ladder import make_ladder
+
+        return make_ladder(settings) or Endpoint(settings)
     raise LLMError(f"the {backend!r} backend needs an MCP client; use ollama or endpoint here")

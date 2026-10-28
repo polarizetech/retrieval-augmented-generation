@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import secrets
@@ -33,10 +34,14 @@ from starlette.responses import Response
 
 from research_mcp import oauth
 from research_mcp.ask import Asker, parse_tool_text
+from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
+from research_mcp.hub.health import Hub
+from research_mcp.hub.ledger import Ledger
 from research_mcp.quantities import QuantityStore, corpus_root
 from research_mcp.rag import EvidenceStore
 from research_pipeline.config import ROOT, Settings, load_env
 from research_pipeline.papers import PaperLibrary, PapersError
+from research_pipeline.usage import Meters, load_config
 
 SERVER_NAME = "retrieval-augmented-generation"
 
@@ -133,8 +138,39 @@ class Federation:
         return await self.sessions[prefix].call_tool(upstream_name, arguments)
 
 
-def _tool_error(message: str) -> CallToolResult:
-    return CallToolResult(isError=True, content=[TextContent(type="text", text=message)])
+def _tool_error(message: str, component: str = "request", status: str = "failed") -> CallToolResult:
+    """Every error reply carries the hub's contract: plain words first, then the JSON."""
+    hint = f"restart the gateway: `{RESTART_HINT}`" if component in ("upstream", "library") else ""
+    return error_result(Problem(status, component, message, recommendation=hint))
+
+
+# Which hub component an upstream's failure belongs to.
+UPSTREAM_COMPONENT = {"papers": "library", "repos": "github", "research": "corpus"}
+
+
+def _contract_for(prefix: str, result: CallToolResult) -> CallToolResult:
+    """Add the error contract to an upstream's error reply, keeping its own text first."""
+    content = list(result.content or [])
+    first = content[0].text if content and isinstance(content[0], TextContent) else ""
+    error = ""
+    if result.isError:
+        error = first or "the upstream tool failed"
+    elif first.startswith("{") and len(first) < 20000 and '"error"' in first:
+        try:
+            data = json.loads(first)
+        except json.JSONDecodeError:
+            data = {}
+        error = str(data.get("error") or "") if isinstance(data, dict) else ""
+    if not error:
+        return result
+    component = UPSTREAM_COMPONENT.get(prefix, "upstream")
+    problem = Problem("failed", component, f"[{prefix}] {error[:500]}")
+    contract = error_result(problem).content[0]
+    return CallToolResult(
+        isError=result.isError,
+        content=[*content, contract],
+        structuredContent=result.structuredContent,
+    )
 
 
 def _load_searxng(config: dict[str, Any]) -> str:
@@ -161,24 +197,17 @@ def _run_artifact(runs_dir: Path, supplied: str, name: str) -> Path:
 
 async def _web_search(base: str, arguments: dict[str, Any]) -> CallToolResult:
     if not base:
-        return CallToolResult(
-            isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text="web__search is off: no SearXNG instance is configured (SEARXNG_URL). "
-                    "Search the web with your own tool instead and pass the URLs you find to "
-                    "papers__leads; then papers__fetch the identifiers it returns.",
-                )
-            ],
+        return _tool_error(
+            "web__search is off: no SearXNG instance is configured (SEARXNG_URL). "
+            "Search the web with your own tool instead and pass the URLs you find to "
+            "papers__leads; then papers__fetch the identifiers it returns.",
+            status="refused",
         )
     query = str(arguments.get("query", "")).strip()
     limit = max(1, min(int(arguments.get("max_results", 8)), 20))
     categories = str(arguments.get("categories", "general")).strip() or "general"
     if not query:
-        return CallToolResult(
-            isError=True, content=[TextContent(type="text", text="query is required")]
-        )
+        return _tool_error("query is required", status="refused")
 
     def fetch() -> dict[str, Any]:
         url = (
@@ -206,12 +235,7 @@ async def _web_search(base: str, arguments: dict[str, Any]) -> CallToolResult:
             structuredContent=payload,
         )
     except Exception as exc:  # noqa: BLE001 - reported to the client as a tool error
-        return CallToolResult(
-            isError=True,
-            content=[
-                TextContent(type="text", text=f"web search failed: {type(exc).__name__}: {exc}")
-            ],
-        )
+        return _tool_error(f"web search failed: {type(exc).__name__}: {exc}")
 
 
 CLAIMS_SCHEMA: dict[str, Any] = {
@@ -251,6 +275,47 @@ def build_server(
     async def call_upstream(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return parse_tool_text(await federation.call(name, arguments))
 
+    # The hub (docs/hub-plan.md): ledger, health, breakers, meters. HUB_LEDGER and HUB_CONFIG
+    # move its database and config (tests point them at a temporary directory).
+    hub_config = load_config()
+    ledger = Ledger(Path(os.environ.get("HUB_LEDGER") or settings.data_dir / "hub.sqlite"))
+    hub = Hub(
+        ledger,
+        hub_config,
+        settings,
+        upstreams=lambda: (set(federation.sessions), dict(federation.errors)),
+        call_tool=call_upstream,
+        has_tool=lambda name: name in federation.tools,
+        corpus=corpus_root,
+    )
+
+    # The library's ranking parts the hub may switch off, when its retrieve tool accepts that.
+    switches = {"reranker": "rerank", "embeddings": "dense"}
+
+    def can_switch(component: str) -> bool:
+        entry = federation.tools.get(f"{settings.papers_upstream}__retrieve")
+        props = (entry[2].inputSchema or {}).get("properties", {}) if entry else {}
+        return switches.get(component, "") in props
+
+    async def plain_retrieve(query: str, limit: int, max_chars: int, component: str) -> Any:
+        return await evidence_store.retrieve(
+            query, limit, max_chars, **{switches[component]: False}
+        )
+
+    async def scholarly_search(query: str, limit: int) -> dict[str, Any]:
+        found = await papers_library().search(query, limit=limit)
+        hits = found.get("hits", [])
+        return {
+            "results": [
+                {
+                    "title": h.get("title"),
+                    "year": h.get("year"),
+                    "doi": (h.get("ids") or {}).get("doi"),
+                }
+                for h in hits[:limit]
+            ]
+        }
+
     asker = Asker(
         retrieve=evidence_store.retrieve,
         call_tool=call_upstream,
@@ -258,6 +323,10 @@ def build_server(
         rules_paths=(ROOT / "config" / "routing.default.toml", ROOT / "config" / "routing.toml"),
         profiles_dir=settings.agent_profiles_dir,
         extensions_dir=settings.agent_extensions_dir,
+        hub=hub,
+        search=scholarly_search,
+        plain_retrieve=plain_retrieve,
+        can_switch=can_switch,
     )
     quantities = QuantityStore(corpus_root(), settings.data_dir)
 
@@ -613,10 +682,79 @@ def build_server(
         upstream = [entry[2] for entry in federation.tools.values()]
         if not builtin_tools:
             return [status, *upstream]
+        hub_tools = [
+            Tool(
+                name="hub__status",
+                description=(
+                    "What is on the go now: running and waiting requests from the ledger, each "
+                    "component's health (reranker, embeddings, paper library, model provider, "
+                    "verifier, upstreams, GitHub, research corpus) and its circuit breaker."
+                ),
+                inputSchema={"type": "object", "properties": {}},
+                annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+            ),
+            Tool(
+                name="hub__board",
+                description=(
+                    "A readable summary per project from the request ledger: counts by status, "
+                    "sessions, cost, and the latest requests."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "per_project": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 5,
+                        }
+                    },
+                },
+                annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+            ),
+            Tool(
+                name="hub__result",
+                description=(
+                    "The result of a request by its id (the `request_id` from ask, or a research "
+                    "run_id), including a research run's answer after the call that started it "
+                    "has gone."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}},
+                    "required": ["id"],
+                },
+                annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+            ),
+            Tool(
+                name="hub__usage",
+                description=(
+                    "Credit and usage per model provider: OpenRouter's balance, spend today, this "
+                    "week and this month, burn rate per day and projected run-out; NEAR AI's "
+                    "balance (needs a reporting token); local Ollama's health; which plans the "
+                    "gateway cannot read; the low-credit thresholds and each step's provider "
+                    "ladder. Readings are cached; pass fresh to read the providers now."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {"fresh": {"type": "boolean", "default": False}},
+                },
+                annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+            ),
+        ]
         # web__search is listed only when it can work: without SearXNG, a client that can
         # search the web does it itself and hands the URLs to papers__leads (see ask_the_web).
         web_tools = [web] if searxng else []
-        return [status, ask_tool, *web_tools, *rag_tools, *math_tools, *session_tools, *upstream]
+        return [
+            status,
+            ask_tool,
+            *hub_tools,
+            *web_tools,
+            *rag_tools,
+            *math_tools,
+            *session_tools,
+            *upstream,
+        ]
 
     ask_tool = Tool(
         name="ask",
@@ -643,14 +781,95 @@ def build_server(
                     "enum": ["", "explore", "grounded", "publication"],
                     "default": "",
                 },
+                "session": {
+                    "type": "string",
+                    "default": "",
+                    "description": "A name for this chat session, if the client has one; else "
+                    "the gateway infers it (and says so in the ledger).",
+                },
+                "project": {
+                    "type": "string",
+                    "default": "",
+                    "description": "The project this request belongs to; else the repo's name "
+                    "or the client's folder.",
+                },
+                "decisions": {
+                    "type": "object",
+                    "description": "How to handle a broken component, when a reply asked: "
+                    '{"<component>": "fallback" | "stop"}. It holds for the rest of the session.',
+                    "additionalProperties": {"type": "string", "enum": ["fallback", "stop"]},
+                },
             },
             "required": ["question"],
         },
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
     )
 
-    # gateway_status, ask, web__search (with SearXNG), five rag__, two math__, two session tools.
-    builtin = (11 + bool(searxng)) if builtin_tools else 1
+    # gateway_status, ask, four hub__, web__search (with SearXNG), five rag__, two math__, two
+    # session tools.
+    builtin = (15 + bool(searxng)) if builtin_tools else 1
+
+    def caller() -> dict[str, str]:
+        """Who is calling, inferred when the session does not say: the stdio bridge sends its
+        own id and folder; a direct HTTP client is known by its MCP client name only."""
+        out = {"session": f"stdio-{os.getpid()}", "client": "", "project": Path.cwd().name}
+        try:
+            ctx = low.request_context
+        except LookupError:
+            return out
+        params = getattr(ctx.session, "client_params", None)
+        if params is not None:
+            out["client"] = params.clientInfo.name
+        request = ctx.request
+        headers = getattr(request, "headers", None)
+        if headers is not None:
+            out["session"] = headers.get("x-hub-session") or f"http-{out['client'] or 'client'}"
+            out["project"] = headers.get("x-hub-project", "")
+        return out
+
+    async def hub_result(rid: str) -> Any:
+        row = ledger.get(rid)
+        if row is None:
+            return _tool_error(f"no request or run with id {rid!r}", status="refused")
+        run_id = row.get("run_id")
+        if (
+            run_id
+            and row["status"] in ("working", "running")
+            and ("pipeline__research_status" in federation.tools)
+        ):
+            try:
+                state = await call_upstream("pipeline__research_status", {"run_id": run_id})
+                if state.get("done"):
+                    final = await call_upstream(
+                        "pipeline__research_continue", {"run_id": run_id, "answers": []}
+                    )
+                    ledger.follow_run(run_id, final)
+                elif state.get("error"):
+                    ledger.follow_run(run_id, state)
+                else:
+                    row["progress"] = state
+            except Exception as exc:  # noqa: BLE001 - the stored row is still worth returning
+                row["refresh_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            row = {
+                **(ledger.get(rid) or row),
+                **{k: row[k] for k in ("progress", "refresh_error") if k in row},
+            }
+        return row
+
+    async def hub_usage(fresh: bool) -> dict[str, Any]:
+        readings = await asyncio.to_thread(hub.meters.all, fresh=fresh)
+        providers = hub_config.get("providers", {})
+        return {
+            "providers": [r.as_dict() for r in readings],
+            "plans": list(Meters.PLANS),
+            "gateway_spend_usd": {"today": ledger.spend(86400), "week": ledger.spend(7 * 86400)},
+            "thresholds": {
+                name: {k: spec[k] for k in ("min_usd", "max_used_fraction") if k in spec}
+                for name, spec in providers.items()
+            },
+            "ladders": hub_config.get("ladders", {}),
+            "line": hub.meters.line(),
+        }
 
     rag_handlers: dict[str, tuple[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]] = {
         "rag__retrieve_evidence": (
@@ -695,9 +914,10 @@ def build_server(
                 "web_search_configured": bool(searxng),
             }
         if not builtin_tools and (
-            name in ("web__search", "ask") or name.startswith(("rag__", "math__", "session__"))
+            name in ("web__search", "ask")
+            or name.startswith(("rag__", "math__", "session__", "hub__"))
         ):
-            return _tool_error(f"unknown tool: {name}")
+            return _tool_error(f"unknown tool: {name}", status="refused")
         if name == "ask":
             try:
                 return await asker.ask(
@@ -705,14 +925,32 @@ def build_server(
                     arguments.get("repo", ""),
                     arguments.get("mode", ""),
                     arguments.get("strictness", ""),
+                    session=arguments.get("session", ""),
+                    project=arguments.get("project", ""),
+                    decisions=arguments.get("decisions") or None,
+                    caller=caller(),
                 )
-            except (ValueError, KeyError, OSError, PapersError, json.JSONDecodeError) as exc:
+            except (ValueError, KeyError) as exc:
+                return _tool_error(f"ask refused: {exc}", status="refused")
+            except (OSError, PapersError, json.JSONDecodeError) as exc:
                 return _tool_error(f"ask failed: {type(exc).__name__}: {exc}")
+        if name == "hub__status":
+            return {
+                "active": ledger.active(),
+                "health": await hub.report(),
+                "breakers": {n: b.as_dict() for n, b in hub.breakers.items()},
+            }
+        if name == "hub__board":
+            return {"projects": ledger.board(int(arguments.get("per_project", 5)))}
+        if name == "hub__result":
+            return await hub_result(str(arguments["id"]))
+        if name == "hub__usage":
+            return await hub_usage(bool(arguments.get("fresh", False)))
         if name == "web__search":
             return await _web_search(searxng, arguments)
         if name == "rag__search":
             if "papers__search" not in federation.tools:
-                return _tool_error("papers upstream is unavailable")
+                return _tool_error("papers upstream is unavailable", "library")
             return await federation.call(
                 "papers__search", {"query": arguments["query"], "limit": arguments.get("limit", 10)}
             )
@@ -721,7 +959,7 @@ def build_server(
             try:
                 return await handler(arguments)
             except (ValueError, KeyError, OSError, PapersError) as exc:
-                return _tool_error(f"{label} failed: {type(exc).__name__}: {exc}")
+                return _tool_error(f"{label} failed: {type(exc).__name__}: {exc}", "library")
         if name in math_handlers:
             label, sync_handler = math_handlers[name]
             try:
@@ -736,7 +974,7 @@ def build_server(
                 return _tool_error(f"capsule read failed: {type(exc).__name__}: {exc}")
         if name == "session__propose":
             if "research__ri_propose" not in federation.tools:
-                return _tool_error("the research repository upstream is unavailable")
+                return _tool_error("the research repository upstream is unavailable", "corpus")
             try:
                 capsule = _run_artifact(settings.runs_dir, arguments["run_dir"], "capsule.md")
                 log = json.loads((capsule.parent / "run.json").read_text())
@@ -753,8 +991,21 @@ def build_server(
             except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
                 return _tool_error(f"session proposal failed: {type(exc).__name__}: {exc}")
         if name not in federation.tools:
-            return _tool_error(f"unknown tool: {name}")
-        return await federation.call(name, arguments)
+            return _tool_error(f"unknown tool: {name}", status="refused")
+        prefix = federation.tools[name][0]
+        try:
+            result = await federation.call(name, arguments)
+        except Exception as exc:  # noqa: BLE001 - a dead upstream surfaces as many types
+            hub.breakers["upstream"].failure(f"{prefix}: {type(exc).__name__}: {exc}")
+            return _tool_error(
+                f"the '{prefix}' upstream did not answer: {type(exc).__name__}: {exc}",
+                UPSTREAM_COMPONENT.get(prefix, "upstream"),
+            )
+        if name in ("pipeline__research_continue", "pipeline__research_status"):
+            # The ledger follows runs on a best-effort basis; the reply is unchanged.
+            with contextlib.suppress(ValueError, KeyError, json.JSONDecodeError, sqlite3.Error):
+                ledger.follow_run(str(arguments.get("run_id", "")), parse_tool_text(result))
+        return _contract_for(prefix, result)
 
     return server, federation
 

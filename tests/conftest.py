@@ -172,6 +172,8 @@ class LibraryAdapter:
         collection: str = "",
         limit: int = 20,
         per_paper: int = 0,
+        rerank: bool | None = None,
+        dense: bool | None = None,
     ) -> dict[str, Any]:
         return self._run(
             "retrieve",
@@ -181,6 +183,7 @@ class LibraryAdapter:
                 collection=collection or None,
                 limit=limit,
                 per_paper=per_paper or None,
+                rerank=rerank,
             ),
         )
 
@@ -235,3 +238,13 @@ def make_evidence(eid: str, work: str, direction: str = "affirms", **overrides: 
         "role": "E",
     }
     return Evidence(**(fields | overrides))
+
+
+@pytest.fixture(autouse=True)
+def _offline_hub(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hub's ledger in a temporary folder, and a config with no providers to read."""
+    root = tmp_path_factory.mktemp("hub")
+    config = root / "hub.toml"
+    config.write_text("[breaker]\nfailures = 3\ncooldown_seconds = 120\n")
+    monkeypatch.setenv("HUB_CONFIG", str(config))
+    monkeypatch.setenv("HUB_LEDGER", str(root / "hub.sqlite"))
