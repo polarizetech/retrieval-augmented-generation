@@ -57,7 +57,7 @@ class Asker:
         guidance = route.get("guidance", "") if name == route.get("specialist") else ""
         if own and not profile:
             briefs = agent_profiles.load(self.extensions_dir) if self.extensions_dir else {}
-            brief = briefs.get(name) or agent_profiles.load(self.profiles_dir).get(name)
+            brief = briefs.get(own[0]) or agent_profiles.load(self.profiles_dir).get(own[0])
             if brief is not None:
                 profile = {"name": name, "path": str(brief.path), "repository": str(brief.root)}
                 guidance = brief.guidance
