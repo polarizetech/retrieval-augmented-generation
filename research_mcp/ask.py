@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +69,14 @@ class Turn:
     session: str
     decisions: dict[str, str]
     problems: list[Problem] = field(default_factory=list)
+    rid: str = ""
+    notes: list[str] = field(default_factory=list)
+
+
+def _pipeline_full(error: str) -> bool:
+    """The pipeline turned a run away because it already carries PIPELINE_MAX_RUNS."""
+    low = error.lower()
+    return "runs" in low and ("limit" in low or "at once" in low)
 
 
 def _sentence(text: str) -> str:
@@ -111,6 +120,8 @@ class Asker:
         self.search = search
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
+        # Requests still working after their reply's deadline: held so they finish.
+        self._tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
     def rules(self) -> Rules:
         # Read on every call, so an edit to config/routing.toml applies without a restart.
@@ -235,7 +246,12 @@ class Asker:
             )
         else:
             try:
-                found = await asyncio.wait_for(self.retrieve(query, limit, 1800), RETRIEVE_SECONDS)
+                # One of a few at once (the reranker shares the CPU); the time limit starts once
+                # this request's turn comes.
+                async with hub.lanes.retrieval.slot(turn.rid):
+                    found = await asyncio.wait_for(
+                        self.retrieve(query, limit, 1800), RETRIEVE_SECONDS
+                    )
             except TimeoutError:
                 component = "reranker" if hub.seen.get("reranker") else "library"
                 error = f"Retrieval took longer than {RETRIEVE_SECONDS:.0f} s."
@@ -290,7 +306,86 @@ class Asker:
                 )
             ) from exc
 
+    async def _duplicate(self, turn: Turn, question: str) -> dict[str, Any] | None:
+        """Attach to a research request on the go that asks the same thing; else None. A near
+        match is noted on the turn and the new run starts anyway."""
+        hub = self.hub
+        if hub is None:
+            return None
+        others = hub.ledger.research_on_the_go(exclude=turn.rid)
+        row, score, how = await hub.overlap.closest(question, others)
+        if row is None:
+            return None
+        if score >= hub.overlap.attach:
+            return {
+                "attached_to": row["id"],
+                "run_id": row.get("run_id"),
+                "status": "working",
+                "similarity": score,
+                "how": how,
+                "session": row.get("session"),
+                "question": row.get("question"),
+            }
+        if score >= hub.overlap.warn:
+            other = str(row.get("question"))[:120]
+            turn.notes.append(
+                f"A similar research request is on the go (`{row['id']}`, {how} {score}, session "
+                f"{row.get('session') or 'unknown'}): \u201c{other}\u201d. This one runs as well."
+            )
+        return None
+
+    async def _start_run(self, turn: Turn, args: dict[str, Any]) -> dict[str, Any]:
+        """Start a run. When the pipeline is full or memory is short, wait in line (oldest
+        first) and try again, for at most the configured wait."""
+        hub = self.hub
+        line = hub.lanes.research if hub is not None else None
+        waited = time.monotonic()
+        try:
+            while True:
+                mine = line is not None and turn.rid in line
+                ahead = mine and line is not None and line[0] != turn.rid
+                low_memory = hub is not None and hub.lanes.short_of_memory()
+                if not ahead and not low_memory:
+                    try:
+                        run = await self.call_tool("pipeline__research_start", args)
+                    except Exception as exc:  # a dead upstream surfaces as many types
+                        if hub is not None:
+                            hub.breakers["upstream"].failure(str(exc))
+                        self._broken(
+                            turn,
+                            "upstream",
+                            f"The research pipeline did not answer: {type(exc).__name__}.",
+                        )
+                        raise AssertionError("unreachable") from exc
+                    if not (run.get("error") and _pipeline_full(str(run["error"]))):
+                        return run
+                    if hub is None or line is None:
+                        return run
+                assert hub is not None
+                assert line is not None
+                if not mine:
+                    line.append(turn.rid)
+                if time.monotonic() - waited > hub.research_wait:
+                    raise Halt(
+                        Problem(
+                            "refused",
+                            "upstream",
+                            f"The research run waited {hub.research_wait / 60:.0f} min for a "
+                            "free slot and did not start.",
+                            impact="nothing started; the other runs carry on",
+                            recommendation="check `hub__status` for stuck runs, then ask again.",
+                            retry_after=60,
+                        )
+                    )
+                await asyncio.sleep(hub.research_retry)
+        finally:
+            if line is not None and turn.rid in line:
+                line.remove(turn.rid)
+
     async def _research(self, turn: Turn, question: str, strictness: str) -> dict[str, Any]:
+        attached = await self._duplicate(turn, question)
+        if attached is not None:
+            return attached
         if not self.has_tool("pipeline__research_start"):
             why = ""
             if self.hub is not None:
@@ -337,18 +432,10 @@ class Asker:
             corpus = await hub.check("corpus")
             if corpus["state"] != "up":
                 self._broken(turn, "corpus", _sentence(corpus["detail"]))
-        try:
-            run = await self.call_tool("pipeline__research_start", args)
-        except Exception as exc:
-            if hub is not None:
-                hub.breakers["upstream"].failure(str(exc))
-            self._broken(
-                turn, "upstream", f"The research pipeline did not answer: {type(exc).__name__}."
-            )
-            raise AssertionError("unreachable") from exc
+        run = await self._start_run(turn, args)
         if run.get("error"):
             error = str(run["error"])
-            if "runs" in error.lower() and ("limit" in error.lower() or "at once" in error.lower()):
+            if _pipeline_full(error):
                 raise Halt(
                     Problem(
                         "refused",
@@ -416,14 +503,15 @@ class Asker:
         spec = self.specialist(route.question, rules)
         sid = session.strip() or caller.get("session", "") or "unknown"
         turn = Turn(sid, {})
-        rid = ""
+        rid = uuid.uuid4().hex[:12]
         touches = [t.strip("`'\"(),:;!?") for t in question.split() if _looks_like_code(t)]
         if self.hub is not None:
             for component, choice in (decisions or {}).items():
                 self.hub.ledger.decide(sid, component, choice)
             turn.decisions = self.hub.ledger.decisions(sid)
             rid = self.hub.ledger.start(
-                question,
+                route.question,  # without a routing prefix, so duplicates compare like with like
+                rid=rid,
                 client=caller.get("client", ""),
                 session=sid,
                 session_inferred=not session.strip(),
@@ -441,6 +529,139 @@ class Asker:
             f"Specialist: {spec['name']} ({spec['why']})" if spec["name"] else "Specialist: none"
         )
         results: dict[str, Any] = {}
+        turn.rid = rid
+        work = self._work(
+            turn,
+            route,
+            spec=spec,
+            rules=rules,
+            repo=repo,
+            strictness=strictness,
+            touches=touches,
+            progress=progress,
+            results=results,
+            started=started,
+        )
+        if self.hub is None:
+            return await work
+        # Every reply comes within the deadline; work that takes longer carries on and leaves
+        # its result in the ledger for hub__result.
+        task = asyncio.ensure_future(work)
+        self._tasks.add(task)
+        task.add_done_callback(self._settled(rid))
+        done, _ = await asyncio.wait({task}, timeout=self.hub.deadline)
+        if task in done:
+            return task.result()
+        return self._pending(rid, route, spec=spec, progress=progress, started=started)
+
+    def _settled(self, rid: str) -> Callable[[asyncio.Task[dict[str, Any]]], None]:
+        """Record a request that failed after its reply had already gone."""
+
+        def done(task: asyncio.Task[dict[str, Any]]) -> None:
+            self._tasks.discard(task)
+            if task.cancelled() or self.hub is None:
+                return
+            exc = task.exception()
+            if exc is not None:
+                self.hub.ledger.finish(
+                    rid,
+                    "failed",
+                    problems=[{"what_failed": f"{type(exc).__name__}: {exc}"[:500]}],
+                )
+
+        return done
+
+    def _pending(
+        self,
+        rid: str,
+        route: Route,
+        *,
+        spec: dict[str, Any],
+        progress: list[str],
+        started: float,
+    ) -> dict[str, Any]:
+        """The reply at the deadline: queued (with position and estimate) or still working."""
+        assert self.hub is not None
+        hub = self.hub
+        seconds = round(time.monotonic() - started, 1)
+        lane = hub.lanes.retrieval
+        problem: Problem | None = None
+        after = f"The request carries on: call `hub__result` with id `{rid}` for its answer."
+        if (pos := lane.position(rid)) is not None:
+            wait = lane.estimate(rid) or 0
+            held = " Memory is low, so heavy work waits." if lane.held_by_memory else ""
+            problem = Problem(
+                "queued",
+                "queue",
+                f"Retrieval is busy ({lane.limit} at a time): position {pos} in line, about "
+                f"{wait:.0f} s.{held}",
+                recommendation=after,
+                retry_after=max(5, round(wait)),
+            )
+        elif rid in hub.lanes.research:
+            pos = list(hub.lanes.research).index(rid) + 1
+            typical = hub.ledger.typical_seconds("research", 600.0)
+            wait = typical * pos / max(1, hub.settings.max_runs)
+            why = (
+                "Memory is low, so research waits."
+                if hub.lanes.short_of_memory()
+                else f"The research pipeline is full ({hub.settings.max_runs} runs at once)."
+            )
+            problem = Problem(
+                "queued",
+                "queue",
+                f"{why} Position {pos} in line, about {wait / 60:.0f} min.",
+                recommendation=after,
+                retry_after=max(30, round(wait)),
+            )
+        status = problem.status if problem else "working"
+        lines = (
+            [problem.plain(), ""]
+            if problem
+            else [f"**Still working after {seconds} s.** {after}", ""]
+        )
+        lines += [
+            f"**What the research tool did so far** ({seconds} s)",
+            *[f"- {p}" for p in progress],
+        ]
+        lines += [
+            "",
+            "**Limits:** Nothing is concluded yet; the answer comes through `hub__result`.",
+        ]
+        lines += ["", f"_Request `{rid}` · {hub.meters.line()}_"]
+        hub.ledger.finish(rid, status, problems=[problem.as_dict()] if problem else None)
+        out: dict[str, Any] = {
+            "request_id": rid,
+            "status": status,
+            "route": route.as_dict(),
+            "specialist": spec,
+            "progress": list(progress),
+            "seconds": seconds,
+            "relay": "\n".join(lines),
+            "relay_instructions": (
+                "Show `relay` to the person exactly as written. Then call hub__result with "
+                "request_id when the person wants the answer."
+            ),
+        }
+        if problem is not None:
+            out["error"] = problem.as_dict()
+        return out
+
+    async def _work(
+        self,
+        turn: Turn,
+        route: Route,
+        *,
+        spec: dict[str, Any],
+        rules: Rules,
+        repo: str,
+        strictness: str,
+        touches: list[str],
+        progress: list[str],
+        results: dict[str, Any],
+        started: float,
+    ) -> dict[str, Any]:
+        rid = turn.rid if self.hub is not None else ""
         try:
             await self._run(
                 turn,
@@ -513,9 +734,15 @@ class Asker:
         if route.mode == "research":
             run = await self._research(turn, route.question, strictness)
             results["research"] = run
-            progress.append(
-                f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
-            )
+            if run.get("attached_to"):
+                progress.append(
+                    f"Attached to request {run['attached_to']} ({run['how']}): no second run"
+                )
+            else:
+                progress.append(
+                    f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
+                )
+            progress.extend(turn.notes)
         if route.mode == "code":
             note = (
                 "The gateway does not make code changes itself yet. The assistant makes the "
@@ -579,7 +806,8 @@ class Asker:
         if problems:
             out["problems"] = [p.as_dict() for p in problems]
         if self.hub is not None and rid:
-            run_id = results.get("research", {}).get("run_id")
+            research = results.get("research", {})
+            run_id = research.get("run_id")
             self.hub.ledger.finish(
                 rid,
                 status,
@@ -587,6 +815,7 @@ class Asker:
                 problems=[p.as_dict() for p in problems] or None,
                 result={"relay": text, "status": status},
                 run_id=str(run_id) if run_id else None,
+                attached_to=research.get("attached_to"),
             )
         return out
 
@@ -642,7 +871,18 @@ def relay(
         out += ["", "**Scholarly search results** (titles only: no verbatim passages, not citable)"]
         out += _hits(hits) or ["None matched."]
     run = results.get("research")
-    if run is not None:
+    if run is not None and run.get("attached_to"):
+        out += [
+            "",
+            f"**Attached** to request `{run['attached_to']}`"
+            + (f" (run `{run['run_id']}`)" if run.get("run_id") else "")
+            + f", asked by session {run.get('session') or 'unknown'}: "
+            f"\u201c{str(run.get('question', ''))[:160]}\u201d "
+            f"({run['how']}, {run['similarity']}). "
+            "No second run was started; its answer comes through `hub__result` with this "
+            "request's id.",
+        ]
+    elif run is not None:
         out += [
             "",
             f"**Research run** `{run.get('run_id')}`: {run.get('status')}. It runs on the gateway "

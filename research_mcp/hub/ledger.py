@@ -19,7 +19,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-ACTIVE = ("running", "working", "needs_decision")
+ACTIVE = ("queued", "running", "working", "needs_decision")
+# Columns added after the first release, with their types: added to an older database on open.
+LATER_COLUMNS = {"attached_to": "TEXT"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
     id TEXT PRIMARY KEY,
@@ -58,6 +60,10 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.executescript(SCHEMA)
+            have = {r[1] for r in self._db.execute("PRAGMA table_info(requests)")}
+            for column, kind in LATER_COLUMNS.items():
+                if column not in have:
+                    self._db.execute(f"ALTER TABLE requests ADD COLUMN {column} {kind}")
             self._db.commit()
 
     def close(self) -> None:
@@ -92,8 +98,9 @@ class Ledger:
         route: str = "",
         specialist: str = "",
         touches: list[str] | None = None,
+        rid: str = "",
     ) -> str:
-        rid = uuid.uuid4().hex[:12]
+        rid = rid or uuid.uuid4().hex[:12]
         now = self.clock()
         self._exec(
             "INSERT INTO requests (id, created, updated, client, session, session_inferred, "
@@ -119,6 +126,7 @@ class Ledger:
         providers: list[str] | None = None,
         tokens: int | None = None,
         cost: float | None = None,
+        attached_to: str | None = None,
     ) -> None:
         sets = ["status = ?", "updated = ?"]
         args: list[Any] = [status, self.clock()]
@@ -130,6 +138,7 @@ class Ledger:
             ("providers", None if providers is None else json.dumps(providers)),
             ("tokens", tokens),
             ("cost", cost),
+            ("attached_to", attached_to),
         ):
             if value is not None:
                 sets.append(f"{key} = ?")
@@ -137,11 +146,16 @@ class Ledger:
         self._exec(f"UPDATE requests SET {', '.join(sets)} WHERE id = ?", (*args, rid))
 
     def follow_run(self, run_id: str, reply: dict[str, Any]) -> str | None:
-        """Update the row of the request that started `run_id` from a pipeline reply."""
-        rows = self._exec("SELECT id FROM requests WHERE run_id = ?", (run_id,))
+        """Update the rows of the requests on `run_id` (the one that started it, and any that
+        attached to it) from a pipeline reply. Returns the starting request's id."""
+        rows = self._exec("SELECT id FROM requests WHERE run_id = ? ORDER BY created", (run_id,))
         if not rows:
             return None
-        rid = rows[0]["id"]
+        for row in rows[1:]:
+            self._follow(row["id"], reply)
+        return self._follow(rows[0]["id"], reply)
+
+    def _follow(self, rid: str, reply: dict[str, Any]) -> str:
         status = str(reply.get("status", ""))
         if reply.get("error"):
             self.finish(rid, "failed", problems=[{"what_failed": str(reply["error"])[:500]}])
@@ -159,6 +173,23 @@ class Ledger:
         elif status:
             self.finish(rid, "working")
         return rid
+
+    def research_on_the_go(self, exclude: str = "") -> list[dict[str, Any]]:
+        """Research requests queued or running, oldest first, that a new one could attach to."""
+        return [
+            r for r in self.active() if r.get("route") == "research" and r["id"] != exclude
+            and not r.get("attached_to") and r["status"] != "needs_decision"
+        ]  # fmt: skip
+
+    def typical_seconds(self, route: str, default: float) -> float:
+        """The median time from start to finish of recent finished requests on `route`."""
+        rows = self._exec(
+            "SELECT updated - created AS s FROM requests WHERE route = ? AND status IN "
+            "('done', 'degraded') ORDER BY created DESC LIMIT 20",
+            (route,),
+        )
+        values = sorted(float(r["s"]) for r in rows)
+        return values[len(values) // 2] if values else default
 
     def get(self, rid: str) -> dict[str, Any] | None:
         rows = self._exec("SELECT * FROM requests WHERE id = ? OR run_id = ?", (rid, rid))

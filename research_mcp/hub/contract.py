@@ -67,8 +67,11 @@ COMPONENTS: dict[str, Component] = {
         "files can still be read; no grounded claims",
     ),
     "request": Component("the request", "none", "nothing ran"),
+    "queue": Component(
+        "a busy resource", "none: it waits its turn", "the answer comes later, through hub__result"
+    ),
 }
-NO_FALLBACK = ("upstream", "gateway", "request")
+NO_FALLBACK = ("upstream", "gateway", "request", "queue")
 
 
 @dataclass
