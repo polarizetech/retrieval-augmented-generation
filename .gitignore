@@ -2,6 +2,7 @@
 config/rag.env
 config/mcp-gateway.json
 config/.mcp-token
+config/routing.toml
 
 # Runtime state
 data/
