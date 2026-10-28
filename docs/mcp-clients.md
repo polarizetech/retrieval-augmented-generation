@@ -112,6 +112,21 @@ strictness and claims are marked unverified. Inside a run, a failing or low prov
 step down at once and the run log's notes say so; before a run starts, `ask` checks the ladder
 and asks the session once, as above.
 
+**Queues and deadlines (phase 2).** Every `ask` answers within 45 s (`[deadlines]` in the hub
+config). Work that takes longer carries on and replies `working`, or `queued` with its position and
+an estimate; its result lands in the ledger for `hub__result`. Retrieval runs two at a time (the
+reranker shares the CPU). A research request the pipeline turns away (`PIPELINE_MAX_RUNS`) waits in
+line and starts when a slot frees. Model calls are limited per provider across every run (the local
+model one at a time). Retrieval and research wait while less than 10 % of memory is free.
+`hub__status` shows the queues.
+
+**Duplicates (phase 2).** A research question that matches one on the go (the same words, or a
+bge-m3 similarity of 0.92 or more) attaches to it instead of starting a second run; its
+`hub__result` returns that run's answer. From 0.80 it runs with a warning naming the other request.
+Without embeddings only the same words attach. `hub__board` also lists stale processes (stdio
+gateways holding their own library copy, old versions, orphaned upstreams), reported and never
+killed.
+
 Decisions taken 2026-10-28: code work by two sessions on the same repository is neither blocked
 nor held; each works in its own git worktree, and `ask` mentions the other session's recent
 work. Fallbacks ask once per session per component. Sessions pass their name or the gateway

@@ -1,7 +1,7 @@
 # The gateway as the hub: plan
 
-Status: plan, 2026-10-28. Nothing here is built yet unless a section says so. Update this file as phases
-land, and record decisions where they are made.
+Status: phases 1 and 2 built (2026-10-28); phases 3 and 4 are plans. Update this file as phases land,
+and record decisions where they are made. How the built parts work: [MCP clients](mcp-clients.md#the-hub-ledger-failures-and-usage).
 
 ## Goal
 
@@ -136,9 +136,14 @@ should keep each session to what the current task needs.
 
 ## Phases
 
-1. Ledger, error contract, health checks with circuit breakers, labelled fallbacks, usage meters, provider
-   ladders with the local last rung.
-2. Queues and limits, deadlines with `hub__result`, duplicate and conflict detection.
+1. **Built** (PR #20). Ledger, error contract, health checks with circuit breakers, labelled fallbacks,
+   usage meters, provider ladders with the local last rung. Not yet: the reranker-only and
+   embeddings-only fallbacks need `rerank` and `dense` flags on paper-fetch's `retrieve` tool; until then
+   they fall back to scholarly search, labelled.
+2. **Built.** Queues and limits (retrieval two at a time; research waits in line when the pipeline is
+   full; model calls per provider, the local model one at a time), memory pressure, a 45 s reply deadline
+   with `hub__result`, duplicate and near-duplicate research, stale processes on the board. Code
+   conflicts are not held (decision below).
 3. Upstream restart with backoff; research runs that survive a gateway restart.
 4. Board views and a daily digest; project capsules and `hub__resume`; the size watcher; checks for
    sessions outside the hub.
@@ -146,12 +151,22 @@ should keep each session to what the current task needs.
 Each phase ships with fault-injection tests: every component is broken on purpose, and the fallback and
 its message are checked.
 
-## Decisions waiting
+## Decisions
 
-- Does a code conflict block the second session, or warn it?
-- Do degraded fallbacks run automatically and labelled, or ask first?
-- Do sessions pass their project and session name to the gateway, or does it infer them?
-- The low-credit thresholds per provider, and the order of each step's ladder.
+Taken 2026-10-28:
+
+- **Code conflicts:** neither blocked nor held. Each session works in its own git worktree; `ask`
+  mentions another session's recent code work on the same repository.
+- **Degraded fallbacks:** ask once per session per component. The first failure replies
+  `needs_decision`; the answer (`fallback` or `stop`) holds for the rest of that session.
+- **Session identity:** sessions pass their name and project; otherwise the gateway infers them and
+  marks them as inferred.
+- **Ladders and thresholds:** planning, extraction and writing go OpenRouter Qwen3.8 27B (zero
+  retention), then NEAR AI direct, then local `qwen3:4b-instruct-2507`; checking stays on the local
+  verifier. A provider is low at USD 1 left or 95 % of a key limit used.
+
+Waiting:
+
 - What the size watcher may do on its own (capsule update, compact, hand-off) and what it asks first.
 
 ## Related

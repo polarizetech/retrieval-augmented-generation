@@ -37,6 +37,7 @@ from research_mcp.ask import Asker, parse_tool_text
 from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
 from research_mcp.hub.health import Hub
 from research_mcp.hub.ledger import Ledger
+from research_mcp.hub.processes import stale
 from research_mcp.quantities import QuantityStore, corpus_root
 from research_mcp.rag import EvidenceStore
 from research_pipeline.config import ROOT, Settings, load_env
@@ -686,7 +687,8 @@ def build_server(
             Tool(
                 name="hub__status",
                 description=(
-                    "What is on the go now: running and waiting requests from the ledger, each "
+                    "What is on the go now: running and waiting requests from the ledger, the "
+                    "queues (retrieval slots, research waiting, free memory), and each "
                     "component's health (reranker, embeddings, paper library, model provider, "
                     "verifier, upstreams, GitHub, research corpus) and its circuit breaker."
                 ),
@@ -697,7 +699,8 @@ def build_server(
                 name="hub__board",
                 description=(
                     "A readable summary per project from the request ledger: counts by status, "
-                    "sessions, cost, and the latest requests."
+                    "sessions, cost, and the latest requests; plus stale processes (stdio "
+                    "gateways, old versions, orphaned upstreams), reported and never killed."
                 ),
                 inputSchema={
                     "type": "object",
@@ -854,6 +857,10 @@ def build_server(
                 **(ledger.get(rid) or row),
                 **{k: row[k] for k in ("progress", "refresh_error") if k in row},
             }
+        target = row.get("attached_to")
+        if target and target != rid and row["status"] not in ("done", "degraded", "failed"):
+            # Attached to another request on the same question: its result is this one's.
+            row["attached"] = await hub_result(str(target))
         return row
 
     async def hub_usage(fresh: bool) -> dict[str, Any]:
@@ -939,9 +946,14 @@ def build_server(
                 "active": ledger.active(),
                 "health": await hub.report(),
                 "breakers": {n: b.as_dict() for n, b in hub.breakers.items()},
+                "queues": hub.lanes.as_dict(),
             }
         if name == "hub__board":
-            return {"projects": ledger.board(int(arguments.get("per_project", 5)))}
+            return {
+                "projects": ledger.board(int(arguments.get("per_project", 5))),
+                # Reported, never killed: a stdio gateway, an old version, an orphaned upstream.
+                "processes": await asyncio.to_thread(stale, own_pid=os.getpid()),
+            }
         if name == "hub__result":
             return await hub_result(str(arguments["id"]))
         if name == "hub__usage":
