@@ -112,6 +112,15 @@ strictness and claims are marked unverified. Inside a run, a failing or low prov
 step down at once and the run log's notes say so; before a run starts, `ask` checks the ladder
 and asks the session once, as above.
 
+**Reply layout.** How replies look is set by `config/replies.default.md`: the quick `ask` reply,
+the reply while a request is queued or working, and the research pipeline's finished answer. To
+change one, copy the file to the gitignored `config/replies.md` and edit it; a template left out
+of your copy keeps the default. `{{name}}` places a block (passages, steps, limits, sources and so
+on; the file lists them), and `{{#name}}...{{/name}}` shows its inside only when that block has
+something in it. Code still writes every block, so quotes, evidence ids and sources are never
+retyped; the template only picks order, headings and what appears. Edits show on the next reply,
+with no restart.
+
 **Queues and deadlines (phase 2).** Every `ask` answers within 45 s (`[deadlines]` in the hub
 config). Work that takes longer carries on and replies `working`, or `queued` with its position and
 an estimate; its result lands in the ledger for `hub__result`. Retrieval runs two at a time (the

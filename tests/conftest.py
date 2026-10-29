@@ -18,6 +18,7 @@ from paper_fetch import Library, MemoryStore, NotFound, OpenAlex
 from paper_fetch.passages import PassageIndex
 
 from research_pipeline.papers import PapersError, Passage
+from research_pipeline.replies import DEFAULT_TEMPLATES
 from research_pipeline.schema import Evidence
 
 # A synthetic paper. The topic is deliberately ordinary; what matters is the structure: a result
@@ -248,3 +249,5 @@ def _offline_hub(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.M
     config.write_text("[breaker]\nfailures = 3\ncooldown_seconds = 120\n")
     monkeypatch.setenv("HUB_CONFIG", str(config))
     monkeypatch.setenv("HUB_LEDGER", str(root / "hub.sqlite"))
+    # The tracked reply templates only: the operator's own config/replies.md stays out of tests.
+    monkeypatch.setenv("REPLY_TEMPLATES", str(DEFAULT_TEMPLATES))
