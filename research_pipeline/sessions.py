@@ -158,7 +158,9 @@ def capsule_markdown(run_id: str, log: dict[str, Any], metadata: dict[str, Any])
         "",
         "## Bottom line",
         "",
-        _bottom_line(log.get("answer", "")) or "No verified bottom line was produced.",
+        log.get("bottom_line")
+        or _bottom_line(log.get("answer", ""))
+        or "No verified bottom line was produced.",
         "",
         "## Promotion candidates",
         "",

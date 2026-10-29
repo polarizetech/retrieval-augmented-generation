@@ -35,7 +35,7 @@ from research_mcp.routing import (
     load_rules,
     profile_override,
 )
-from research_pipeline import agent_profiles
+from research_pipeline import agent_profiles, replies
 from research_pipeline.papers import PapersError
 
 QUICK_PASSAGES = 5
@@ -615,20 +615,16 @@ class Asker:
                 retry_after=max(30, round(wait)),
             )
         status = problem.status if problem else "working"
-        lines = (
-            [problem.plain(), ""]
-            if problem
-            else [f"**Still working after {seconds} s.** {after}", ""]
+        text = replies.render(
+            "pending",
+            {
+                "problems": problem.plain() if problem else "",
+                "working": "" if problem else f"**Still working after {seconds} s.** {after}",
+                "seconds": str(seconds),
+                "steps": "\n".join(f"- {p}" for p in progress),
+                **_footer(rid, hub.meters.line()),
+            },
         )
-        lines += [
-            f"**What the research tool did so far** ({seconds} s)",
-            *[f"- {p}" for p in progress],
-        ]
-        lines += [
-            "",
-            "**Limits:** Nothing is concluded yet; the answer comes through `hub__result`.",
-        ]
-        lines += ["", f"_Request `{rid}` · {hub.meters.line()}_"]
         hub.ledger.finish(rid, status, problems=[problem.as_dict()] if problem else None)
         out: dict[str, Any] = {
             "request_id": rid,
@@ -637,7 +633,7 @@ class Asker:
             "specialist": spec,
             "progress": list(progress),
             "seconds": seconds,
-            "relay": "\n".join(lines),
+            "relay": text,
             "relay_instructions": (
                 "Show `relay` to the person exactly as written. Then call hub__result with "
                 "request_id when the person wants the answer."
@@ -851,29 +847,40 @@ def relay(
     usage: str = "",
     request_id: str = "",
 ) -> str:
-    """The block the chat model shows unchanged: problems first, then what ran, why, what came
-    back, and its limits; last, the request id and the usage line."""
-    out: list[str] = []
-    for problem in problems:
-        out += [problem.plain(), ""]
-    out += [f"**What the research tool did** ({seconds} s)", *[f"- {p}" for p in progress]]
-    if spec.get("guidance") and route.mode != "research":
-        out += ["", f"**{spec['name']} guidance:** {spec['guidance']}"]
+    """The block the chat model shows unchanged, laid out by the `ask` template in
+    config/replies.default.md (or the operator's config/replies.md): by default problems first,
+    then what ran, why, what came back, and its limits; last, the request id and usage."""
+    blocks: dict[str, str] = {
+        "problems": "\n\n".join(p.plain() for p in problems),
+        "route": route.mode,
+        "question": route.question,
+        "seconds": str(seconds),
+        "steps": "\n".join(f"- {p}" for p in progress),
+        "specialist": str(spec.get("name") or ""),
+        "guidance": str(spec.get("guidance") or "") if route.mode != "research" else "",
+        "passages": "",
+        "passages_none": "",
+        "excluded": "",
+        "search": "",
+        "research": "",
+        "coder": "",
+    }
     found = results.get("evidence")
     if found is not None:
-        out += ["", "**Passages**" if found.get("results") else "**Passages:** none matched."]
-        out += _passages(found)
+        if found.get("results"):
+            blocks["passages"] = "\n".join(_passages(found))
+        else:
+            blocks["passages_none"] = "none matched."
         if found.get("excluded"):
             n = len(found["excluded"])
-            out.append(f"({n} passage(s) excluded by the safety or retraction check.)")
+            blocks["excluded"] = f"({n} passage(s) excluded by the safety or retraction check.)"
     hits = results.get("search")
     if hits is not None:
-        out += ["", "**Scholarly search results** (titles only: no verbatim passages, not citable)"]
-        out += _hits(hits) or ["None matched."]
+        blocks["search"] = "\n".join(_hits(hits) or ["None matched."])
     run = results.get("research")
+    out: list[str] = []
     if run is not None and run.get("attached_to"):
         out += [
-            "",
             f"**Attached** to request `{run['attached_to']}`"
             + (f" (run `{run['run_id']}`)" if run.get("run_id") else "")
             + f", asked by session {run.get('session') or 'unknown'}: "
@@ -884,15 +891,16 @@ def relay(
         ]
     elif run is not None:
         out += [
-            "",
             f"**Research run** `{run.get('run_id')}`: {run.get('status')}. It runs on the gateway "
             f"(model: {run.get('model_backend', 'configured provider')}); continue with "
             "`pipeline__research_continue` until it is done, then show its answer with its Limits.",
         ]
+    blocks["research"] = "".join(out)
     if results.get("coder"):
-        out += ["", f"**Coder:** {results['coder']['note']}"]
+        coder = [f"**Coder:** {results['coder']['note']}"]
         if results["coder"].get("overlap"):
-            out += ["", f"**Overlap:** {results['coder']['overlap']}"]
+            coder += ["", f"**Overlap:** {results['coder']['overlap']}"]
+        blocks["coder"] = "\n".join(coder)
     limits = {
         "quick": "These are retrieved passages, not a checked answer: nothing here judged whether "
         "they answer the question. Start the request with `research:` for a checked answer.",
@@ -901,11 +909,14 @@ def relay(
     }[route.mode]
     if any(p.status == "needs_decision" for p in problems):
         limits = "Nothing was concluded: the request stopped to ask how to handle a failure."
-    out += ["", f"**Limits:** {limits}"]
+    blocks["limits"] = limits
+    blocks.update(_footer(request_id, usage))
+    return replies.render("ask", blocks)
+
+
+def _footer(request_id: str, usage: str) -> dict[str, str]:
     footer = " · ".join(x for x in (request_id and f"Request `{request_id}`", usage) if x)
-    if footer:
-        out += ["", f"_{footer}_"]
-    return "\n".join(out)
+    return {"request": request_id, "usage": usage, "footer": footer}
 
 
 def parse_tool_text(result: Any) -> dict[str, Any]:

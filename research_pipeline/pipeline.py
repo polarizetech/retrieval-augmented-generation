@@ -959,7 +959,7 @@ class Pipeline:
                 "were read in retrieval order."
             )
 
-        from .render import render  # late import: render depends on this module's State
+        from .render import bottom_line, render  # late: render depends on this module's State
 
         risk = self._risk(st)
         answer = render(
@@ -983,6 +983,7 @@ class Pipeline:
             "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "seconds": round(time.time() - started, 1),
             "question": st.question,
+            "bottom_line": bottom_line(st),
             "model_backend": "mcp-client"
             if self.client
             else getattr(self.llm, "backend", "ollama"),
