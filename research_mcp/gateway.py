@@ -410,7 +410,9 @@ def build_server(
             "(a passage retrieval for a question, the research pipeline for an evidence question, "
             "the coder's tools only for a task or code review), runs them, and returns `relay`. "
             "Show `relay` to the person exactly as written, and add anything of your own only "
-            "after it, labelled as yours. Pass repo when the request is about a repository, and "
+            "after it, labelled as yours. `relay` is three short lists (results, what happens "
+            "next, anything for the person); show `relay_full` only when the person asks for "
+            "more. Pass repo when the request is about a repository, and "
             "a prefix such as research: or code: only when the person used one. "
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
@@ -419,7 +421,8 @@ def build_server(
             "provider the user configured, and the calls just wait for it. Only when the user "
             "asks you to do the writing or run it yourself, pass model='client': then answer "
             "each batch of tasks it returns and send them with pipeline__research_continue. "
-            "Relay the final answer with its Limits section. Without the pipeline: rag__search "
+            "When a run is done, show its short `relay`, and the full `answer` with its Limits "
+            "section when the person asks. Without the pipeline: rag__search "
             "finds papers, rag__index_paper "
             "adds open-access full text to the passage index (fetching alone does not), "
             "rag__retrieve_evidence returns verbatim passages with evidence ids, and only those "
@@ -766,8 +769,9 @@ def build_server(
             "(config/routing.default.toml and config/routing.toml) to the cheapest part of this "
             "server that serves it: one passage retrieval for a question, the research pipeline "
             "for an evidence question, retrieval plus the coder's repos__ tools for a task or code "
-            "review. Picks the specialist brief the same way. Returns `relay`, a block to show the "
-            "person unchanged: what ran and why, what came back, and its limits."
+            "review. Picks the specialist brief the same way. Returns `relay`, a short block to "
+            "show the person unchanged (results, next, and anything for them to do), and "
+            "`relay_full`, the detail, to show only when they ask."
         ),
         inputSchema={
             "type": "object",

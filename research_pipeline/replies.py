@@ -73,6 +73,11 @@ def fill(template: str, blocks: Mapping[str, str]) -> str:
     return _BLANKS.sub("\n\n", text).strip()
 
 
+def bullets(items: list[str]) -> str:
+    """One `- item` line per non-empty item, for the short replies' lists."""
+    return "\n".join(f"- {i}" for i in items if i and i.strip())
+
+
 def render(name: str, blocks: Mapping[str, str]) -> str:
     """Fill the named template. With no template of that name, the blocks in the order given."""
     template = load().get(name)

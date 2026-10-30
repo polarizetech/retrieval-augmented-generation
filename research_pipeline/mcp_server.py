@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -29,7 +30,7 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import agent_profiles
+from . import agent_profiles, replies
 from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
 from .llm import LLMError, Ollama, make_llm, resolve_backend
@@ -314,8 +315,49 @@ async def _turn(run_id: str, run: Run, errors: list[str], wait: float) -> dict[s
     }
 
 
+def _sentences(text: str) -> list[str]:
+    """Plain sentences from a markdown paragraph."""
+    text = " ".join(text.replace("**", "").split())
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\"“(])", text) if s.strip()]
+
+
+SHORT_BOTTOM_LINE = (
+    3  # sentences of the bottom line in the short answer; the rest is in the full one
+)
+
+
+def short_answer(log: dict[str, Any]) -> str:
+    """The finished answer as three short lists, a sentence per item."""
+    claims = log.get("claims", [])
+    kept_claims = [c for c in claims if c.get("verdict") in ("SUPPORTED", "DISPUTED")]
+    kept = len(kept_claims)
+    used = {i for c in kept_claims for i in (c.get("supported_by") or c.get("evidence_ids") or [])}
+    sources = {e.get("work") for e in log.get("evidence", []) if e.get("id") in used} - {None}
+    bottom = _sentences(log.get("bottom_line") or "")
+    got = bottom[:SHORT_BOTTOM_LINE]
+    if len(bottom) > SHORT_BOTTOM_LINE:
+        got.append("The bottom line goes on in the full answer.")
+    got.append(
+        f"{kept} of {len(claims)} claim(s) passed verification"
+        + (f", from {len(sources)} source(s)." if sources else ".")
+    )
+    got.append("Findings, sources and limits are in the full answer.")
+    blocks = {
+        "question": str(log.get("question", "")),
+        "results": replies.bullets(got),
+        "next": replies.bullets(["Nothing else runs; this research request is done."]),
+        "for_you": "",
+    }
+    return replies.render("answer_short", blocks)
+
+
 def _result(log: dict[str, Any]) -> dict[str, Any]:
     result = {
+        "relay": short_answer(log),
+        "relay_instructions": (
+            "Show `relay` to the person exactly as written. Show `answer` (the full answer, with "
+            "its findings, sources and Limits) only when the person asks for more."
+        ),
         "answer": log["answer"],
         "run_dir": log["run_dir"],
         "stats": {

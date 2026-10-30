@@ -304,17 +304,17 @@ def test_reranker_timeout_asks_once_per_session_then_retrieves_without_it(
 
     first = rig.ask("What is pink noise?")
     assert_contract(first, "needs_decision", "reranker")
-    assert first["relay"].startswith("**Your choice is needed: the reranker failed.**")
-    assert 'decisions={"reranker": "<choice>"}' in first["relay"]
+    assert first["relay_full"].startswith("**Your choice is needed: the reranker failed.**")
+    assert 'decisions={"reranker": "<choice>"}' in first["relay_full"]
     assert {o["choice"] for o in first["error"]["options"]} == {"fallback", "stop"}
     assert (rig.ledger.get(first["request_id"]) or {}).get("status") == "needs_decision"
 
     second = rig.ask("What is pink noise?", decisions={"reranker": "fallback"})
     assert second["status"] == "degraded"
     assert ("plain", "reranker") in rig.library.calls
-    assert "**Degraded: the reranker.**" in second["relay"]
-    assert "retrieval without reranking" in second["relay"]
-    assert "**Passages**" in second["relay"]
+    assert "**Degraded: the reranker.**" in second["relay_full"]
+    assert "retrieval without reranking" in second["relay_full"]
+    assert "**Passages**" in second["relay_full"]
 
     # Same session, no decision passed: the stored choice applies without asking again.
     third = rig.ask("What is brown noise?")
@@ -330,7 +330,7 @@ def test_a_reranker_the_library_dropped_by_itself_is_labelled(tmp_path: Path) ->
     out = rig.ask("What is pink noise?")
     assert out["status"] == "degraded"
     assert out["problems"][0]["component"] == "reranker"
-    assert "(detected)" in out["relay"]
+    assert "(detected)" in out["relay_full"]
 
 
 def test_stop_means_stop_with_a_retry_time(tmp_path: Path) -> None:
@@ -339,7 +339,7 @@ def test_stop_means_stop_with_a_retry_time(tmp_path: Path) -> None:
     out = rig.ask("What is pink noise?", decisions={"reranker": "stop"})
     assert_contract(out, "failed", "reranker")
     assert out["error"]["retry_after"] == 120
-    assert "Retry in about 120 s" in out["relay"]
+    assert "Retry in about 120 s" in out["relay_full"]
     assert ("plain", "reranker") not in rig.library.calls
 
 
@@ -350,9 +350,9 @@ def test_embeddings_down_falls_back_to_lexical_retrieval(tmp_path: Path) -> None
     out = rig.ask("What is pink noise?", decisions={"embeddings": "fallback"})
     assert out["status"] == "degraded"
     assert ("plain", "embeddings") in rig.library.calls
-    assert "**Degraded: embeddings (Ollama).**" in out["relay"]
-    assert "lexical retrieval" in out["relay"]
-    assert "misses paraphrases" in out["relay"]
+    assert "**Degraded: embeddings (Ollama).**" in out["relay_full"]
+    assert "lexical retrieval" in out["relay_full"]
+    assert "misses paraphrases" in out["relay_full"]
 
 
 def test_without_a_switch_embeddings_fall_back_to_scholarly_search(tmp_path: Path) -> None:
@@ -360,9 +360,9 @@ def test_without_a_switch_embeddings_fall_back_to_scholarly_search(tmp_path: Pat
     rig.library.error = PapersError("ollama embed failed")
     out = rig.ask("What is pink noise?", decisions={"embeddings": "fallback"})
     assert out["status"] == "degraded"
-    assert "the library cannot switch off its embeddings yet" in out["relay"]
-    assert "no verbatim passages" in out["relay"]
-    assert "**Scholarly search results**" in out["relay"]
+    assert "the library cannot switch off its embeddings yet" in out["relay_full"]
+    assert "no verbatim passages" in out["relay_full"]
+    assert "**Scholarly search results**" in out["relay_full"]
 
 
 # -- paper library ----------------------------------------------------------------------------
@@ -374,8 +374,8 @@ def test_library_down_falls_back_to_scholarly_search_and_breaker_skips_it(tmp_pa
 
     out = rig.ask("What is pink noise?", decisions={"library": "fallback"})
     assert out["status"] == "degraded"
-    assert "1. A paper on noise (2020, doi:10.1/n)" in out["relay"]
-    assert "not citable" in out["relay"]
+    assert "1. A paper on noise (2020, doi:10.1/n)" in out["relay_full"]
+    assert "not citable" in out["relay_full"]
 
     rig.ask("What is pink noise?")  # third failure: the breaker opens
     tries = sum(c[0] == "retrieve" for c in rig.library.calls)
@@ -390,8 +390,8 @@ def test_library_and_its_search_both_down_fail_with_the_contract(tmp_path: Path)
     rig.library.search_error = PapersError("providers unreachable")
     out = rig.ask("What is pink noise?", decisions={"library": "fallback"})
     assert_contract(out, "failed", "library")
-    assert out["relay"].startswith("**Failed: the paper library.**")
-    assert RESTART_HINT in out["relay"]
+    assert out["relay_full"].startswith("**Failed: the paper library.**")
+    assert RESTART_HINT in out["relay_full"]
 
 
 # -- model provider ---------------------------------------------------------------------------
@@ -405,7 +405,7 @@ def test_low_credit_moves_research_down_the_ladder_after_asking(tmp_path: Path) 
 
     out = rig.ask("research: does pink noise improve sleep?", decisions={"provider": "fallback"})
     assert out["status"] == "degraded"
-    assert "NEAR AI direct, the next usable rung of the ladder" in out["relay"]
+    assert "NEAR AI direct, the next usable rung of the ladder" in out["relay_full"]
     assert [c[0] for c in rig.calls].count("pipeline__research_start") == 1
 
 
@@ -430,7 +430,7 @@ def test_verifier_down_runs_at_explore_strictness_when_chosen(tmp_path: Path) ->
     assert out["status"] == "degraded"
     start = [a for n, a in rig.calls if n == "pipeline__research_start"][-1]
     assert start["strictness"] == "explore"
-    assert "claims marked unverified" in out["relay"]
+    assert "claims marked unverified" in out["relay_full"]
 
 
 def test_explore_strictness_does_not_need_the_verifier(tmp_path: Path) -> None:
@@ -447,7 +447,7 @@ def test_pipeline_upstream_down_fails_with_the_restart_hint_without_asking(tmp_p
     out = rig.ask("research: is pink noise safe?", decisions={})
     assert_contract(out, "failed", "upstream")
     assert "BrokenPipeError" in out["error"]["what_failed"]
-    assert RESTART_HINT in out["relay"]
+    assert RESTART_HINT in out["relay_full"]
 
 
 def test_pipeline_dying_mid_call_and_a_full_pipeline_are_reported(tmp_path: Path) -> None:
@@ -462,8 +462,10 @@ def test_pipeline_dying_mid_call_and_a_full_pipeline_are_reported(tmp_path: Path
     rig.hub.research_wait = 0.5
     full = rig.ask("research: is pink noise safe?")
     assert_contract(full, "queued", "queue")
-    assert "The research pipeline is full (4 runs at once). Position 1 in line" in full["relay"]
-    assert f"`hub__result` with id `{full['request_id']}`" in full["relay"]
+    assert (
+        "The research pipeline is full (4 runs at once). Position 1 in line" in full["relay_full"]
+    )
+    assert f"`hub__result` with id `{full['request_id']}`" in full["relay_full"]
 
 
 # -- GitHub -----------------------------------------------------------------------------------
@@ -475,17 +477,17 @@ def test_github_down_keeps_code_work_in_the_local_checkout(tmp_path: Path) -> No
     rig.hub._github = None  # the cached check is re-read
     out = rig.ask(task, repo="polarizetech/x", decisions={"github": "fallback"})
     assert out["status"] == "degraded"
-    assert "edits a local checkout only; no pull request" in out["relay"]
+    assert "edits a local checkout only; no pull request" in out["relay_full"]
 
 
 def test_code_work_on_the_same_repo_from_another_session_is_mentioned(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     rig.ask("Fix the failing test in tests/test_rag.py", repo="polarizetech/x", session="a")
     out = rig.ask("Fix the flaky check in tests/test_rag.py", repo="polarizetech/x", session="b")
-    assert "Another session (a)" in out["relay"]
-    assert "own git worktree" in out["relay"]
+    assert "Another session (a)" in out["relay_full"]
+    assert "own git worktree" in out["relay_full"]
     alone = rig.ask("Fix the docs in README.md", repo="polarizetech/x", session="b")
-    assert "Overlap" not in alone["relay"]  # different files, and its own earlier request
+    assert "Overlap" not in alone["relay_full"]  # different files, and its own earlier request
 
 
 # -- research corpus --------------------------------------------------------------------------
@@ -495,7 +497,7 @@ def test_corpus_missing_lets_research_continue_with_propagation_pending(tmp_path
     assert_contract(rig.ask("research: is pink noise safe?"), "needs_decision", "corpus")
     out = rig.ask("research: is pink noise safe?", decisions={"corpus": "fallback"})
     assert out["status"] == "degraded"
-    assert "evidence propagation is left pending" in out["relay"]
+    assert "evidence propagation is left pending" in out["relay_full"]
     assert [c[0] for c in rig.calls].count("pipeline__research_start") == 1
 
 
@@ -616,7 +618,7 @@ def test_the_relay_ends_with_the_request_id_and_usage_line(tmp_path: Path) -> No
     rig = Rig(tmp_path)
     rig.hub.meters.all()
     out = rig.ask("What is pink noise?")
-    last = out["relay"].splitlines()[-1]
+    last = out["relay_full"].splitlines()[-1]
     assert last.startswith(f"_Request `{out['request_id']}` · Usage: OpenRouter: $20.00 left")
 
 
@@ -762,7 +764,9 @@ def test_the_gateway_lists_hub_tools_and_asks_through_the_contract(tmp_path: Pat
             out = asked.structuredContent or {}
             assert out["status"] == "needs_decision"
             assert out["error"]["component"] == "library"
-            assert out["relay"].startswith("**Your choice is needed: the paper library failed.**")
+            assert out["relay_full"].startswith(
+                "**Your choice is needed: the paper library failed.**"
+            )
 
             status = (await session.call_tool("hub__status", {})).structuredContent or {}
             assert [r["id"] for r in status["active"]] == [out["request_id"]]
