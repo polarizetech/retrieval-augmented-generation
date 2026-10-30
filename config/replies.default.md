@@ -94,6 +94,8 @@ The research pipeline's finished answer.
 Blocks:
   question     the question
   bottom_line  the verified summary, or why there is none
+  thin         why the answer is thin, cause by cause with what would change it (a bullet list;
+               empty when the answer is not thin)
   risk         strictness, verifier and claim counts, risk flags (a bullet list)
   findings     verified claims under each sub-question, with [n] source marks
   conflicts    disagreeing sources and the search for null results
@@ -107,6 +109,12 @@ Blocks:
 ## Bottom line
 
 {{bottom_line}}
+{{#thin}}
+
+## Why this answer is thin
+
+{{thin}}
+{{/thin}}
 {{#risk}}
 
 ## Verification risk
