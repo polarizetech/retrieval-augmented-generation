@@ -60,9 +60,14 @@ is chosen by `pipeline__profile_route`, or by the operator's own words. The word
 shape. Its lists are added to the defaults, and a `[profiles]` entry names the specialist its
 words pick. The file is read on every call, so edits apply without a restart.
 
-`ask` returns `relay`, a Markdown block for the client to show unchanged. It says what ran and why,
-lists the passages with their evidence ids, and ends with a Limits line. Anything the client adds
-goes after it, labelled as its own. The gateway does not make code changes itself yet: on the code
+`ask` returns `relay`, a short Markdown block for the client to show unchanged: three lists of one
+sentence per item, **Results** (what came back, any problem, and the main limit), **Next** (what
+the assistant does next) and, only when the person has something to do, **For you**. The detail
+(what ran and why, the passages with their evidence ids, the Limits line, the request id and
+usage) is `relay_full`, which the client shows only when the person asks for more; the passages
+also come back in `results` for the assistant to ground its answer in. Anything the client adds
+goes after the relay, labelled as its own. A finished research run works the same way: its short
+`relay`, and the full `answer` on request. The gateway does not make code changes itself yet: on the code
 route it gives context and names the tools, and the assistant makes the change.
 
 ## The hub: ledger, failures and usage
@@ -101,7 +106,7 @@ today, this week and this month, burn per day and projected run-out), NEAR AI (n
 organisation id and a reporting token in `~/.config/polarize/nearai-reporting.env`; the API key is
 refused), local Ollama (up, installed, loaded), and says which plans it cannot read (Claude,
 ChatGPT). Readings are cached for five minutes, and each relay ends with a one-line readout from
-the cache, so a reply never waits on a provider.
+the cache, so a reply never waits on a provider (in the full reply, `relay_full`).
 
 **Provider ladders.** `config/hub.default.toml` (your own values in the gitignored
 `config/hub.toml`) gives each pipeline step its providers in order: planning, extraction and
@@ -112,8 +117,10 @@ strictness and claims are marked unverified. Inside a run, a failing or low prov
 step down at once and the run log's notes say so; before a run starts, `ask` checks the ladder
 and asks the session once, as above.
 
-**Reply layout.** How replies look is set by `config/replies.default.md`: the quick `ask` reply,
-the reply while a request is queued or working, and the research pipeline's finished answer. To
+**Reply layout.** How replies look is set by `config/replies.default.md`: the `ask` reply, the
+reply while a request is queued or working, and the research pipeline's finished answer, each in
+a short form (`ask`, `pending`, `answer_short`) and a full one (`ask_full`, `pending_full`,
+`answer`). To
 change one, copy the file to the gitignored `config/replies.md` and edit it; a template left out
 of your copy keeps the default. `{{name}}` places a block (passages, steps, limits, sources and so
 on; the file lists them), and `{{#name}}...{{/name}}` shows its inside only when that block has
