@@ -60,7 +60,7 @@ def test_the_default_templates_name_only_blocks_the_code_writes() -> None:
         },
         "pending": {"problems", "working", "seconds", "steps", "request", "usage", "footer"},
         "answer": {
-            "question", "bottom_line", "risk", "findings", "conflicts", "tools", "limits",
+            "question", "bottom_line", "thin", "risk", "findings", "conflicts", "tools", "limits",
             "sources", "footer",
         },
     }  # fmt: skip
