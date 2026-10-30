@@ -209,16 +209,36 @@ def _section(text: str, heading: str) -> str:
     return section if len(section) <= MAX_GUIDANCE_CHARS else ""
 
 
+def _source_root(path: Path) -> Path:
+    """The checkout that holds a referenced brief: the nearest parent with a .git entry."""
+    for parent in path.parents:
+        if (parent / ".git").exists():
+            return parent
+    return path.parent
+
+
 def load(root: Path) -> dict[str, Brief]:
+    """Read every brief in root/agents. A brief whose frontmatter names a `source` (a path relative to
+    root, e.g. ../aramaic-alphabet/agents/aramaic-translator.md) is a reference: the brief is read from
+    that file, which another repository maintains. A reference whose source is missing is skipped, so a
+    profile is never routed from a stale or absent copy."""
     briefs: dict[str, Brief] = {}
     for path in sorted((root / "agents").glob("*.md")):
         text = path.read_text()
         meta = _frontmatter(text)
         name = meta.get("name") or path.stem
+        brief_root = root
+        if meta.get("source"):
+            source = (root / Path(meta["source"]).expanduser()).resolve()
+            if not source.is_file():
+                continue
+            text, path = source.read_text(), source
+            brief_root = _source_root(source)
+            meta = {**_frontmatter(text), "name": name}
         briefs[name] = Brief(
             name=name,
             description=meta.get("description", ""),
-            root=root,
+            root=brief_root,
             path=path,
             sha256=hashlib.sha256(text.encode()).hexdigest(),
             extends=meta.get("extends", ""),
