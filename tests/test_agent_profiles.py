@@ -164,3 +164,38 @@ def test_the_command_line_routes_like_the_research_tool(
     route = seen["agent_route"]
     assert isinstance(route, dict)
     assert route["specialist"] == "auditory-evoked-potentials"
+
+
+def test_a_reference_brief_is_read_from_its_source_repository(tmp_path: Path) -> None:
+    public, private, study = tmp_path / "public", tmp_path / "private", tmp_path / "study"
+    _brief(public, "researcher", "literature evidence researcher")
+    (study / ".git").mkdir(parents=True)
+    (study / "agents").mkdir()
+    (study / "agents" / "aramaic-translator.md").write_text(
+        "---\nname: aramaic-translator\n"
+        "description: Use first for Aramaic translation into English with every meaning.\n"
+        "extends: researcher\n---\n"
+        "Positive routing examples:\n\n- Translate this Aramaic phrase into English.\n\n"
+        "## Pipeline guidance\n\nReport every plausible sense.\n"
+    )
+    (private / "agents").mkdir(parents=True)
+    (private / "agents" / "aramaic-translator.md").write_text(
+        "---\nname: aramaic-translator\nextends: researcher\n"
+        "source: ../study/agents/aramaic-translator.md\n---\nMaintained in the study.\n"
+    )
+    result = route("Translate this Aramaic phrase into English", public, extensions_root=private)
+    assert result["specialist"] == "aramaic-translator"
+    profile = next(p for p in result["profiles"] if p["name"] == "aramaic-translator")
+    assert profile["repository"] == str(study.resolve())
+    assert profile["path"] == "agents/aramaic-translator.md"
+
+
+def test_a_reference_with_a_missing_source_is_skipped(tmp_path: Path) -> None:
+    public, private = tmp_path / "public", tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    (private / "agents").mkdir(parents=True)
+    (private / "agents" / "aramaic-translator.md").write_text(
+        "---\nname: aramaic-translator\nextends: researcher\nsource: ../absent/a.md\n---\n"
+    )
+    result = route("Translate this Aramaic phrase", public, extensions_root=private)
+    assert result["specialist"] is None
