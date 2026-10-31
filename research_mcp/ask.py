@@ -616,20 +616,19 @@ class Asker:
                 retry_after=max(30, round(wait)),
             )
         status = problem.status if problem else "working"
-        blocks = {
-            "problems": problem.plain() if problem else "",
-            "working": "" if problem else f"**Still working after {seconds} s.** {after}",
-            "seconds": str(seconds),
-            "steps": "\n".join(f"- {p}" for p in progress),
-            "results": replies.bullets(
-                [problem.short() if problem else f"Still working after {seconds} s."]
-            ),
-            "next": replies.bullets(["The request keeps running on the gateway."]),
-            "for_you": replies.bullets([f"Ask for the answer when you want it (request `{rid}`)."]),
-            **_footer(rid, hub.meters.line()),
-        }
-        text = replies.render("pending", blocks)
-        full = replies.render("pending_full", blocks)
+        footer = _footer(rid, hub.meters.line())
+        text = replies.short(
+            [problem.short() if problem else f"Still working after {seconds} s."],
+            ["The request keeps running on the gateway."],
+            [f"Ask for the answer when you want it (request `{rid}`)."],
+        )
+        full = replies.join(
+            problem.plain() if problem else f"**Still working after {seconds} s.** {after}",
+            f"**What the research tool did so far** ({seconds} s)\n"
+            + "\n".join(f"- {p}" for p in progress),
+            "**Limits:** Nothing is concluded yet; the answer comes through `hub__result`.",
+            footer and f"_{footer}_",
+        )
         hub.ledger.finish(rid, status, problems=[problem.as_dict()] if problem else None)
         out: dict[str, Any] = {
             "request_id": rid,
@@ -863,17 +862,12 @@ def relay(
     request_id: str = "",
     full: bool = False,
 ) -> str:
-    """The block the chat model shows unchanged, laid out by the `ask` template in
-    config/replies.default.md (or the operator's config/replies.md): by default problems first,
-    then what ran, why, what came back, and its limits; last, the request id and usage."""
+    """The block the chat model shows unchanged. Short (the default): three lists from
+    `_short`. Full: problems first, then what ran, what came back, and its limits; last, the
+    request id and usage."""
+    if not full:
+        return replies.short(*_short(route, spec, results, problems, request_id))
     blocks: dict[str, str] = {
-        "problems": "\n\n".join(p.plain() for p in problems),
-        "route": route.mode,
-        "question": route.question,
-        "seconds": str(seconds),
-        "steps": "\n".join(f"- {p}" for p in progress),
-        "specialist": str(spec.get("name") or ""),
-        "guidance": str(spec.get("guidance") or "") if route.mode != "research" else "",
         "passages": "",
         "passages_none": "",
         "excluded": "",
@@ -925,10 +919,26 @@ def relay(
     }[route.mode]
     if any(p.status == "needs_decision" for p in problems):
         limits = "Nothing was concluded: the request stopped to ask how to handle a failure."
-    blocks["limits"] = limits
-    blocks.update(_short(route, spec, results, problems, request_id))
-    blocks.update(_footer(request_id, usage))
-    return replies.render("ask_full" if full else "ask", blocks)
+    guidance = str(spec.get("guidance") or "") if route.mode != "research" else ""
+    footer = _footer(request_id, usage)
+    passages = ""
+    if blocks["passages"]:
+        passages = replies.join(f"**Passages**\n{blocks['passages']}", blocks["excluded"])
+    elif blocks["passages_none"]:
+        passages = replies.join(f"**Passages:** {blocks['passages_none']}", blocks["excluded"])
+    return replies.join(
+        "\n\n".join(p.plain() for p in problems),
+        f"**What the research tool did** ({seconds} s)\n" + "\n".join(f"- {p}" for p in progress),
+        guidance and f"**{spec.get('name') or ''} guidance:** {guidance}",
+        passages,
+        blocks["search"]
+        and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
+        + blocks["search"],
+        blocks["research"],
+        blocks["coder"],
+        f"**Limits:** {limits}",
+        footer and f"_{footer}_",
+    )
 
 
 def _short(
@@ -937,7 +947,7 @@ def _short(
     results: dict[str, Any],
     problems: list[Problem] | tuple[Problem, ...],
     request_id: str,
-) -> dict[str, str]:
+) -> tuple[list[str], list[str], list[str]]:
     """The short reply's three lists, one sentence per item: what came back, what the assistant
     does next, and what the person needs to do (often nothing)."""
     got: list[str] = [p.short() for p in problems]
@@ -1005,16 +1015,12 @@ def _short(
     )
     if stopped:
         nxt = ["Waiting for your choice."]
-    return {
-        "results": replies.bullets(got),
-        "next": replies.bullets(nxt),
-        "for_you": replies.bullets(you),
-    }
+    return got, nxt, you
 
 
-def _footer(request_id: str, usage: str) -> dict[str, str]:
-    footer = " · ".join(x for x in (request_id and f"Request `{request_id}`", usage) if x)
-    return {"request": request_id, "usage": usage, "footer": footer}
+def _footer(request_id: str, usage: str) -> str:
+    """The request id and usage, as one line."""
+    return " · ".join(x for x in (request_id and f"Request `{request_id}`", usage) if x)
 
 
 def parse_tool_text(result: Any) -> dict[str, Any]:
