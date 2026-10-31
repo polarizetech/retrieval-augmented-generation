@@ -4,7 +4,6 @@ config/mcp-gateway.json
 config/.mcp-token
 config/routing.toml
 config/hub.toml
-config/replies.md
 config/reuse-catalogue.toml
 
 # Runtime state
