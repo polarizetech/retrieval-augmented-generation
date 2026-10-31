@@ -10,12 +10,53 @@ next reply, with no restart.
 
 Code still writes every block, so passages, quotes, evidence ids and sources stay exactly as
 retrieved. Templates choose which blocks appear, their order and their headings. Leaving out
-{{limits}} or {{problems}} hides what went wrong or what an answer can't support, so keep them.
+{{limits}} or {{problems}} from a full layout hides what went wrong or what an answer can't
+support, so keep them. The short layouts carry problems and the main limit as one sentence each
+in {{results}}.
 -->
 
 <!-- template: ask -->
 <!--
-The quick reply from `ask` (passages, a research run started, or coder context).
+The reply from `ask` that the person sees: three short lists, one sentence per item. The full
+layout (passages, steps, limits) is `ask_full` below, sent as `relay_full` and shown only when the
+person asks for more. The passages reach the assistant in `results` either way.
+Blocks:
+  results      what came back, problems and the main limit first and last
+  next         what the assistant does next
+  for_you      what the person needs to do; usually empty, so the heading goes too
+Every block of `ask_full` works here as well.
+-->
+**Results**
+{{results}}
+
+**Next**
+{{next}}
+{{#for_you}}
+
+**For you**
+{{for_you}}
+{{/for_you}}
+
+<!-- template: pending -->
+<!--
+The short reply at the 45-second deadline, while the request is queued or still working.
+Blocks: results, next, for_you (as in `ask`), and every block of `pending_full`.
+-->
+**Results**
+{{results}}
+
+**Next**
+{{next}}
+{{#for_you}}
+
+**For you**
+{{for_you}}
+{{/for_you}}
+
+<!-- template: ask_full -->
+<!--
+The full reply from `ask` (passages, a research run started, or coder context), shown when the
+person asks for more.
 Blocks:
   problems     what failed or degraded, and the fallback used (first, so it isn't missed)
   route        quick, research or code
@@ -72,9 +113,9 @@ Blocks:
 
 {{#footer}}_{{footer}}_{{/footer}}
 
-<!-- template: pending -->
+<!-- template: pending_full -->
 <!--
-The reply at the 45-second deadline, while the request is queued or still working.
+The full reply at the 45-second deadline, while the request is queued or still working.
 Blocks: problems (queued, with position and wait), working (the "still working" line when not
 queued), seconds, steps, request, usage, footer.
 -->
@@ -88,12 +129,35 @@ queued), seconds, steps, request, usage, footer.
 
 {{#footer}}_{{footer}}_{{/footer}}
 
+<!-- template: answer_short -->
+<!--
+A finished research answer as the person first sees it: three short lists. The full answer
+(`answer` below, saved as answer.md) is shown when the person asks.
+Blocks:
+  results      the bottom line, a sentence per item, and how many claims passed
+  next         what the assistant does next
+  for_you      what the person needs to do; usually empty
+  question     the question
+-->
+**Results**
+{{results}}
+
+**Next**
+{{next}}
+{{#for_you}}
+
+**For you**
+{{for_you}}
+{{/for_you}}
+
 <!-- template: answer -->
 <!--
-The research pipeline's finished answer.
+The research pipeline's full finished answer (answer.md), with its findings, sources and limits.
 Blocks:
   question     the question
   bottom_line  the verified summary, or why there is none
+  thin         why the answer is thin, cause by cause with what would change it (a bullet list;
+               empty when the answer is not thin)
   risk         strictness, verifier and claim counts, risk flags (a bullet list)
   findings     verified claims under each sub-question, with [n] source marks
   conflicts    disagreeing sources and the search for null results
@@ -107,6 +171,12 @@ Blocks:
 ## Bottom line
 
 {{bottom_line}}
+{{#thin}}
+
+## Why this answer is thin
+
+{{thin}}
+{{/thin}}
 {{#risk}}
 
 ## Verification risk

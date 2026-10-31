@@ -24,6 +24,7 @@ from research_mcp.hub.contract import (
     NO_FALLBACK,
     RESTART_HINT,
     Problem,
+    first_sentence,
     needs_decision,
 )
 from research_mcp.hub.health import Hub
@@ -615,16 +616,20 @@ class Asker:
                 retry_after=max(30, round(wait)),
             )
         status = problem.status if problem else "working"
-        text = replies.render(
-            "pending",
-            {
-                "problems": problem.plain() if problem else "",
-                "working": "" if problem else f"**Still working after {seconds} s.** {after}",
-                "seconds": str(seconds),
-                "steps": "\n".join(f"- {p}" for p in progress),
-                **_footer(rid, hub.meters.line()),
-            },
-        )
+        blocks = {
+            "problems": problem.plain() if problem else "",
+            "working": "" if problem else f"**Still working after {seconds} s.** {after}",
+            "seconds": str(seconds),
+            "steps": "\n".join(f"- {p}" for p in progress),
+            "results": replies.bullets(
+                [problem.short() if problem else f"Still working after {seconds} s."]
+            ),
+            "next": replies.bullets(["The request keeps running on the gateway."]),
+            "for_you": replies.bullets([f"Ask for the answer when you want it (request `{rid}`)."]),
+            **_footer(rid, hub.meters.line()),
+        }
+        text = replies.render("pending", blocks)
+        full = replies.render("pending_full", blocks)
         hub.ledger.finish(rid, status, problems=[problem.as_dict()] if problem else None)
         out: dict[str, Any] = {
             "request_id": rid,
@@ -634,9 +639,11 @@ class Asker:
             "progress": list(progress),
             "seconds": seconds,
             "relay": text,
+            "relay_full": full,
             "relay_instructions": (
-                "Show `relay` to the person exactly as written. Then call hub__result with "
-                "request_id when the person wants the answer."
+                "Show `relay` to the person exactly as written. Show `relay_full` only when the "
+                "person asks for more detail. Call hub__result with request_id when the person "
+                "wants the answer."
             ),
         }
         if problem is not None:
@@ -780,9 +787,13 @@ class Asker:
         if status == "done" and "research" in results:
             status = "working"
         usage = self.hub.meters.line() if self.hub is not None else ""
-        text = relay(
-            route, spec, progress, results, seconds, problems=problems, usage=usage, request_id=rid
-        )
+        text, full = (
+            relay(
+                route, spec, progress, results, seconds, problems=problems, usage=usage,
+                request_id=rid, full=f,
+            )
+            for f in (False, True)
+        )  # fmt: skip
         out: dict[str, Any] = {
             "request_id": rid or None,
             "status": status,
@@ -792,9 +803,13 @@ class Asker:
             "seconds": seconds,
             "results": results,
             "relay": text,
+            "relay_full": full,
             "relay_instructions": (
-                "Show `relay` to the person exactly as written. Add anything of your own only "
-                "after it, under a heading that says it is yours. Do not add facts from memory."
+                "Show `relay` to the person exactly as written. It is short on purpose: show "
+                "`relay_full` (passages, steps, limits) only when the person asks for more. The "
+                "passages are in `results` either way, for grounding your answer. Add anything of "
+                "your own only after it, under a heading that says it is yours. Do not add facts "
+                "from memory."
             ),
         }
         if worst is not None:
@@ -809,7 +824,7 @@ class Asker:
                 status,
                 seconds=seconds,
                 problems=[p.as_dict() for p in problems] or None,
-                result={"relay": text, "status": status},
+                result={"relay": text, "relay_full": full, "status": status},
                 run_id=str(run_id) if run_id else None,
                 attached_to=research.get("attached_to"),
             )
@@ -846,6 +861,7 @@ def relay(
     problems: list[Problem] | tuple[Problem, ...] = (),
     usage: str = "",
     request_id: str = "",
+    full: bool = False,
 ) -> str:
     """The block the chat model shows unchanged, laid out by the `ask` template in
     config/replies.default.md (or the operator's config/replies.md): by default problems first,
@@ -910,8 +926,90 @@ def relay(
     if any(p.status == "needs_decision" for p in problems):
         limits = "Nothing was concluded: the request stopped to ask how to handle a failure."
     blocks["limits"] = limits
+    blocks.update(_short(route, spec, results, problems, request_id))
     blocks.update(_footer(request_id, usage))
-    return replies.render("ask", blocks)
+    return replies.render("ask_full" if full else "ask", blocks)
+
+
+def _short(
+    route: Route,
+    spec: dict[str, Any],
+    results: dict[str, Any],
+    problems: list[Problem] | tuple[Problem, ...],
+    request_id: str,
+) -> dict[str, str]:
+    """The short reply's three lists, one sentence per item: what came back, what the assistant
+    does next, and what the person needs to do (often nothing)."""
+    got: list[str] = [p.short() for p in problems]
+    nxt: list[str] = []
+    you: list[str] = [p.ask_person() for p in problems]
+    stopped = any(p.status == "needs_decision" for p in problems)
+    found = results.get("evidence")
+    if found is not None:
+        rows = found.get("results", [])
+        if rows:
+            papers = {r.get("doi") or r.get("title") for r in rows}
+            top = rows[0]
+            where = ", ".join(str(x) for x in (top.get("title"), top.get("year")) if x)
+            got.append(
+                f"Found {len(rows)} passage(s) from {len(papers)} paper(s)"
+                + (f"; the closest is from {where}." if where else ".")
+            )
+            nxt.append("The assistant answers from these passages and cites their evidence ids.")
+        else:
+            got.append("No passage in the library matched.")
+            nxt.append("The assistant says no passage applies before answering any other way.")
+        if found.get("excluded"):
+            got.append(
+                f"{len(found['excluded'])} passage(s) were left out by the safety or "
+                "retraction check."
+            )
+    hits = results.get("search")
+    if hits is not None:
+        got.append(
+            f"Found {len(hits.get('results', []))} paper title(s) in the scholarly indexes, "
+            "which can't be cited."
+        )
+        nxt.append("The assistant says no passage applies before answering any other way.")
+    run = results.get("research")
+    if run is not None and run.get("attached_to"):
+        got.append(
+            f"Joined request `{run['attached_to']}`, already running on the same question, "
+            "instead of starting a second run."
+        )
+    elif run is not None:
+        got.append(f"Started research run `{run.get('run_id')}` ({run.get('status')}).")
+    if run is not None:
+        nxt.append(
+            "The run carries on; the assistant fetches its answer with `hub__result`"
+            + (f" (`{request_id}`)." if request_id else ".")
+        )
+    coder = results.get("coder")
+    if coder:
+        got.append("Gathered context for the change; the gateway doesn't edit code itself.")
+        if coder.get("overlap"):
+            got.append(first_sentence(coder["overlap"]))
+        nxt.append(
+            "The assistant reads the files, then makes the change locally or as a pull request."
+        )
+    if spec.get("name") and route.mode != "research":
+        got.append(f"Specialist: {spec['name']}.")
+    got.append(
+        "Nothing was concluded."
+        if stopped
+        else {
+            "quick": "These are passages, not a checked answer.",
+            "research": "Nothing is concluded until the run finishes.",
+            "code": "The change isn't made or tested yet.",
+        }[route.mode]
+    )
+    if stopped:
+        nxt = ["Waiting for your choice."]
+    return {
+        "results": replies.bullets(got),
+        "next": replies.bullets(nxt),
+        "for_you": replies.bullets(you),
+    }
 
 
 def _footer(request_id: str, usage: str) -> dict[str, str]:
