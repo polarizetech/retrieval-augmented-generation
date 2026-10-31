@@ -969,6 +969,7 @@ class Pipeline:
             self.policy,
             companions=self.companions,
             risk=risk,
+            max_fetch=self.s.max_fetch,
         )
         log = {
             "pipeline_version": __version__,
@@ -1003,8 +1004,17 @@ class Pipeline:
                 "requested": st.requests,
                 "results": st.companions,
             },
+            # Credentials never reach the run log: the log is a plain file anyone with the folder
+            # can read, and runs are shared as evidence.
             "settings": {
-                k: (str(v) if not isinstance(v, (int, str)) else v) for k, v in vars(self.s).items()
+                k: (
+                    ("set" if v else "")
+                    if any(s in k for s in ("key", "token", "secret", "password"))
+                    else str(v)
+                    if not isinstance(v, (int, str))
+                    else v
+                )
+                for k, v in vars(self.s).items()
             },
             "index": self.index_stats,
             "plan": to_json(st.plan),

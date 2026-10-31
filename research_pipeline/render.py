@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from . import replies
+from . import replies, thin
 from .domains import GENERIC, DomainPolicy
 from .schema import source_status
 from .verify import VERDICT_NUMBERS, VERDICT_UNCHECKED
@@ -41,6 +41,7 @@ def render(
     *,
     companions: Mapping[str, Companion] | None = None,
     risk: dict[str, Any] | None = None,
+    max_fetch: int | None = None,
 ) -> str:
     """`library`: what the paper library said about each cited work (title, year, doi, authors)."""
     assert st.plan
@@ -74,7 +75,11 @@ def render(
     ]
     unchecked = [c for c in st.claims if c.verdict == VERDICT_UNCHECKED]
     wrong_numbers = [c for c in st.claims if c.verdict == VERDICT_NUMBERS]
-    blocks: dict[str, str] = {"question": st.question, "bottom_line": bottom_line(st)}
+    blocks: dict[str, str] = {
+        "question": st.question,
+        "bottom_line": bottom_line(st),
+        "thin": "\n".join(f"- {line}" for line in thin.diagnose(st, max_fetch=max_fetch)),
+    }
 
     def take(name: str) -> None:
         """Store what was written since the last block as `name`, and start the next."""

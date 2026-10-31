@@ -88,13 +88,13 @@ def test_slow_work_answers_working_at_the_deadline_and_finishes_into_the_ledger(
         out = await rig.asker.ask("What is pink noise?", session="s1")
         assert time.monotonic() - started < 0.5
         assert out["status"] == "working"
-        assert out["relay"].startswith("**Still working after")
-        assert f"`hub__result` with id `{out['request_id']}`" in out["relay"]
+        assert out["relay_full"].startswith("**Still working after")
+        assert f"`hub__result` with id `{out['request_id']}`" in out["relay_full"]
         assert (rig.ledger.get(out["request_id"]) or {})["status"] == "working"
         await settle(rig)
         row = rig.ledger.get(out["request_id"]) or {}
         assert row["status"] == "done"
-        assert "**Passages**" in row["result"]["relay"]
+        assert "**Passages**" in row["result"]["relay_full"]
 
     asyncio.run(go())
 
@@ -111,7 +111,7 @@ def test_a_busy_retrieval_lane_answers_queued_with_position_and_estimate(tmp_pat
         queued = [o for o in outs if o["status"] == "queued"]
         assert len(queued) == 1
         assert queued[0]["error"]["component"] == "queue"
-        assert "Retrieval is busy (2 at a time): position 1 in line" in queued[0]["relay"]
+        assert "Retrieval is busy (2 at a time): position 1 in line" in queued[0]["relay_full"]
         assert queued[0]["error"]["retry_after"] >= 5
         await settle(rig)
         assert all((rig.ledger.get(o["request_id"]) or {})["status"] == "done" for o in outs)
@@ -127,7 +127,7 @@ def test_low_memory_holds_retrieval_and_says_so(tmp_path: Path) -> None:
     async def go() -> None:
         out = await rig.asker.ask("What is pink noise?", session="s1")
         assert out["status"] == "queued"
-        assert "Memory is low, so heavy work waits." in out["relay"]
+        assert "Memory is low, so heavy work waits." in out["relay_full"]
         rig.free_memory = 60
         await settle(rig)
         assert (rig.ledger.get(out["request_id"]) or {})["status"] == "done"
@@ -145,7 +145,7 @@ def test_a_full_pipeline_queues_research_and_starts_it_when_a_slot_frees(tmp_pat
     async def go() -> None:
         out = await rig.asker.ask("research: is pink noise safe?", session="s1")
         assert out["status"] == "queued"
-        assert "Position 1 in line" in out["relay"]
+        assert "Position 1 in line" in out["relay_full"]
         await settle(rig)
         row = rig.ledger.get(out["request_id"]) or {}
         assert row["status"] == "working"
@@ -164,8 +164,8 @@ def test_the_same_research_question_attaches_to_the_run_on_the_go(tmp_path: Path
     assert len(starts) == 1
     assert second["status"] == "working"
     assert second["results"]["research"]["attached_to"] == first["request_id"]
-    assert f"**Attached** to request `{first['request_id']}` (run `r1`)" in second["relay"]
-    assert "asked by session a" in second["relay"]
+    assert f"**Attached** to request `{first['request_id']}` (run `r1`)" in second["relay_full"]
+    assert "asked by session a" in second["relay_full"]
     # When the run finishes, both requests have its answer.
     rig.ledger.follow_run("r1", {"status": "done", "answer": "Maybe."})
     assert (rig.ledger.get(second["request_id"]) or {})["status"] == "done"
@@ -182,7 +182,7 @@ def test_a_paraphrase_attaches_and_a_near_question_runs_with_a_warning(tmp_path:
     first = rig.ask("research: does pink noise improve sleep?", session="a")
     para = rig.ask("research: can pink noise help people sleep better?", session="b")
     assert para["results"]["research"]["attached_to"] == first["request_id"]
-    assert "bge-m3 similarity" in para["relay"]
+    assert "bge-m3 similarity" in para["relay_full"]
 
     near = rig.ask("research: does brown noise improve sleep?", session="c")
     assert "attached_to" not in near["results"]["research"]
