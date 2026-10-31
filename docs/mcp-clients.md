@@ -117,16 +117,12 @@ strictness and claims are marked unverified. Inside a run, a failing or low prov
 step down at once and the run log's notes say so; before a run starts, `ask` checks the ladder
 and asks the session once, as above.
 
-**Reply layout.** How replies look is set by `config/replies.default.md`: the `ask` reply, the
-reply while a request is queued or working, and the research pipeline's finished answer, each in
-a short form (`ask`, `pending`, `answer_short`) and a full one (`ask_full`, `pending_full`,
-`answer`). To
-change one, copy the file to the gitignored `config/replies.md` and edit it; a template left out
-of your copy keeps the default. `{{name}}` places a block (passages, steps, limits, sources and so
-on; the file lists them), and `{{#name}}...{{/name}}` shows its inside only when that block has
-something in it. Code still writes every block, so quotes, evidence ids and sources are never
-retyped; the template only picks order, headings and what appears. Edits show on the next reply,
-with no restart.
+**Reply layout.** Replies are plain text built in code (`research_pipeline/replies.py`); there are
+no templates to edit. The `ask` reply, the reply while a request is queued or working, and the
+finished research answer each come short and full. The short one is up to three lists, one short
+sentence per item: **Results**, **Next**, and **For you** only when the person has something to do.
+The full one (passages, steps, limits, sources) is sent alongside and shown only when the person
+asks.
 
 **Queues and deadlines (phase 2).** Every `ask` answers within 45 s (`[deadlines]` in the hub
 config). Work that takes longer carries on and replies `working`, or `queued` with its position and
