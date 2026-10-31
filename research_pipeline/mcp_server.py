@@ -342,13 +342,7 @@ def short_answer(log: dict[str, Any]) -> str:
         + (f", from {len(sources)} source(s)." if sources else ".")
     )
     got.append("Findings, sources and limits are in the full answer.")
-    blocks = {
-        "question": str(log.get("question", "")),
-        "results": replies.bullets(got),
-        "next": replies.bullets(["Nothing else runs; this research request is done."]),
-        "for_you": "",
-    }
-    return replies.render("answer_short", blocks)
+    return replies.short(got, ["Nothing else runs; this research request is done."])
 
 
 def _result(log: dict[str, Any]) -> dict[str, Any]:
