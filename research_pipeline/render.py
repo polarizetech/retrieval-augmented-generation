@@ -302,12 +302,33 @@ def render(
         f"{len(st.searches)} searches, {len(st.evidence)} evidence passages, "
         f"{len(kept)}/{len(st.claims)} claims kept.*"
     )
-    return replies.render("answer", blocks) + "\n"
+    return _answer(blocks) + "\n"
+
+
+def _answer(b: Mapping[str, str]) -> str:
+    """The finished answer (answer.md): its sections in a fixed order; empty optional ones go."""
+
+    def section(title: str, key: str, always: bool = True) -> str:
+        body = b.get(key, "").strip("\n")
+        return f"## {title}\n\n{body}" if body or always else ""
+
+    return replies.join(
+        f"# {b.get('question', '')}",
+        section("Bottom line", "bottom_line"),
+        section("Why this answer is thin", "thin", always=False),
+        section("Verification risk", "risk", always=False),
+        section("Findings", "findings"),
+        section("Conflicting or negative evidence", "conflicts"),
+        b.get("tools", ""),
+        section("Limits of this answer", "limits"),
+        section("Sources", "sources"),
+        b.get("footer", ""),
+    )
 
 
 def bottom_line(st: State) -> str:
     """The verified summary, or why there is none. Stored in the run log on its own, so the
-    session capsule doesn't depend on how the answer template lays the answer out."""
+    session capsule doesn't depend on how the answer is laid out."""
     bottom = [s for s in st.summary if s["kept"]]
     if bottom:
         return " ".join(s["text"] for s in bottom)
