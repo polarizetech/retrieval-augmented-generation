@@ -61,7 +61,7 @@ def test_a_question_runs_one_retrieval_and_nothing_else(tmp_path: Path) -> None:
     assert out["route"]["mode"] == "quick"
     assert out["specialist"]["name"] == "noise-engineering"
     assert set(out["results"]) == {"evidence"}
-    relay = out["relay"]
+    relay = out["relay_full"]
     for part in ("Route: quick", "`W1#p0.abcdef12`", "Name the domain.", "**Limits:**"):
         assert part in relay
 
@@ -79,7 +79,7 @@ def test_an_evidence_question_starts_the_pipeline_without_retrieving_twice(tmp_p
             {"question": "What does the evidence say about pink noise?", "strictness": "explore"},
         )
     ]
-    assert "Research run** `r1`" in out["relay"]
+    assert "Research run** `r1`" in out["relay_full"]
 
 
 def test_a_code_task_recruits_the_coder_with_context(tmp_path: Path) -> None:
@@ -90,14 +90,14 @@ def test_a_code_task_recruits_the_coder_with_context(tmp_path: Path) -> None:
     assert [c[0] for c in calls] == ["retrieve"]
     assert calls[0][1][1] == 3  # fewer passages: context, not an answer
     assert out["results"]["coder"]["runs_on"] == "client"
-    assert "**Coder:**" in out["relay"]
+    assert "**Coder:**" in out["relay_full"]
 
 
 def test_a_plain_code_task_skips_retrieval(tmp_path: Path) -> None:
     calls: list[tuple[str, Any]] = []
     out = asyncio.run(asker(tmp_path, calls).ask("Fix the failing test in tests/test_rag.py"))
     assert calls == []  # the library holds papers, not code: nothing to retrieve
-    assert "Retrieval: skipped" in out["relay"]
+    assert "Retrieval: skipped" in out["relay_full"]
     assert out["results"]["coder"]["runs_on"] == "client"
 
 

@@ -104,6 +104,29 @@ class Problem:
             "retry_after": self.retry_after,
         }
 
+    def short(self) -> str:
+        """One sentence for the short reply's Results list."""
+        name = COMPONENTS.get(self.component, Component(self.component, "", "")).name
+        label = {
+            "needs_decision": "Stopped", "degraded": "Degraded", "failed": "Failed",
+            "refused": "Refused", "queued": "Queued",
+        }.get(self.status, self.status)  # fmt: skip
+        used = f"; used {self.fallback_used} instead" if self.status == "degraded" else ""
+        return f"{label}: {name} ({first_sentence(self.what_failed).rstrip('.')}){used}."
+
+    def ask_person(self) -> str:
+        """One sentence for the short reply's For you list, or empty when nothing is needed."""
+        if self.status != "needs_decision":
+            return ""
+        name = COMPONENTS.get(self.component, Component(self.component, "", "")).name
+        choices = " or ".join(f"`{o['choice']}`" for o in self.options)
+        rec = (
+            f" (recommended: {first_sentence(self.recommendation).rstrip('.')})"
+            if self.recommendation
+            else ""
+        )
+        return f"Choose {choices} for {name}{rec}."
+
     def plain(self) -> str:
         """Markdown lines in plain words, for the top of the relay block."""
         name = COMPONENTS.get(self.component, Component(self.component, "", "")).name
@@ -127,6 +150,15 @@ class Problem:
         label = {"failed": "Failed", "refused": "Refused", "queued": "Queued"}[self.status]
         nxt = f" Next: {self.recommendation}" if self.recommendation else ""
         return f"**{label}: {name}.** {self.what_failed} What it means: {self.impact}.{nxt}{retry}"
+
+
+def first_sentence(text: str) -> str:
+    """The first sentence of `text`, on one line."""
+    text = " ".join(str(text).split())
+    for i, ch in enumerate(text):
+        if ch in ".!?" and (i + 1 == len(text) or text[i + 1] == " ") and i > 2:
+            return text[: i + 1]
+    return text
 
 
 def decision_options(component: str, retry_after: int | None) -> list[dict[str, str]]:
