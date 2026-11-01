@@ -164,3 +164,23 @@ def test_the_command_line_routes_like_the_research_tool(
     route = seen["agent_route"]
     assert isinstance(route, dict)
     assert route["specialist"] == "auditory-evoked-potentials"
+
+
+def test_a_generic_part_of_a_profile_name_does_not_anchor_it(tmp_path: Path) -> None:
+    # Profiles without curated anchor terms are anchored by every distinctive part of their name.
+    _brief(tmp_path, "researcher", "general literature researcher")
+    for name, words in (
+        ("antenna-array-engineering", "antenna array beamforming element patterns coupling noise"),
+        ("noise-engineering", "noise colour spectral exponent coupling array"),
+    ):
+        agents = tmp_path / "agents"
+        (agents / f"{name}.md").write_text(
+            f"---\nname: {name}\ndescription: Use for {words}.\nextends: researcher\n---\n"
+            f"Positive routing examples:\n\n- {words}?\n"
+        )
+    question = "Ensemble with array-enhanced stochastic resonance and mean-field coupling of noise"
+    assert route(question, tmp_path)["specialist"] == "noise-engineering"
+    no_noise = route("Array-enhanced resonance with mean-field coupling", tmp_path)
+    assert no_noise["specialist"] is None
+    antenna = route("Embedded element patterns in phased antenna arrays", tmp_path)
+    assert antenna["specialist"] == "antenna-array-engineering"
