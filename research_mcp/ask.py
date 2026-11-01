@@ -39,6 +39,11 @@ from research_mcp.routing import (
 from research_pipeline import agent_profiles, replies
 from research_pipeline.papers import PapersError
 
+# The library's reranker (a bge-reranker cross-encoder) scores each passage as a logit; below 0 it
+# judges the passage more likely irrelevant than relevant. Passages under the floor are not shown,
+# so a request the library cannot answer gets "nothing relevant" rather than unrelated text. Applied
+# only when the library reports a reranker: without one the score is a fused rank on another scale.
+RELEVANCE_FLOOR = 0.0
 QUICK_PASSAGES = 5
 CODE_PASSAGES = 3
 EXCERPT = 320
@@ -722,12 +727,20 @@ class Asker:
             limit = QUICK_PASSAGES if route.mode == "quick" else CODE_PASSAGES
             t = time.monotonic()
             kind, found = await self._evidence(turn, route.question, limit)
+            if kind == "evidence":
+                found = apply_relevance_floor(found)
             results[kind] = found
             if kind == "evidence":
                 progress.append(
                     f"Retrieved {found.get('n', 0)} passage(s) ({found.get('retrieval', '?')}) in "
                     f"{time.monotonic() - t:.1f} s"
                 )
+                low = found.get("below_floor")
+                if low:
+                    progress.append(
+                        f"Left out {low['n']} passage(s) under the relevance floor "
+                        f"(reranker score < {low['floor']:g}; best {low['best_score']:.2f})"
+                    )
             else:
                 progress.append(
                     f"Searched the scholarly indexes instead: {len(found.get('results', []))} "
@@ -941,6 +954,29 @@ def relay(
     )
 
 
+def apply_relevance_floor(found: dict[str, Any]) -> dict[str, Any]:
+    """`found` without the passages the reranker scored under RELEVANCE_FLOOR, noting how many."""
+    if not found.get("reranker"):
+        return found
+    rows = found.get("results", [])
+
+    def scored_low(row: dict[str, Any]) -> bool:
+        score = row.get("score")
+        return isinstance(score, (int, float)) and score < RELEVANCE_FLOOR
+
+    dropped = [r for r in rows if scored_low(r)]
+    if not dropped:
+        return found
+    kept = [r for r in rows if not scored_low(r)]
+    best = max(float(r["score"]) for r in dropped)
+    return {
+        **found,
+        "results": kept,
+        "n": len(kept),
+        "below_floor": {"n": len(dropped), "floor": RELEVANCE_FLOOR, "best_score": best},
+    }
+
+
 def _short(
     route: Route,
     spec: dict[str, Any],
@@ -966,9 +1002,21 @@ def _short(
                 + (f"; the closest is from {where}." if where else ".")
             )
             nxt.append("The assistant answers from these passages and cites their evidence ids.")
+        elif found.get("below_floor"):
+            low = found["below_floor"]
+            got.append(
+                f"No passage was relevant enough to show: the {low['n']} closest scored at most "
+                f"{low['best_score']:.2f}, under the relevance floor of {low['floor']:g}."
+            )
+            nxt.append("The assistant says no passage applies before answering any other way.")
         else:
             got.append("No passage in the library matched.")
             nxt.append("The assistant says no passage applies before answering any other way.")
+        if rows and found.get("below_floor"):
+            got.append(
+                f"{found['below_floor']['n']} weaker passage(s) under the relevance floor were "
+                "left out."
+            )
         if found.get("excluded"):
             got.append(
                 f"{len(found['excluded'])} passage(s) were left out by the safety or "
