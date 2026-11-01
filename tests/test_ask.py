@@ -122,3 +122,52 @@ def test_upstream_text_is_parsed_and_errors_raise() -> None:
     assert parse_tool_text(Result('{"run_id": "r1"}')) == {"run_id": "r1"}
     with pytest.raises(ValueError, match="boom"):
         parse_tool_text(Result("boom", error=True))
+
+
+def _floor_asker(tmp_path: Path, scores: list[float], reranker: str | None = "onnx:bge") -> Asker:
+    async def retrieve(query: str, limit: int, max_chars: int) -> dict[str, Any]:
+        rows = [
+            {"evidence_id": f"W{i}#p0.abcdef12", "text": "t", "title": f"Paper {i}", "score": s}
+            for i, s in enumerate(scores)
+        ]
+        return {"retrieval": "hybrid", "reranker": reranker, "n": len(rows), "excluded": []} | {
+            "results": rows
+        }
+
+    async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    (tmp_path / "routing.toml").write_text("")
+    return Asker(
+        retrieve=retrieve,
+        call_tool=call_tool,
+        has_tool=lambda n: False,
+        rules_paths=(ROOT / "config" / "routing.default.toml", tmp_path / "routing.toml"),
+        profiles_dir=tmp_path / "none",
+        extensions_dir=tmp_path / "none",
+    )
+
+
+def test_passages_under_the_relevance_floor_are_not_shown(tmp_path: Path) -> None:
+    out = asyncio.run(_floor_asker(tmp_path, [-4.2, -4.3, -5.5]).ask("use the reg tool to audit"))
+    found = out["results"]["evidence"]
+    assert found["results"] == []
+    assert found["below_floor"] == {"n": 3, "floor": 0.0, "best_score": -4.2}
+    assert "No passage was relevant enough to show" in out["relay"]
+    assert "Found" not in out["relay"]
+
+
+def test_the_floor_keeps_relevant_passages_and_says_what_it_left_out(tmp_path: Path) -> None:
+    out = asyncio.run(
+        _floor_asker(tmp_path, [5.1, 0.4, -1.2]).ask("What is vibrational resonance?")
+    )
+    found = out["results"]["evidence"]
+    assert [r["score"] for r in found["results"]] == [5.1, 0.4]
+    assert found["n"] == 2
+    assert "1 weaker passage(s) under the relevance floor were left out." in out["relay"]
+
+
+def test_without_a_reranker_scores_are_ranks_and_no_floor_applies(tmp_path: Path) -> None:
+    out = asyncio.run(_floor_asker(tmp_path, [-0.1, -0.2], reranker=None).ask("What is noise?"))
+    assert len(out["results"]["evidence"]["results"]) == 2
+    assert "below_floor" not in out["results"]["evidence"]

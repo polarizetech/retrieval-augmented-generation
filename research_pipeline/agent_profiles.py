@@ -165,6 +165,29 @@ def _words(text: str) -> set[str]:
     return (tokens | {part for token in tokens for part in token.split("-")}) - STOPWORDS
 
 
+# Parts of a profile name that say what kind of work it is, not its subject. Without curated
+# anchor terms a profile is anchored by its name's other parts, all of them: "array" alone must not
+# recruit antenna-array-engineering for a question about array-enhanced stochastic resonance.
+GENERIC_NAME_PARTS = {
+    "analysis",
+    "analyst",
+    "engineer",
+    "engineering",
+    "research",
+    "researcher",
+    "science",
+    "scientist",
+    "specialist",
+}
+
+
+def _name_anchored(name: str, words: set[str]) -> bool:
+    parts = [p for p in name.split("-") if p and p not in GENERIC_NAME_PARTS]
+    if not parts:
+        return False
+    return all(p in words or f"{p}s" in words or f"{p}es" in words for p in parts)
+
+
 def _has_specialist_anchor(name: str, words: set[str]) -> bool:
     if name == "bone-conduction-auditory":
         return {"bone", "conduction"} <= words or "mastoid" in words
@@ -177,7 +200,9 @@ def _has_specialist_anchor(name: str, words: set[str]) -> bool:
             or {"compass", "ruler"} <= words
             or {"compass", "straightedge"} <= words
         )
-    return bool(words & SPECIALIST_TERMS.get(name, set(name.split("-"))))
+    if name in SPECIALIST_TERMS:
+        return bool(words & SPECIALIST_TERMS[name])
+    return _name_anchored(name, words)
 
 
 def _frontmatter(text: str) -> dict[str, str]:
