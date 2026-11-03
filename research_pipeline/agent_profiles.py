@@ -94,6 +94,19 @@ SPECIALIST_TERMS = {
         "signal-processing",
         "spectral",
     },
+    # Reference briefs (kept in the repository they serve) get curated anchors too: their names'
+    # parts are too strict ("translator", "nonlinear signal mixing") to anchor a natural question.
+    "aramaic-translator": {"aramaic", "syriac", "targum", "targums"},
+    "nonlinear-signal-mixing": {
+        "adler",
+        "arnold",
+        "hard-limiter",
+        "nonlinearity",
+        "polarity",
+        "polarity-only",
+        "righetti",
+        "teetering",
+    },
     "relative-mapping": {
         "azimuth",
         "bearing",
@@ -165,6 +178,29 @@ def _words(text: str) -> set[str]:
     return (tokens | {part for token in tokens for part in token.split("-")}) - STOPWORDS
 
 
+# Parts of a profile name that say what kind of work it is, not its subject. Without curated
+# anchor terms a profile is anchored by its name's other parts, all of them: "array" alone must not
+# recruit antenna-array-engineering for a question about array-enhanced stochastic resonance.
+GENERIC_NAME_PARTS = {
+    "analysis",
+    "analyst",
+    "engineer",
+    "engineering",
+    "research",
+    "researcher",
+    "science",
+    "scientist",
+    "specialist",
+}
+
+
+def _name_anchored(name: str, words: set[str]) -> bool:
+    parts = [p for p in name.split("-") if p and p not in GENERIC_NAME_PARTS]
+    if not parts:
+        return False
+    return all(p in words or f"{p}s" in words or f"{p}es" in words for p in parts)
+
+
 def _has_specialist_anchor(name: str, words: set[str]) -> bool:
     if name == "bone-conduction-auditory":
         return {"bone", "conduction"} <= words or "mastoid" in words
@@ -177,7 +213,9 @@ def _has_specialist_anchor(name: str, words: set[str]) -> bool:
             or {"compass", "ruler"} <= words
             or {"compass", "straightedge"} <= words
         )
-    return bool(words & SPECIALIST_TERMS.get(name, set(name.split("-"))))
+    if name in SPECIALIST_TERMS:
+        return bool(words & SPECIALIST_TERMS[name])
+    return _name_anchored(name, words)
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -218,28 +256,30 @@ def _source_root(path: Path) -> Path:
 
 
 def load(root: Path) -> dict[str, Brief]:
-    """Read every brief in root/agents. A brief whose frontmatter names a `source` (a path relative to
-    root, e.g. ../aramaic-alphabet/agents/aramaic-translator.md) is a reference: the brief is read from
-    that file, which another repository maintains. A reference whose source is missing is skipped, so a
+    """Read every brief in root/agents.
+
+    A brief whose frontmatter names a `source` (a path relative to root, e.g.
+    ../aramaic-alphabet/agents/aramaic-translator.md) is a reference: the brief is read from that
+    file, which another repository maintains. A reference whose source is missing is skipped, so a
     profile is never routed from a stale or absent copy."""
     briefs: dict[str, Brief] = {}
     for path in sorted((root / "agents").glob("*.md")):
         text = path.read_text()
         meta = _frontmatter(text)
         name = meta.get("name") or path.stem
-        brief_root = root
+        brief_root, brief_path = root, path
         if meta.get("source"):
             source = (root / Path(meta["source"]).expanduser()).resolve()
             if not source.is_file():
                 continue
-            text, path = source.read_text(), source
+            text, brief_path = source.read_text(), source
             brief_root = _source_root(source)
             meta = {**_frontmatter(text), "name": name}
         briefs[name] = Brief(
             name=name,
             description=meta.get("description", ""),
             root=brief_root,
-            path=path,
+            path=brief_path,
             sha256=hashlib.sha256(text.encode()).hexdigest(),
             extends=meta.get("extends", ""),
             guidance=_section(text, "Pipeline guidance"),

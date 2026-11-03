@@ -199,3 +199,43 @@ def test_a_reference_with_a_missing_source_is_skipped(tmp_path: Path) -> None:
     )
     result = route("Translate this Aramaic phrase", public, extensions_root=private)
     assert result["specialist"] is None
+
+
+def test_a_generic_part_of_a_profile_name_does_not_anchor_it(tmp_path: Path) -> None:
+    # Profiles without curated anchor terms are anchored by every distinctive part of their name.
+    _brief(tmp_path, "researcher", "general literature researcher")
+    for name, words in (
+        ("antenna-array-engineering", "antenna array beamforming element patterns coupling noise"),
+        ("noise-engineering", "noise colour spectral exponent coupling array"),
+    ):
+        agents = tmp_path / "agents"
+        (agents / f"{name}.md").write_text(
+            f"---\nname: {name}\ndescription: Use for {words}.\nextends: researcher\n---\n"
+            f"Positive routing examples:\n\n- {words}?\n"
+        )
+    question = "Ensemble with array-enhanced stochastic resonance and mean-field coupling of noise"
+    assert route(question, tmp_path)["specialist"] == "noise-engineering"
+    no_noise = route("Array-enhanced resonance with mean-field coupling", tmp_path)
+    assert no_noise["specialist"] is None
+    antenna = route("Embedded element patterns in phased antenna arrays", tmp_path)
+    assert antenna["specialist"] == "antenna-array-engineering"
+
+
+def test_a_reference_brief_is_anchored_by_its_curated_terms(tmp_path: Path) -> None:
+    public, private, study = tmp_path / "public", tmp_path / "private", tmp_path / "study"
+    _brief(public, "researcher", "literature evidence researcher")
+    (study / ".git").mkdir(parents=True)
+    (study / "agents").mkdir()
+    (study / "agents" / "nonlinear-signal-mixing.md").write_text(
+        "---\nname: nonlinear-signal-mixing\n"
+        "description: Use first for keyed polarity streams, Righetti adaptive phase oscillators, "
+        "Adler lock ranges and Arnold tongues.\nextends: researcher\n---\n"
+    )
+    (private / "agents").mkdir(parents=True)
+    (private / "agents" / "nonlinear-signal-mixing.md").write_text(
+        "---\nname: nonlinear-signal-mixing\nextends: researcher\n"
+        "source: ../study/agents/nonlinear-signal-mixing.md\n---\n"
+    )
+    question = "Derive the Adler lock range for a Righetti loop driven by the keyed polarity stream"
+    result = route(question, public, extensions_root=private)
+    assert result["specialist"] == "nonlinear-signal-mixing"
