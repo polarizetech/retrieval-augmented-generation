@@ -55,6 +55,13 @@ triggers = [
   "replicated", "replication", "consensus",
 ]
 
+[sky]
+# Words that also run sky__key (sky-clock's key and clock times) in any mode, beside the built-in
+# ones in research_mcp/sky.py ("sky key", "solar time", "lunar time", "moon time", "sunrise", ...).
+# The request needs decimal coordinates ("48.43, -123.37" or "lat 48.43 lon -123.37"); a time
+# (ISO, UTC) is optional and defaults to now.
+triggers = []
+
 [profiles]
 # Your own words for a specialist, added to its routing brief, e.g.
 # noise-engineering = ["hiss", "rumble", "entropy source"]
