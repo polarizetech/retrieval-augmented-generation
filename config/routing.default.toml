@@ -55,6 +55,15 @@ triggers = [
   "replicated", "replication", "consensus",
 ]
 
+[mixer]
+# Words that add the sign-mixer step to any route, when the request also names two tones
+# ("120 Hz and 210 Hz"; amplitudes as a1=, a2=). The step runs math__sign_mix's line table and,
+# when calculators.sign_mixer is configured, the calculator with a physical random key.
+triggers = [
+  "mixer", "mixing", "mix of", "intermodulation", "combination tone", "combination tones",
+  "hard limiter", "hard-limiter", "clipped", "clipping", "sign nonlinearity", "polarity mix",
+]
+
 [profiles]
 # Your own words for a specialist, added to its routing brief, e.g.
 # noise-engineering = ["hiss", "rumble", "entropy source"]
