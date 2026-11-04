@@ -56,6 +56,7 @@ class Rules:
     research: tuple[str, ...]
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
     mixer: tuple[str, ...] = ()
+    sky: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         research=tuple(words("research", "triggers")),
         profiles=profiles,
         mixer=tuple(words("mixer", "triggers")),
+        sky=tuple(words("sky", "triggers")),
     )
 
 
