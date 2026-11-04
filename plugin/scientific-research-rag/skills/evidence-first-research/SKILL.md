@@ -11,7 +11,7 @@ Use the `scientific-research-rag` MCP server before answering a scientific or li
 
 - Prefer `pipeline__research_start` when the full pipeline tools are available and the user wants an answer or literature review. Continue the same run with `pipeline__research_continue` until it returns `done` or a terminal error.
 - Use the `rag__*` evidence workflow for a focused search, a claim check, or when the pipeline tools are unavailable.
-- Use `math__lookup` for equations, constants, and documented calculator parameters. Use `math__bionumber` when a BNID is known. Do not recall these quantities from memory.
+- Use `math__lookup` for equations, constants, and documented calculator parameters. Use `math__bionumber` when a BNID is known. Use `math__sign_mix` for what a sign (hard-limiter) mixer makes from two tones. Do not recall these quantities from memory.
 - Use `gateway_status` only to diagnose unavailable upstreams or tools.
 
 ## Run the full pipeline

@@ -53,6 +53,12 @@ there. It decides which parts of the server run, using trigger words rather than
 | `research` | an evidence question ("evidence", "studies", "is it true", ...) | the research pipeline, started on the gateway |
 | `code` | a task on code ("fix the bug", "implement", "add a flag to the cli") or a code review | three passages for context; the assistant then edits through `repos__` tools or its checkout |
 
+The **sign-mixer step** runs on any route when two things are true: the request uses a `[mixer]`
+trigger word ("mixer", "intermodulation", "combination tone", "hard limiter", "clipping", ...), and it
+names two tones ("120 Hz and 210 Hz", with optional `a1=`, `a2=`). The step adds `math__sign_mix`'s
+derived line table and, when configured, the calculator's run with a physical random key, with settle
+on.
+
 A question never recruits the coder, even a question about code ("how does the hook work?"). A
 prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`. The specialist brief
 is chosen by `pipeline__profile_route`, or by the operator's own words. The words are in
