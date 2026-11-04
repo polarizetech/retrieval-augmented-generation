@@ -31,7 +31,14 @@ There are two ways to use it:
   instead of recall: `math__lookup` searches the research corpus's calculator records
   (`projects/*/calculators/*.md`, found through `$RESEARCH_CORPUS` or a sibling `research/` checkout)
   and returns their sections verbatim with the corpus commit; `math__bionumber` returns a BioNumbers
-  entry by BNID, verbatim, fetched once and cached. No model is involved in either.
+  entry by BNID, verbatim, fetched once and cached. `math__sign_mix` derives what a sign
+  (hard-limiter) mixer makes from two tones: only odd-order lines `m·f1 + n·f2`, their exact
+  amplitudes and the strong tone's capture of the weak one. When `calculators.sign_mixer` is
+  configured, it also runs the calculator from
+  [polarity-calculator](https://github.com/polarizetech/polarity-calculator) (`calculators/nonlinear-mixer`).
+  That run is a keyed mix with an edge-of-chaos gain (on by default), and its key and added noise come
+  from a fresh physical [entropy-fetch](https://github.com/polarizetech/entropy-fetch) draw. No
+  model is involved in any of these.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from research_mcp import mixer
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -31,6 +32,7 @@ from research_mcp.hub.health import Hub
 from research_mcp.routing import (
     Route,
     Rules,
+    _has,
     _looks_like_code,
     classify,
     load_rules,
@@ -115,6 +117,7 @@ class Asker:
         search: Search | None = None,
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
+        sign_mixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.retrieve = retrieve
         self.call_tool = call_tool
@@ -126,6 +129,7 @@ class Asker:
         self.search = search
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
+        self.sign_mixer = sign_mixer
         # Requests still working after their reply's deadline: held so they finish.
         self._tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
@@ -758,6 +762,7 @@ class Asker:
                     f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
                 )
             progress.extend(turn.notes)
+        await self._mixer_step(route, rules, progress, results)
         if route.mode == "code":
             note = (
                 "The gateway does not make code changes itself yet. The assistant makes the "
@@ -782,6 +787,35 @@ class Asker:
             if overlap:
                 results["coder"]["overlap"] = overlap
             progress.append("Coder: recruited (the assistant edits; the gateway gave context)")
+
+    async def _mixer_step(
+        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
+    ) -> None:
+        """The sign-mixer step, on any route: when the request names mixing and two tones."""
+        low = route.question.lower()
+        hit = next((t for t in rules.mixer if _has(low, t)), None)
+        if hit is None or self.sign_mixer is None:
+            return
+        tones = mixer.parse_tones(route.question)
+        if tones is None:
+            progress.append(
+                f"Sign mixer: matched '{hit}', but no two tones (e.g. '120 Hz and 210 Hz') to run"
+            )
+            return
+        t = time.monotonic()
+        try:
+            out = await asyncio.to_thread(self.sign_mixer, tones)
+        except ValueError as exc:
+            progress.append(f"Sign mixer: not run ({exc})")
+            return
+        results["mixer"] = out
+        run = out.get("random_run", {})
+        progress.append(
+            f"Sign mixer: {tones['f1']:g} Hz + {tones['f2']:g} Hz, "
+            f"{out['prediction']['lines_total']} derived lines; "
+            f"random run {run.get('status', 'off')} "
+            f"in {time.monotonic() - t:.1f} s"
+        )
 
     def _reply(
         self,
@@ -887,7 +921,10 @@ def relay(
         "search": "",
         "research": "",
         "coder": "",
+        "mixer": "",
     }
+    if results.get("mixer"):
+        blocks["mixer"] = _mixer_block(results["mixer"])
     found = results.get("evidence")
     if found is not None:
         if found.get("results"):
@@ -949,9 +986,43 @@ def relay(
         + blocks["search"],
         blocks["research"],
         blocks["coder"],
+        blocks["mixer"],
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
+
+
+def _mixer_block(out: dict[str, Any]) -> str:
+    """The sign-mixer step's table: derived lines, then the random run's settle and checks."""
+    pred = out["prediction"]
+    rows = [
+        f"- {ln['f_hz']:g} Hz: {ln['amplitude']:.4f} ({', '.join(ln['terms'][:2])})"
+        for ln in pred["lines"][:8]
+    ]
+    text = [
+        "**Sign mixer** (DERIVED lines" + (", keyed" if pred["inputs"]["keyed"] else "") + ")",
+        *rows,
+        f"Capture: weak/strong {pred['capture']['weak_over_strong_in']:.3g} in, "
+        f"{pred['capture']['weak_over_strong_out']:.3g} out.",
+    ]
+    run = out.get("random_run")
+    if run and run.get("status") == "done":
+        st = run.get("settle") or {}
+        text.append(
+            f"Random run (SIMULATED, {run.get('key_source', 'physical key')}): keyed lines "
+            f"{'match' if run.get('lines_pass') else 'MISS'} the prediction; twins "
+            f"{'below' if run.get('twin_pass') else 'ABOVE'} their band"
+            + (
+                f"; settle K {st['K_settled']:.3f} (twin {st['twin_K_settled']:.3f}), "
+                f"λ {st['lyapunov']:+.4f}"
+                if st
+                else ""
+            )
+            + f". Run `{run.get('run')}`."
+        )
+    elif run:
+        text.append(f"Random run: {run.get('status')}. {run.get('note', '')}")
+    return "\n".join(text)
 
 
 def apply_relevance_floor(found: dict[str, Any]) -> dict[str, Any]:
@@ -990,6 +1061,28 @@ def _short(
     nxt: list[str] = []
     you: list[str] = [p.ask_person() for p in problems]
     stopped = any(p.status == "needs_decision" for p in problems)
+    mix = results.get("mixer")
+    if mix:
+        top = mix["prediction"]["lines"][:3]
+        got.append(
+            "Sign mixer: strongest lines "
+            + ", ".join(f"{ln['f_hz']:g} Hz" for ln in top)
+            + " (derived; odd-order products only)."
+        )
+        run = mix.get("random_run", {})
+        if run.get("status") == "done":
+            st = run.get("settle") or {}
+            got.append(
+                "Random run with a physical key: checks "
+                + ("passed" if run.get("passed") else "FAILED")
+                + (
+                    f"; gain settled at K {st['K_settled']:.2f}, λ {st['lyapunov']:+.3f}."
+                    if st
+                    else "."
+                )
+            )
+        elif run:
+            got.append(f"Random run {run.get('status')}: only the derived lines came back.")
     found = results.get("evidence")
     if found is not None:
         rows = found.get("results", [])
