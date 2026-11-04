@@ -37,7 +37,10 @@ There are two ways to use it:
   configured, it also runs the calculator from
   [polarity-calculator](https://github.com/polarizetech/polarity-calculator) (`calculators/nonlinear-mixer`).
   That run is a keyed mix with an edge-of-chaos gain (on by default), and its key and added noise come
-  from a fresh physical [entropy-fetch](https://github.com/polarizetech/entropy-fetch) draw. No
+  from a fresh physical [entropy-fetch](https://github.com/polarizetech/entropy-fetch) draw.
+  `math__audio_mix` runs an audio file (a local file, or one in the Spaces snapshots that
+  dataset-fetch reads) through that calculator's sign or voltage mixer. It can also list the audio in
+  Spaces, and read the calculator's run ledger, which records every run's settings and results. No
   model is involved in any of these.
 - **The sky tool** (`sky__key`) gives the sky key and clock times at a place and time from a running
   [sky-clock](https://github.com/polarizetech/sky-clock) data server (`SKY_CLOCK_URL`, default

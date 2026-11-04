@@ -435,7 +435,9 @@ def build_server(
             "recall it: math__lookup searches the research corpus's calculator records and "
             "math__bionumber returns a BioNumbers entry by BNID, both verbatim with their source; "
             "math__sign_mix derives what a sign (hard-limiter) mixer makes from two tones and runs "
-            "the calculator with a physical random key. "
+            "the calculator with a physical random key; math__audio_mix runs an audio file (local "
+            "or "
+            "in Spaces) through it, lists Spaces audio, and reads its run ledger. "
             "For the sky key or clock times (solar, lunar, mean solar time, the Sun's and Moon's "
             "positions, rise and set) at a place and time, sky__key asks sky-clock; never compute "
             "or recall them. "
@@ -655,6 +657,90 @@ def build_server(
                 },
                 annotations=ToolAnnotations(
                     readOnlyHint=True, idempotentHint=False, openWorldHint=False
+                ),
+            ),
+            Tool(
+                name="math__audio_mix",
+                description=(
+                    "Run an audio file through polarity-calculator's nonlinear mixer, list the "
+                    "audio "
+                    "files in Spaces, or read the mixer's run ledger. action=list: every audio "
+                    "file in "
+                    "the Spaces snapshots (match narrows it). action=run: a Spaces file (spaces "
+                    "ref + "
+                    "path) or a local file (full path) through the sign mixer (keyed polarity, C1 "
+                    "flip "
+                    "checks from the file's own signs, peaks against the key-only twin) or the "
+                    "voltage "
+                    "mixer (diode, diode_r, tanh, poly, sign at full_scale volts, input noise "
+                    "sigma; engine=ngspice solves a circuit instead: diode_r, detector, tanh, "
+                    "poly or a netlist, fed the noisy input from a file); "
+                    "settle (the edge-of-chaos gain) on by default; key and noise from a fresh "
+                    "physical "
+                    "entropy-fetch draw. Every run is logged with its settings and results. "
+                    "action=ledger: the logged runs as a table, to compare designs. No model is "
+                    "used."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "run", "ledger"],
+                            "default": "run",
+                        },
+                        "match": {
+                            "type": "string",
+                            "description": "words to filter list or ledger",
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                        "last": {"type": "integer", "minimum": 1, "maximum": 500, "default": 20},
+                        "refresh": {"type": "boolean", "default": False},
+                        "spaces": {
+                            "type": "string",
+                            "description": "spaces/<accession>@<snapshot>",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "the file's path in the snapshot",
+                        },
+                        "file": {"type": "string", "description": "a local audio file, full path"},
+                        "mixer": {"type": "string", "enum": ["sign", "voltage"], "default": "sign"},
+                        "kind": {
+                            "type": "string",
+                            "enum": ["diode", "diode_r", "tanh", "poly", "sign"],
+                            "description": "voltage mixer, calculator engine",
+                        },
+                        "engine": {
+                            "type": "string",
+                            "enum": ["calculator", "ngspice"],
+                            "default": "calculator",
+                            "description": "voltage mixer: the calculator's equations, or ngspice",
+                        },
+                        "circuit": {
+                            "type": "string",
+                            "enum": ["diode_r", "detector", "tanh", "poly", "netlist"],
+                            "description": "ngspice engine; detector has memory",
+                        },
+                        "netlist": {
+                            "type": "string",
+                            "description": "circuit=netlist: full path; input node in; no .control",
+                        },
+                        "out_vector": {
+                            "type": "string",
+                            "description": "circuit=netlist: the output, e.g. v(out)",
+                        },
+                        "params": {"type": "object", "additionalProperties": {"type": "number"}},
+                        "full_scale": {"type": "number", "exclusiveMinimum": 0, "default": 0.6},
+                        "sigma": {"type": "number", "minimum": 0, "default": 0.02},
+                        "start": {"type": "number", "minimum": 0},
+                        "seconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 30},
+                        "channel": {"type": "integer", "minimum": -1, "default": -1},
+                        "settle": {"type": "boolean", "default": True},
+                    },
+                },
+                annotations=ToolAnnotations(
+                    readOnlyHint=False, idempotentHint=False, openWorldHint=True
                 ),
             ),
             Tool(
@@ -894,9 +980,9 @@ def build_server(
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
     )
 
-    # gateway_status, ask, four hub__, web__search (with SearXNG), five rag__, three math__, one
+    # gateway_status, ask, four hub__, web__search (with SearXNG), five rag__, four math__, one
     # sky__, two session tools.
-    builtin = (17 + bool(searxng)) if builtin_tools else 1
+    builtin = (18 + bool(searxng)) if builtin_tools else 1
 
     def caller() -> dict[str, str]:
         """Who is calling, inferred when the session does not say: the stdio bridge sends its
@@ -993,6 +1079,7 @@ def build_server(
         ),
         "math__bionumber": ("BioNumbers lookup", lambda a: quantities.bionumber(a["bnid"])),
         "math__sign_mix": ("sign mixer", lambda a: mixer.sign_mix_step(config_path, a)),
+        "math__audio_mix": ("audio mixer", lambda a: mixer.audio_step(config_path, a)),
         "sky__key": (
             "sky key",
             lambda a: sky.reading(
