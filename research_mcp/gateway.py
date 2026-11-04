@@ -673,7 +673,8 @@ def build_server(
                     "checks from the file's own signs, peaks against the key-only twin) or the "
                     "voltage "
                     "mixer (diode, diode_r, tanh, poly, sign at full_scale volts, input noise "
-                    "sigma); "
+                    "sigma; engine=ngspice solves a circuit instead: diode_r, detector, tanh, "
+                    "poly or a netlist, fed the noisy input from a file); "
                     "settle (the edge-of-chaos gain) on by default; key and noise from a fresh "
                     "physical "
                     "entropy-fetch draw. Every run is logged with its settings and results. "
@@ -708,6 +709,26 @@ def build_server(
                         "kind": {
                             "type": "string",
                             "enum": ["diode", "diode_r", "tanh", "poly", "sign"],
+                            "description": "voltage mixer, calculator engine",
+                        },
+                        "engine": {
+                            "type": "string",
+                            "enum": ["calculator", "ngspice"],
+                            "default": "calculator",
+                            "description": "voltage mixer: the calculator's equations, or ngspice",
+                        },
+                        "circuit": {
+                            "type": "string",
+                            "enum": ["diode_r", "detector", "tanh", "poly", "netlist"],
+                            "description": "ngspice engine; detector has memory",
+                        },
+                        "netlist": {
+                            "type": "string",
+                            "description": "circuit=netlist: full path; input node in; no .control",
+                        },
+                        "out_vector": {
+                            "type": "string",
+                            "description": "circuit=netlist: the output, e.g. v(out)",
                         },
                         "params": {"type": "object", "additionalProperties": {"type": "number"}},
                         "full_scale": {"type": "number", "exclusiveMinimum": 0, "default": 0.6},
