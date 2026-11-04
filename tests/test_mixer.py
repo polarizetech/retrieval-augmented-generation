@@ -117,3 +117,68 @@ def test_ask_adds_the_mixer_step(tmp_path: Path) -> None:
     assert "**Sign mixer**" in out["relay_full"]
     plain = asyncio.run(a.ask("What is pink noise?"))
     assert "mixer" not in plain["results"]
+
+
+def test_audio_arguments_are_checked() -> None:
+    ref = "spaces/workbench~songs~super-8-orchestral@2e9efc7c820f83f6"
+    argv = mixer._audio_argv(
+        {
+            "spaces": ref,
+            "path": "cello.wav",
+            "mixer": "voltage",
+            "kind": "tanh",
+            "params": {"g": 2, "v0": 0.2},
+        }
+    )
+    assert argv[:5] == ["run", "--spaces", ref, "--path", "cello.wav"]
+    assert "--param" in argv
+    assert "g=2.0" in argv
+    for bad in (
+        {"spaces": "s3://elsewhere", "path": "a.wav"},
+        {"spaces": ref, "path": "--file=/etc/passwd"},
+        {"spaces": ref, "path": "../../secret.wav"},
+        {"file": "relative.wav"},
+        {"file": "/etc/hosts"},
+        {"spaces": ref, "path": "a.wav", "mixer": "voltage", "kind": "laser"},
+        {"spaces": ref, "path": "a.wav", "mixer": "voltage", "params": {"cmd": 1}},
+        {"action": "delete"},
+    ):
+        with pytest.raises(ValueError, match=r"\w"):
+            mixer._audio_argv(bad)
+    assert mixer._audio_argv({"action": "list", "match": "cello"})[:3] == ["list", "--limit", "50"]
+    assert mixer._audio_argv({"action": "ledger", "last": 5}) == ["ledger", "--last", "5"]
+
+
+def test_audio_without_config(tmp_path: Path) -> None:
+    out = mixer.audio_step(tmp_path / "none.json", {"action": "list"})
+    assert out["status"] == "not configured"
+
+
+def test_audio_run_through_a_configured_command(tmp_path: Path) -> None:
+    script = tmp_path / "fake_audio.py"
+    script.write_text(
+        "import json, sys\n"
+        "a = sys.argv[1:]\n"
+        "if a[0] == 'ledger':\n"
+        "    print(json.dumps({'table': '| t |', 'entries': [{'kind': 'audio-sign'}]}))\n"
+        "else:\n"
+        "    print(json.dumps({'summary': {'passed': True, 'K_settled': 2.88}, 'inputs': {'file': "
+        "'x.wav'},"
+        " 'settings': {'mixer': 'sign', 'argv': a}, 'run': 'runs/audio-mix/x',"
+        " 'channels': [{'channel': 0, 'checks': {'disagree': 0.158}, 'settle': {'K_settled': 2.88},"
+        " 'keyed_vs_twin': {'peaks': [{'f': 199.0}]}, 'big': list(range(5))}]}))\n"
+    )
+    cfg = tmp_path / "gateway.json"
+    cfg.write_text(
+        json.dumps(
+            {"calculators": {"audio_mixer": {"command": sys.executable, "args": [str(script)]}}}
+        )
+    )
+    ref = "spaces/workbench~songs~super-8-orchestral@2e9efc7c820f83f6"
+    out = mixer.audio_step(cfg, {"spaces": ref, "path": "cello.wav"})
+    assert out["status"] == "done"
+    assert out["summary"]["K_settled"] == 2.88
+    assert out["channels"][0]["keyed_vs_twin"] == [{"f": 199.0}]
+    assert "big" not in out["channels"][0]
+    assert "--json" in out["settings"]["argv"]
+    assert mixer.audio_step(cfg, {"action": "ledger"})["table"] == "| t |"
