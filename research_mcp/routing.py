@@ -55,6 +55,7 @@ class Rules:
     request_leads: tuple[str, ...]
     research: tuple[str, ...]
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    mixer: tuple[str, ...] = ()
     sky: tuple[str, ...] = ()
 
 
@@ -97,6 +98,7 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         request_leads=tuple(words("code", "request_leads")),
         research=tuple(words("research", "triggers")),
         profiles=profiles,
+        mixer=tuple(words("mixer", "triggers")),
         sky=tuple(words("sky", "triggers")),
     )
 

@@ -34,6 +34,16 @@
       "enabled": false
     }
   },
+  "calculators": {
+    "_comment": "Calculators math__sign_mix (and the ask sign-mixer step) may run as a command that prints one JSON value. Arguments are numbers the gateway formats, passed as a list (no shell).",
+    "sign_mixer": {
+      "_comment": "polarity-calculator's nonlinear-mixer: the keyed sign mix with the edge-of-chaos gain (settle, on by default); key and added noise from a fresh physical entropy-fetch draw (os + CPU jitter). Point both paths at your polarity-calculator checkout and run `uv sync` there first.",
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/polarity-calculator", "python", "/path/to/polarity-calculator/calculators/nonlinear-mixer/python/random_mix.py", "--json"],
+      "cwd": "/path/to/polarity-calculator",
+      "enabled": false
+    }
+  },
   "web_search": {
     "_comment": "Optional SearXNG base URL for web__search. SEARXNG_URL in the environment overrides it.",
     "searxng_url": ""
