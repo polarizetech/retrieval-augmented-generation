@@ -182,3 +182,32 @@ def test_audio_run_through_a_configured_command(tmp_path: Path) -> None:
     assert "big" not in out["channels"][0]
     assert "--json" in out["settings"]["argv"]
     assert mixer.audio_step(cfg, {"action": "ledger"})["table"] == "| t |"
+
+
+def test_ngspice_arguments_are_checked(tmp_path: Path) -> None:
+    ref = "spaces/workbench~songs~super-8-orchestral@2e9efc7c820f83f6"
+    base = {"spaces": ref, "path": "cello.wav", "mixer": "voltage", "engine": "ngspice"}
+    argv = mixer._audio_argv({**base, "circuit": "detector", "params": {"C": 2.2e-7}})
+    assert argv[argv.index("--engine") + 1] == "ngspice"
+    assert argv[argv.index("--circuit") + 1] == "detector"
+    assert "C=2.2e-07" in argv
+    net = tmp_path / "mine.cir"
+    net.write_text("* mine\nR1 in out 1k\n.end\n")
+    argv = mixer._audio_argv(
+        {**base, "circuit": "netlist", "netlist": str(net), "out_vector": "v(out)"}
+    )
+    assert argv[argv.index("--netlist") + 1] == str(net)
+    for bad in (
+        {**base, "circuit": "laser"},
+        {**base, "circuit": "netlist", "netlist": "mine.cir", "out_vector": "v(out)"},
+        {**base, "circuit": "netlist", "netlist": str(net), "out_vector": "v(out); shell rm"},
+        {
+            **base,
+            "circuit": "netlist",
+            "netlist": str(tmp_path / "none.cir"),
+            "out_vector": "v(out)",
+        },
+        {**base, "engine": "spectre"},
+    ):
+        with pytest.raises(ValueError, match=r"\w"):
+            mixer._audio_argv(bad)
