@@ -299,3 +299,185 @@ def parse_tones(question: str) -> dict[str, float] | None:
     for name, value in AMP.findall(question):
         out[name.lower()] = float(value)
     return out
+
+
+# ---------- audio: audio_mix.py (files on disk or in Spaces), and the run ledger ----------
+
+AUDIO_NAME = "audio_mixer"
+AUDIO_EXT = (".wav", ".flac", ".aif", ".aiff", ".mp3", ".m4a", ".ogg", ".caf")
+SPACES_REF = re.compile(r"^spaces/[A-Za-z0-9._~-]+@[0-9a-f]{8,64}$")
+KINDS = ("diode", "diode_r", "tanh", "poly", "sign")
+CIRCUITS = ("diode_r", "detector", "tanh", "poly", "netlist")
+PARAMS = ("Is", "n", "T", "R", "g", "v0", "a1", "a2", "a3", "IS", "N", "RS", "CJO", "TT", "C", "RL")
+OUT_VECTOR = re.compile(r"^[vi]\([A-Za-z0-9_.]+\)$")
+
+
+def _safe(value: str, what: str) -> str:
+    """A value passed as one argument: never an option, never a parent-directory hop."""
+    if not value or value.startswith("-") or ".." in Path(value).parts or "\x00" in value:
+        raise ValueError(f"{what} is not usable: {value!r}")
+    return value
+
+
+def _audio_argv(arguments: dict[str, Any]) -> list[str]:
+    action = arguments.get("action", "run")
+    if action == "list":
+        out = ["list", "--limit", str(int(arguments.get("limit", 50)))]
+        if arguments.get("match"):
+            out += ["--match", _safe(str(arguments["match"]), "match")]
+        return out + (["--refresh"] if arguments.get("refresh") else [])
+    if action == "ledger":
+        out = ["ledger", "--last", str(int(arguments.get("last", 20)))]
+        if arguments.get("match"):
+            out += ["--match", _safe(str(arguments["match"]), "match")]
+        return out
+    if action != "run":
+        raise ValueError("action is list, run or ledger")
+    out = ["run"]
+    if arguments.get("spaces"):
+        ref = str(arguments["spaces"])
+        if not SPACES_REF.match(ref):
+            raise ValueError("spaces must be a pinned ref: spaces/<accession>@<snapshot>")
+        path = _safe(str(arguments.get("path", "")), "path")
+        out += ["--spaces", ref, "--path", path]
+    elif arguments.get("file"):
+        file = Path(str(arguments["file"])).expanduser()
+        if not file.is_absolute() or file.suffix.lower() not in AUDIO_EXT or not file.is_file():
+            raise ValueError(
+                "file must be an existing audio file, given by its full path ("
+                + ", ".join(AUDIO_EXT)
+                + ")"
+            )
+        out += ["--file", str(file)]
+    else:
+        raise ValueError("run needs spaces + path, or file")
+    mixer_kind = arguments.get("mixer", "sign")
+    if mixer_kind not in ("sign", "voltage"):
+        raise ValueError("mixer is sign or voltage")
+    out += ["--mixer", mixer_kind]
+    if arguments.get("start") is not None:
+        out += ["--start", repr(float(arguments["start"]))]
+    seconds = float(arguments.get("seconds", 30))
+    if not 0 <= seconds <= 600:
+        raise ValueError("seconds is 0 (whole file, up to 10 min) to 600")
+    out += ["--seconds", repr(seconds), "--channel", str(int(arguments.get("channel", -1)))]
+    if mixer_kind == "voltage":
+        out += _voltage_argv(arguments)
+    if not arguments.get("settle", True):
+        out.append("--no-settle")
+    return out
+
+
+def _voltage_argv(arguments: dict[str, Any]) -> list[str]:
+    """The voltage mixer's arguments: the calculator's equations, or ngspice with a circuit."""
+    out = [
+        "--full-scale",
+        repr(float(arguments.get("full_scale", 0.6))),
+        "--sigma",
+        repr(float(arguments.get("sigma", 0.02))),
+    ]
+    engine = arguments.get("engine", "calculator")
+    if engine == "ngspice":
+        circuit = arguments.get("circuit", "diode_r")
+        if circuit not in CIRCUITS:
+            raise ValueError(f"circuit is one of {', '.join(CIRCUITS)}")
+        out += ["--engine", "ngspice", "--circuit", circuit]
+        if circuit == "netlist":
+            net = Path(str(arguments.get("netlist", ""))).expanduser()
+            if not net.is_absolute() or net.suffix.lower() not in (".cir", ".sp", ".net", ".spice"):
+                raise ValueError("netlist must be a full path to a .cir, .sp, .net or .spice file")
+            if not net.is_file():
+                raise ValueError("netlist file not found")
+            vec = str(arguments.get("out_vector", ""))
+            if not OUT_VECTOR.match(vec):
+                raise ValueError("out_vector is v(node) or i(source)")
+            out += ["--netlist", str(net), "--out-vector", vec]
+    elif engine == "calculator":
+        kind = arguments.get("kind", "diode_r")
+        if kind not in KINDS:
+            raise ValueError(f"kind is one of {', '.join(KINDS)}")
+        out += ["--kind", kind]
+    else:
+        raise ValueError("engine is calculator or ngspice")
+    for name, value in (arguments.get("params") or {}).items():
+        if name not in PARAMS:
+            raise ValueError(f"unknown parameter {name}")
+        out += ["--param", f"{name}={float(value)!r}"]
+    return out
+
+
+def audio_step(config_path: Path | None, arguments: dict[str, Any]) -> dict[str, Any]:
+    """List Spaces audio, run a file through a mixer, or read the run ledger (audio_mix.py)."""
+    spec = spec_for(config_path, AUDIO_NAME, SECTION) if config_path is not None else None
+    if not spec:
+        return {
+            "status": "not configured",
+            "note": f"add `{SECTION}.{AUDIO_NAME}` to the gateway config "
+            "(see config/mcp-gateway.example.json)",
+        }
+    argv = [
+        spec["command"],
+        *(str(v) for v in spec.get("args", [])),
+        *_audio_argv(arguments),
+        "--json",
+    ]
+    env = {**os.environ, **{str(k): str(v) for k, v in spec.get("env", {}).items()}}
+    try:
+        done = subprocess.run(  # noqa: S603 (the configured command; arguments validated above)
+            argv,
+            cwd=spec.get("cwd"),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "unavailable", "note": f"{AUDIO_NAME}: {exc}"}
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
+        return {"status": "failed", "note": f"{AUDIO_NAME} exited {done.returncode}: {tail[0]}"}
+    try:
+        out = json.loads(done.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"status": "failed", "note": f"{AUDIO_NAME} did not print JSON"}
+    action = arguments.get("action", "run")
+    if action == "list":
+        return {"status": "done", "files": out}
+    if action == "ledger":
+        return {"status": "done", "table": out["table"], "entries": out["entries"]}
+    chans = [
+        {
+            k: v
+            for k, v in ch.items()
+            if k
+            in (
+                "channel",
+                "checks",
+                "settle",
+                "silent",
+                "residual_mean",
+                "residual_ok",
+                "engine",
+                "cross_check",
+                "note",
+            )
+        }
+        | {
+            name: ch[name]["peaks"][:8]
+            for name in ("keyed_vs_twin", "settled_vs_twin", "output_vs_input")
+            if name in ch
+        }
+        for ch in out["channels"]
+    ]
+    return {
+        "status": "done",
+        "summary": out["summary"],
+        "inputs": out["inputs"],
+        "settings": out["settings"],
+        "channels": chans,
+        "run": out["run"],
+        "note": (
+            "logged in the calculator's run ledger (action=ledger); audio and outputs stay local"
+        ),
+    }
