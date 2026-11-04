@@ -39,6 +39,13 @@ There are two ways to use it:
   That run is a keyed mix with an edge-of-chaos gain (on by default), and its key and added noise come
   from a fresh physical [entropy-fetch](https://github.com/polarizetech/entropy-fetch) draw. No
   model is involved in any of these.
+- **The sky tool** (`sky__key`) gives the sky key and clock times at a place and time from a running
+  [sky-clock](https://github.com/polarizetech/sky-clock) data server (`SKY_CLOCK_URL`, default
+  `http://127.0.0.1:8803`): the key/1 hash of the Sun's direction and gravity, the Sun split against
+  gravity as unit triangles (and, with a heading, the dance angle), solar, mean solar and lunar time,
+  the equation of time, the Moon's position and phase, rise, set and transit times, and tidal gravity.
+  `ask` runs it by itself when a request asks for a sky key or a clock time and gives decimal
+  coordinates ("lunar time at 48.43, -123.37"); words for it go in `[sky]` in the routing config.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.
