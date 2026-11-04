@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from research_mcp import sky
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -720,7 +721,14 @@ class Asker:
         # A code task gets passages only when it has research content: the library holds papers,
         # not code, so "fix the failing test" would get unrelated passages and cost seconds.
         research_words = [p for p in rules.research if p in route.question.lower()]
-        context = route.mode == "quick" or bool(spec["name"] or research_words)
+        sky_term = sky.wants_sky(route.question, rules.sky)
+        if sky_term:
+            results["sky"] = await self._sky(route.question, sky_term)
+            progress.append(_sky_progress(results["sky"]))
+        # A sky request in quick mode is answered by sky-clock; papers don't hold clock times.
+        context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
+        if route.mode == "quick" and sky_term and not context:
+            progress.append("Retrieval: skipped (a sky-key request, answered by sky-clock)")
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
         if route.mode in ("quick", "code") and context:
@@ -782,6 +790,27 @@ class Asker:
             if overlap:
                 results["coder"]["overlap"] = overlap
             progress.append("Coder: recruited (the assistant edits; the gateway gave context)")
+
+    async def _sky(self, question: str, term: str) -> dict[str, Any]:
+        """sky-clock's key and clock times for the place and time in the request, or what is
+        missing to ask for them."""
+        want = sky.parse(question)
+        base = {"matched": term, "asked": {k: v for k, v in want.items() if k != "missing"}}
+        if want["missing"]:
+            return {**base, "missing": want["missing"]}
+        try:
+            reading = await asyncio.to_thread(
+                lambda: sky.reading(
+                    want["lat"],
+                    want["lon"],
+                    want.get("t"),
+                    h=want.get("h", 0.0),
+                    heading=want.get("heading"),
+                )
+            )
+        except (ValueError, KeyError, OSError) as exc:
+            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
+        return {**base, "reading": reading}
 
     def _reply(
         self,
@@ -947,6 +976,7 @@ def relay(
         blocks["search"]
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
+        _sky_block(results.get("sky")),
         blocks["research"],
         blocks["coder"],
         f"**Limits:** {limits}",
@@ -1050,11 +1080,31 @@ def _short(
         nxt.append(
             "The assistant reads the files, then makes the change locally or as a pull request."
         )
+    sky_result = results.get("sky")
+    if sky_result is not None:
+        if sky_result.get("reading"):
+            got.append(sky.summary(sky_result["reading"]))
+            nxt.append(
+                "The assistant shows the key and clock times from sky-clock (`relay_full` has "
+                "every value), and computes none itself."
+            )
+        elif sky_result.get("missing"):
+            got.append("A sky key was asked for, but the place isn't in decimal coordinates.")
+            you.append(
+                "Give the place as decimal latitude and longitude (for example 48.43, -123.37), "
+                "and a UTC time if not now."
+            )
+        else:
+            got.append(f"sky-clock didn't answer: {first_sentence(sky_result.get('error', ''))}")
+            you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
     if spec.get("name") and route.mode != "research":
         got.append(f"Specialist: {spec['name']}.")
+    sky_only = sky_result is not None and found is None and route.mode == "quick"
     got.append(
         "Nothing was concluded."
         if stopped
+        else "sky-clock's numbers are data from an exploratory tool, not a finding."
+        if sky_only
         else {
             "quick": "These are passages, not a checked answer.",
             "research": "Nothing is concluded until the run finishes.",
@@ -1079,3 +1129,31 @@ def parse_tool_text(result: Any) -> dict[str, Any]:
     text = content[0].text if content else "{}"
     data = json.loads(text)
     return json.loads(data["result"]) if isinstance(data.get("result"), str) else data
+
+
+def _sky_progress(result: dict[str, Any]) -> str:
+    if result.get("reading"):
+        src = result["reading"]["source"]
+        return f"Sky key: from sky-clock {src.get('version')} ({src.get('url')})"
+    if result.get("missing"):
+        return f"Sky key: not asked for; missing {', '.join(result['missing'])}"
+    return f"Sky key: sky-clock failed ({result.get('error', '')[:120]})"
+
+
+def _sky_block(result: dict[str, Any] | None) -> str:
+    """The full reply's sky section: every value sky-clock returned, as JSON."""
+    if not result:
+        return ""
+    if result.get("reading"):
+        return (
+            "**Sky key and clock times** (from sky-clock; data, not a finding)\n```json\n"
+            + json.dumps(result["reading"], indent=1)
+            + "\n```"
+        )
+    if result.get("missing"):
+        return (
+            "**Sky key:** missing "
+            + ", ".join(result["missing"])
+            + ". Call `sky__key` with lat and lon in decimal degrees."
+        )
+    return f"**Sky key:** sky-clock failed: {result.get('error', '')}"
