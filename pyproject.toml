@@ -20,6 +20,10 @@ dependencies = [
   "mcp>=1.10,<2",
 ]
 
+[project.optional-dependencies]
+# Copies the call log to a hosted Postgres database (docs/call-log.md).
+calllog = ["psycopg[binary]>=3.2,<4"]
+
 [project.scripts]
 research-pipeline = "research_pipeline.__main__:main"
 research-pipeline-mcp = "research_pipeline.mcp_server:main"

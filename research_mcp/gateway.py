@@ -16,6 +16,7 @@ import os
 import secrets
 import sqlite3
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Awaitable, Callable
@@ -32,8 +33,9 @@ from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import Response
 
-from research_mcp import oauth
+from research_mcp import oauth, records
 from research_mcp.ask import Asker, parse_tool_text
+from research_mcp.calllog import CallLog
 from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
 from research_mcp.hub.health import Hub
 from research_mcp.hub.ledger import Ledger
@@ -410,7 +412,9 @@ def build_server(
             "(a passage retrieval for a question, the research pipeline for an evidence question, "
             "the coder's tools only for a task or code review), runs them, and returns `relay`. "
             "Show `relay` to the person exactly as written, and add anything of your own only "
-            "after it, labelled as yours. `relay` is three short lists (results, what happens "
+            "after it, labelled as yours. Keep the links a reply carries (its `links` field and "
+            "a relay's Links list): they open the record of the call and the research it "
+            "refers to. `relay` is three short lists (results, what happens "
             "next, anything for the person); show `relay_full` only when the person asks for "
             "more. Pass repo when the request is about a repository, and "
             "a prefix such as research: or code: only when the person used one. "
@@ -451,6 +455,16 @@ def build_server(
         @server.custom_route("/oauth/consent", methods=["GET", "POST"])
         async def oauth_consent(request: Request) -> Response:
             return await oauth.consent(consent_provider, request)
+
+    # Every tool call is recorded (docs/call-log.md); the record pages are served under
+    # /records to this machine and the tailnet only, never through Funnel.
+    call_log = CallLog.from_env(settings.data_dir, f"http://127.0.0.1:{port}")
+    server.call_log = call_log  # type: ignore[attr-defined]
+    server._custom_starlette_routes.extend(
+        records.routes(
+            call_log, settings.runs_dir, urllib.parse.urlparse(public_url).hostname or ""
+        )
+    )
 
     low = server._mcp_server
 
@@ -914,6 +928,18 @@ def build_server(
 
     @low.call_tool(validate_input=True)
     async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        started = time.monotonic()
+        result = await dispatch(name, arguments)
+        return call_log.record(
+            CallLog.new_id(),
+            name,
+            arguments,
+            result,
+            seconds=time.monotonic() - started,
+            who=caller(),
+        )
+
+    async def dispatch(name: str, arguments: dict[str, Any]) -> Any:
         if name == "gateway_status":
             return {
                 "connected": {
@@ -923,6 +949,7 @@ def build_server(
                 "errors": federation.errors,
                 "total_tools": len(federation.tools) + builtin,
                 "web_search_configured": bool(searxng),
+                "call_log": call_log.status(),
             }
         if not builtin_tools and (
             name in ("web__search", "ask")

@@ -216,6 +216,10 @@ uses the calling model (Claude, ChatGPT) for its model steps by default: code ru
 hands the client batches of tasks with a JSON schema to answer, and Ollama is only needed for
 embeddings. See [MCP clients](docs/mcp-clients.md) for the workflow and the HTTP transport.
 
+Every tool call is recorded in a hosted Postgres database, and each reply links to its record
+and to the page of any research doc it mentions, with every call that refers to that doc. See
+[the call log](docs/call-log.md) for setup and for moving the database.
+
 ## Domains
 
 The engine is domain-neutral. What a field knows (which study designs count and in what order,
