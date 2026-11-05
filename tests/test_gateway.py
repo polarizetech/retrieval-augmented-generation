@@ -199,6 +199,11 @@ async def test_rag_tools_round_trip(config: Path, tmp_path: Path) -> None:
             )
         )
         assert saved["claims_checked"] is True
+        # Every call is recorded, and the reply links to its record and the report's page.
+        folder = Path(saved["run_dir"]).name
+        assert saved["links"]["record"].startswith("http://127.0.0.1:0/records/")
+        assert saved["links"]["research"] == [f"http://127.0.0.1:0/records/run/{folder}"]
+        assert "call_log" in payload(await session.call_tool("gateway_status", {}))
 
         refused = await session.call_tool(
             "rag__save_report",
