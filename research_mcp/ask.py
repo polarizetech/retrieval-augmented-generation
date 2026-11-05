@@ -724,14 +724,18 @@ class Asker:
         # A code task gets passages only when it has research content: the library holds papers,
         # not code, so "fix the failing test" would get unrelated passages and cost seconds.
         research_words = [p for p in rules.research if p in route.question.lower()]
-        sky_term = sky.wants_sky(route.question, rules.sky)
-        if sky_term:
+        sight = sky.parse_sight(route.question)
+        sky_term = "sun sight" if sight is not None else sky.wants_sky(route.question, rules.sky)
+        if sight is not None:
+            results["sight"] = await self._sight(sight)
+            progress.append(_sight_progress(results["sight"]))
+        elif sky_term:
             results["sky"] = await self._sky(route.question, sky_term)
             progress.append(_sky_progress(results["sky"]))
         # A sky request in quick mode is answered by sky-clock; papers don't hold clock times.
         context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
         if route.mode == "quick" and sky_term and not context:
-            progress.append("Retrieval: skipped (a sky-key request, answered by sky-clock)")
+            progress.append(f"Retrieval: skipped (a {sky_term} request, answered by sky-clock)")
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
         if route.mode in ("quick", "code") and context:
@@ -823,6 +827,18 @@ class Asker:
             f"random run {run.get('status', 'off')} "
             f"in {time.monotonic() - t:.1f} s"
         )
+
+    async def _sight(self, want: dict[str, Any]) -> dict[str, Any]:
+        """sky-clock's places for the sun sight in the request, or what is missing to ask."""
+        base = {"asked": {k: v for k, v in want.items() if k != "missing"}}
+        if want["missing"]:
+            return {**base, "missing": want["missing"]}
+        args = {k: want[k] for k in ("alt", "az", "stick", "shadow", "bearing") if k in want}
+        try:
+            located = await asyncio.to_thread(lambda: sky.locate(want.get("t"), **args))
+        except (ValueError, KeyError, OSError) as exc:
+            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
+        return {**base, "located": located}
 
     async def _sky(self, question: str, term: str) -> dict[str, Any]:
         """sky-clock's key and clock times for the place and time in the request, or what is
@@ -1013,6 +1029,7 @@ def relay(
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
         _sky_block(results.get("sky")),
+        _sight_block(results.get("sight")),
         blocks["research"],
         blocks["coder"],
         blocks["mixer"],
@@ -1172,6 +1189,20 @@ def _short(
         nxt.append(
             "The assistant reads the files, then makes the change locally or as a pull request."
         )
+    sight = results.get("sight")
+    if sight is not None:
+        if sight.get("located"):
+            got.append(sky.sight_summary(sight["located"]))
+            nxt.append(
+                "The assistant shows the place(s) and their solar time from sky-clock "
+                "(`relay_full` has every value), and computes none itself."
+            )
+        elif sight.get("missing"):
+            got.append("A sun sight was given, but not all of it.")
+            you.append("Give " + " and ".join(sight["missing"]) + ", and a UTC time if not now.")
+        else:
+            got.append(f"sky-clock didn't answer: {first_sentence(sight.get('error', ''))}")
+            you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
     sky_result = results.get("sky")
     if sky_result is not None:
         if sky_result.get("reading"):
@@ -1191,7 +1222,9 @@ def _short(
             you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
     if spec.get("name") and route.mode != "research":
         got.append(f"Specialist: {spec['name']}.")
-    sky_only = sky_result is not None and found is None and route.mode == "quick"
+    sky_only = (
+        (sky_result is not None or sight is not None) and found is None and route.mode == "quick"
+    )
     got.append(
         "Nothing was concluded."
         if stopped
@@ -1249,3 +1282,33 @@ def _sky_block(result: dict[str, Any] | None) -> str:
             + ". Call `sky__key` with lat and lon in decimal degrees."
         )
     return f"**Sky key:** sky-clock failed: {result.get('error', '')}"
+
+
+def _sight_progress(result: dict[str, Any]) -> str:
+    if result.get("located"):
+        n = len(result["located"].get("candidates", []))
+        return (
+            f"Sun sight: located by sky-clock ({n} place(s); {result['located']['source']['url']})"
+        )
+    if result.get("missing"):
+        return f"Sun sight: not asked for; missing {', '.join(result['missing'])}"
+    return f"Sun sight: sky-clock failed ({result.get('error', '')[:120]})"
+
+
+def _sight_block(result: dict[str, Any] | None) -> str:
+    """The full reply's sun-sight section: every value sky-clock returned, as JSON."""
+    if not result:
+        return ""
+    if result.get("located"):
+        return (
+            "**Sun sight** (located by sky-clock; data, not a finding)\n```json\n"
+            + json.dumps(result["located"], indent=1)
+            + "\n```"
+        )
+    if result.get("missing"):
+        return (
+            "**Sun sight:** missing "
+            + ", ".join(result["missing"])
+            + ". Call `sky__locate` with alt and az, or stick, shadow and bearing."
+        )
+    return f"**Sun sight:** sky-clock failed: {result.get('error', '')}"
