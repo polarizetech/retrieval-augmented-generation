@@ -49,6 +49,11 @@ There are two ways to use it:
   the equation of time, the Moon's position and phase, rise, set and transit times, and tidal gravity.
   `ask` runs it by itself when a request asks for a sky key or a clock time and gives decimal
   coordinates ("lunar time at 48.43, -123.37"); words for it go in `[sky]` in the routing config.
+  Two more come from sky-clock's sun sights: `sky__measure` turns a plumbed stick and its shadow
+  into the Sun's altitude and azimuth, and `sky__locate` turns those (or the stick and shadow) and a
+  UTC time into the places that see the Sun there, with local solar time and how many km each moves
+  per 0.1° of measuring error. `ask` runs a sight by itself when a request gives one ("where am I? a
+  1 m stick casts a 2.69 m shadow pointing 32°"), and says what is missing when it doesn't.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.

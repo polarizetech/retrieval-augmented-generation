@@ -16,6 +16,12 @@ dance angle, heading x conj(azimuth)), each with its Pythagorean residual 1 - (l
 `parse()` reads a place, time and heading out of a request in plain words, for `ask`. It takes
 decimal or degree coordinates only: place names are not looked up (no geocoder is wired in).
 
+Sun sights (`/api/measure`, `/api/locate`): `measure()` turns a plumbed stick and its shadow into
+the Sun's altitude and azimuth; `locate()` turns those (or the stick and shadow) and a UTC time
+into the places that see the Sun there, with local solar time and how far each place moves per 0.1
+degree of measuring error. `parse_sight()` reads a stick, shadow and bearing (or the Sun's
+altitude and azimuth) out of a request, for `ask`.
+
 The location goes only to the sky-clock server named by SKY_CLOCK_URL (default the local one). It is
 not logged here.
 """
@@ -145,14 +151,15 @@ def _get(path: str, query: dict[str, Any], timeout: float) -> dict[str, Any]:
 
 
 def jd_iso(jd: float | None) -> str | None:
-    """A Julian day as an ISO UTC time (to the second), or None outside years 1-9999."""
+    """A Julian day as an ISO UTC time, rounded to the second, or None outside years 1-9999."""
     if jd is None or not math.isfinite(jd):
         return None
     try:
-        t = dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(days=jd - 2440587.5)
+        secs = round((jd - 2440587.5) * 86400.0)
+        t = dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=secs)
     except OverflowError:
         return None
-    return t.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return t.isoformat().replace("+00:00", "Z")
 
 
 def hours_hms(h: float | None) -> str | None:
@@ -287,4 +294,161 @@ def summary(r: dict[str, Any]) -> str:
         f"Sky key {r['key']['hex'][:12]}… at {r['place']['lat']:g}, {r['place']['lon']:g} "
         f"({r['time']['utc']} UTC): Sun {s['el_deg']:.2f}° up at {s['az_deg']:.2f}°; solar time "
         f"{c['solar_time']}, lunar time {c['lunar_time']} (sky-clock {r['source']['version']})."
+    )
+
+
+# ---------------------------------------------------------------- sun sights
+_LEN = r"(\d+(?:\.\d+)?)\s*(cm|mm|m|metres?|meters?)?"
+_DEG = r"\s*(?:°|deg(?:rees?)?)?"
+
+
+def _noun_length(noun: str) -> re.Pattern[str]:
+    """A length next to a noun, either way round: "a 1 m stick", "stick of 1 m", "shadow 2.69 m"."""
+    return re.compile(
+        rf"{_LEN}\s*(?:high|tall|long)?\s+(?:\w+\s+)?{noun}\b"
+        rf"|\b{noun}\b[^0-9]{{0,25}}?{_LEN}",
+        re.I,
+    )
+
+
+_STICK = _noun_length(r"(?:stick|pole|gnomon|rod)")
+_SHADOW = _noun_length(r"shadow")
+_SHADOW_BEARING = re.compile(
+    r"\b(?:bearing|pointing|points|pointed|toward|towards|direction)\b[^0-9]{0,20}?"
+    rf"(\d{{1,3}}(?:\.\d+)?){_DEG}",
+    re.I,
+)
+_SUN_ALT = re.compile(
+    rf"\bsun\b[^0-9]{{0,25}}?(\d{{1,2}}(?:\.\d+)?){_DEG}\s*(?:up|high|above)"
+    rf"|\b(?:altitude|elevation)\b[^0-9]{{0,15}}?(\d{{1,2}}(?:\.\d+)?){_DEG}",
+    re.I,
+)
+_SUN_AZ = re.compile(rf"\bazimuth\b[^0-9]{{0,15}}?(\d{{1,3}}(?:\.\d+)?){_DEG}", re.I)
+SIGHT_TRIGGERS = (
+    "where am i",
+    "locate me",
+    "locate",
+    "my position",
+    "my location",
+    "find my location",
+    "find my position",
+    "what latitude",
+    "my latitude",
+    "sun sight",
+    "shadow",
+)
+
+
+def _metres(m: re.Match[str]) -> float:
+    """The length a _noun_length match found, in metres (either alternative's groups)."""
+    value, unit = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+    return float(value) * {"cm": 0.01, "mm": 0.001}.get((unit or "m").lower(), 1.0)
+
+
+def _first(m: re.Match[str]) -> float:
+    return float(next(g for g in m.groups() if g is not None))
+
+
+def parse_sight(question: str) -> dict[str, Any] | None:
+    """A sun sight in a request: a stick, its shadow and the shadow's bearing, or the Sun's altitude
+    and azimuth, with the time. None when the request names no sight."""
+    low = question.lower()
+    if not any(re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", low) for t in SIGHT_TRIGGERS):
+        return None
+    out: dict[str, Any] = {}
+    stick, shadow = _STICK.search(question), _SHADOW.search(question)
+    if stick and shadow:
+        out["stick"] = _metres(stick)
+        out["shadow"] = _metres(shadow)
+        b = _SHADOW_BEARING.search(question)
+        if b:
+            out["bearing"] = float(b.group(1)) % 360.0
+    else:
+        alt, az = _SUN_ALT.search(question), _SUN_AZ.search(question)
+        if alt:
+            out["alt"] = _first(alt)
+        if az:
+            out["az"] = _first(az) % 360.0
+    t = _TIME.search(question)
+    if t:
+        out["t"] = t.group(1).replace(" ", "T")
+    if "stick" in out:
+        missing = [] if "bearing" in out else ["the shadow's bearing (degrees from true north)"]
+    elif "alt" in out or "az" in out:
+        names = {"alt": "the Sun's altitude", "az": "the Sun's azimuth"}
+        missing = [names[k] for k in names if k not in out]
+    else:
+        return None
+    out["missing"] = missing
+    return out
+
+
+def measure(
+    stick: float,
+    shadow: float | None = None,
+    bearing: float | None = None,
+    *,
+    tip_e: float | None = None,
+    tip_n: float | None = None,
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    """The Sun's altitude and azimuth from a vertical stick and its shadow, from sky-clock."""
+    q: dict[str, Any] = {"stick": stick}
+    for k, v in (("shadow", shadow), ("bearing", bearing), ("tip_e", tip_e), ("tip_n", tip_n)):
+        if v is not None:
+            q[k] = v
+    return {**_get("/api/measure", q, timeout), "source": {"tool": "sky-clock", "url": base_url()}}
+
+
+def locate(
+    t: str | None = None,
+    *,
+    alt: float | None = None,
+    az: float | None = None,
+    stick: float | None = None,
+    shadow: float | None = None,
+    bearing: float | None = None,
+    h: float = 0.0,
+    refraction: bool = False,
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    """The places that see the Sun at (alt, az), or as a stick and shadow show it, at UTC t, from
+    sky-clock, with local solar time as hh:mm:ss and event times as ISO UTC."""
+    q: dict[str, Any] = {"h": h}
+    if t:
+        q["t"] = t
+    if refraction:
+        q["refraction"] = 1
+    if alt is not None or az is not None:
+        if alt is None or az is None:
+            raise ValueError("give both alt and az")
+        q |= {"alt": alt, "az": az}
+    elif stick is not None:
+        if shadow is None or bearing is None:
+            raise ValueError("give the shadow's length and bearing with the stick")
+        q |= {"stick": stick, "shadow": shadow, "bearing": bearing}
+    else:
+        raise ValueError("give alt and az, or stick, shadow and bearing")
+    out = _get("/api/locate", q, timeout)
+    for c in out.get("candidates", []):
+        c["local_solar_time"] = hours_hms(c.get("local_solar_time_h"))
+        c["local_mean_time"] = hours_hms(c.get("local_mean_time_h"))
+    out["time_utc"] = jd_iso(out.get("input", {}).get("jd_ut"))
+    out["source"] = {"tool": "sky-clock", "url": base_url()}
+    return out
+
+
+def sight_summary(r: dict[str, Any]) -> str:
+    """One line for a short reply."""
+    inp, cands = r.get("input", {}), r.get("candidates", [])
+    alt, az = inp.get("alt_deg", 0.0), inp.get("az_deg", 0.0)
+    if not cands:
+        return f"No place sees the Sun at {alt:.2f}° up, {az:.1f}° at {r.get('time_utc')}."
+    places = "; or ".join(
+        f"{c['lat']:.3f}, {c['lon']:.3f} (local solar time {c['local_solar_time']})" for c in cands
+    )
+    s = cands[0].get("sensitivity", {})
+    err = s.get("km_per_0p1deg_alt")
+    return f"Sun {alt:.2f}° up at {az:.1f}° at {r.get('time_utc')} places you at {places}" + (
+        f"; each 0.1° of measuring error moves it about {err:.0f} km." if err else "."
     )
