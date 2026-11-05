@@ -31,7 +31,29 @@ There are two ways to use it:
   instead of recall: `math__lookup` searches the research corpus's calculator records
   (`projects/*/calculators/*.md`, found through `$RESEARCH_CORPUS` or a sibling `research/` checkout)
   and returns their sections verbatim with the corpus commit; `math__bionumber` returns a BioNumbers
-  entry by BNID, verbatim, fetched once and cached. No model is involved in either.
+  entry by BNID, verbatim, fetched once and cached. `math__sign_mix` derives what a sign
+  (hard-limiter) mixer makes from two tones: only odd-order lines `m·f1 + n·f2`, their exact
+  amplitudes and the strong tone's capture of the weak one. When `calculators.sign_mixer` is
+  configured, it also runs the calculator from
+  [polarity-calculator](https://github.com/polarizetech/polarity-calculator) (`calculators/nonlinear-mixer`).
+  That run is a keyed mix with an edge-of-chaos gain (on by default), and its key and added noise come
+  from a fresh physical [entropy-fetch](https://github.com/polarizetech/entropy-fetch) draw.
+  `math__audio_mix` runs an audio file (a local file, or one in the Spaces snapshots that
+  dataset-fetch reads) through that calculator's sign or voltage mixer. It can also list the audio in
+  Spaces, and read the calculator's run ledger, which records every run's settings and results. No
+  model is involved in any of these.
+- **The sky tool** (`sky__key`) gives the sky key and clock times at a place and time from a running
+  [sky-clock](https://github.com/polarizetech/sky-clock) data server (`SKY_CLOCK_URL`, default
+  `http://127.0.0.1:8803`): the key/1 hash of the Sun's direction and gravity, the Sun split against
+  gravity as unit triangles (and, with a heading, the dance angle), solar, mean solar and lunar time,
+  the equation of time, the Moon's position and phase, rise, set and transit times, and tidal gravity.
+  `ask` runs it by itself when a request asks for a sky key or a clock time and gives decimal
+  coordinates ("lunar time at 48.43, -123.37"); words for it go in `[sky]` in the routing config.
+  Two more come from sky-clock's sun sights: `sky__measure` turns a plumbed stick and its shadow
+  into the Sun's altitude and azimuth, and `sky__locate` turns those (or the stick and shadow) and a
+  UTC time into the places that see the Sun there, with local solar time and how many km each moves
+  per 0.1° of measuring error. `ask` runs a sight by itself when a request gives one ("where am I? a
+  1 m stick casts a 2.69 m shadow pointing 32°"), and says what is missing when it doesn't.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.

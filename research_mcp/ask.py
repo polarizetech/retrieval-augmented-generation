@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from research_mcp import mixer, sky
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -31,6 +32,7 @@ from research_mcp.hub.health import Hub
 from research_mcp.routing import (
     Route,
     Rules,
+    _has,
     _looks_like_code,
     classify,
     load_rules,
@@ -118,6 +120,7 @@ class Asker:
         search: Search | None = None,
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
+        sign_mixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.retrieve = retrieve
         self.call_tool = call_tool
@@ -129,6 +132,7 @@ class Asker:
         self.search = search
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
+        self.sign_mixer = sign_mixer
         # Requests still working after their reply's deadline: held so they finish.
         self._tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
@@ -723,7 +727,18 @@ class Asker:
         # A code task gets passages only when it has research content: the library holds papers,
         # not code, so "fix the failing test" would get unrelated passages and cost seconds.
         research_words = [p for p in rules.research if p in route.question.lower()]
-        context = route.mode == "quick" or bool(spec["name"] or research_words)
+        sight = sky.parse_sight(route.question)
+        sky_term = "sun sight" if sight is not None else sky.wants_sky(route.question, rules.sky)
+        if sight is not None:
+            results["sight"] = await self._sight(sight)
+            progress.append(_sight_progress(results["sight"]))
+        elif sky_term:
+            results["sky"] = await self._sky(route.question, sky_term)
+            progress.append(_sky_progress(results["sky"]))
+        # A sky request in quick mode is answered by sky-clock; papers don't hold clock times.
+        context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
+        if route.mode == "quick" and sky_term and not context:
+            progress.append(f"Retrieval: skipped (a {sky_term} request, answered by sky-clock)")
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
         if route.mode in ("quick", "code") and context:
@@ -761,6 +776,7 @@ class Asker:
                     f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
                 )
             progress.extend(turn.notes)
+        await self._mixer_step(route, rules, progress, results)
         if route.mode == "code":
             note = (
                 "The gateway does not make code changes itself yet. The assistant makes the "
@@ -785,6 +801,68 @@ class Asker:
             if overlap:
                 results["coder"]["overlap"] = overlap
             progress.append("Coder: recruited (the assistant edits; the gateway gave context)")
+
+    async def _mixer_step(
+        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
+    ) -> None:
+        """The sign-mixer step, on any route: when the request names mixing and two tones."""
+        low = route.question.lower()
+        hit = next((t for t in rules.mixer if _has(low, t)), None)
+        if hit is None or self.sign_mixer is None:
+            return
+        tones = mixer.parse_tones(route.question)
+        if tones is None:
+            progress.append(
+                f"Sign mixer: matched '{hit}', but no two tones (e.g. '120 Hz and 210 Hz') to run"
+            )
+            return
+        t = time.monotonic()
+        try:
+            out = await asyncio.to_thread(self.sign_mixer, tones)
+        except ValueError as exc:
+            progress.append(f"Sign mixer: not run ({exc})")
+            return
+        results["mixer"] = out
+        run = out.get("random_run", {})
+        progress.append(
+            f"Sign mixer: {tones['f1']:g} Hz + {tones['f2']:g} Hz, "
+            f"{out['prediction']['lines_total']} derived lines; "
+            f"random run {run.get('status', 'off')} "
+            f"in {time.monotonic() - t:.1f} s"
+        )
+
+    async def _sight(self, want: dict[str, Any]) -> dict[str, Any]:
+        """sky-clock's places for the sun sight in the request, or what is missing to ask."""
+        base = {"asked": {k: v for k, v in want.items() if k != "missing"}}
+        if want["missing"]:
+            return {**base, "missing": want["missing"]}
+        args = {k: want[k] for k in ("alt", "az", "stick", "shadow", "bearing") if k in want}
+        try:
+            located = await asyncio.to_thread(lambda: sky.locate(want.get("t"), **args))
+        except (ValueError, KeyError, OSError) as exc:
+            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
+        return {**base, "located": located}
+
+    async def _sky(self, question: str, term: str) -> dict[str, Any]:
+        """sky-clock's key and clock times for the place and time in the request, or what is
+        missing to ask for them."""
+        want = sky.parse(question)
+        base = {"matched": term, "asked": {k: v for k, v in want.items() if k != "missing"}}
+        if want["missing"]:
+            return {**base, "missing": want["missing"]}
+        try:
+            reading = await asyncio.to_thread(
+                lambda: sky.reading(
+                    want["lat"],
+                    want["lon"],
+                    want.get("t"),
+                    h=want.get("h", 0.0),
+                    heading=want.get("heading"),
+                )
+            )
+        except (ValueError, KeyError, OSError) as exc:
+            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
+        return {**base, "reading": reading}
 
     def _reply(
         self,
@@ -890,7 +968,10 @@ def relay(
         "search": "",
         "research": "",
         "coder": "",
+        "mixer": "",
     }
+    if results.get("mixer"):
+        blocks["mixer"] = _mixer_block(results["mixer"])
     found = results.get("evidence")
     if found is not None:
         if found.get("results"):
@@ -950,11 +1031,47 @@ def relay(
         blocks["search"]
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
+        _sky_block(results.get("sky")),
+        _sight_block(results.get("sight")),
         blocks["research"],
         blocks["coder"],
+        blocks["mixer"],
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
+
+
+def _mixer_block(out: dict[str, Any]) -> str:
+    """The sign-mixer step's table: derived lines, then the random run's settle and checks."""
+    pred = out["prediction"]
+    rows = [
+        f"- {ln['f_hz']:g} Hz: {ln['amplitude']:.4f} ({', '.join(ln['terms'][:2])})"
+        for ln in pred["lines"][:8]
+    ]
+    text = [
+        "**Sign mixer** (DERIVED lines" + (", keyed" if pred["inputs"]["keyed"] else "") + ")",
+        *rows,
+        f"Capture: weak/strong {pred['capture']['weak_over_strong_in']:.3g} in, "
+        f"{pred['capture']['weak_over_strong_out']:.3g} out.",
+    ]
+    run = out.get("random_run")
+    if run and run.get("status") == "done":
+        st = run.get("settle") or {}
+        text.append(
+            f"Random run (SIMULATED, {run.get('key_source', 'physical key')}): keyed lines "
+            f"{'match' if run.get('lines_pass') else 'MISS'} the prediction; twins "
+            f"{'below' if run.get('twin_pass') else 'ABOVE'} their band"
+            + (
+                f"; settle K {st['K_settled']:.3f} (twin {st['twin_K_settled']:.3f}), "
+                f"λ {st['lyapunov']:+.4f}"
+                if st
+                else ""
+            )
+            + f". Run `{run.get('run')}`."
+        )
+    elif run:
+        text.append(f"Random run: {run.get('status')}. {run.get('note', '')}")
+    return "\n".join(text)
 
 
 def apply_relevance_floor(found: dict[str, Any]) -> dict[str, Any]:
@@ -993,6 +1110,28 @@ def _short(
     nxt: list[str] = []
     you: list[str] = [p.ask_person() for p in problems]
     stopped = any(p.status == "needs_decision" for p in problems)
+    mix = results.get("mixer")
+    if mix:
+        top = mix["prediction"]["lines"][:3]
+        got.append(
+            "Sign mixer: strongest lines "
+            + ", ".join(f"{ln['f_hz']:g} Hz" for ln in top)
+            + " (derived; odd-order products only)."
+        )
+        run = mix.get("random_run", {})
+        if run.get("status") == "done":
+            st = run.get("settle") or {}
+            got.append(
+                "Random run with a physical key: checks "
+                + ("passed" if run.get("passed") else "FAILED")
+                + (
+                    f"; gain settled at K {st['K_settled']:.2f}, λ {st['lyapunov']:+.3f}."
+                    if st
+                    else "."
+                )
+            )
+        elif run:
+            got.append(f"Random run {run.get('status')}: only the derived lines came back.")
     found = results.get("evidence")
     if found is not None:
         rows = found.get("results", [])
@@ -1053,11 +1192,47 @@ def _short(
         nxt.append(
             "The assistant reads the files, then makes the change locally or as a pull request."
         )
+    sight = results.get("sight")
+    if sight is not None:
+        if sight.get("located"):
+            got.append(sky.sight_summary(sight["located"]))
+            nxt.append(
+                "The assistant shows the place(s) and their solar time from sky-clock "
+                "(`relay_full` has every value), and computes none itself."
+            )
+        elif sight.get("missing"):
+            got.append("A sun sight was given, but not all of it.")
+            you.append("Give " + " and ".join(sight["missing"]) + ", and a UTC time if not now.")
+        else:
+            got.append(f"sky-clock didn't answer: {first_sentence(sight.get('error', ''))}")
+            you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
+    sky_result = results.get("sky")
+    if sky_result is not None:
+        if sky_result.get("reading"):
+            got.append(sky.summary(sky_result["reading"]))
+            nxt.append(
+                "The assistant shows the key and clock times from sky-clock (`relay_full` has "
+                "every value), and computes none itself."
+            )
+        elif sky_result.get("missing"):
+            got.append("A sky key was asked for, but the place isn't in decimal coordinates.")
+            you.append(
+                "Give the place as decimal latitude and longitude (for example 48.43, -123.37), "
+                "and a UTC time if not now."
+            )
+        else:
+            got.append(f"sky-clock didn't answer: {first_sentence(sky_result.get('error', ''))}")
+            you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
     if spec.get("name") and route.mode != "research":
         got.append(f"Specialist: {spec['name']}.")
+    sky_only = (
+        (sky_result is not None or sight is not None) and found is None and route.mode == "quick"
+    )
     got.append(
         "Nothing was concluded."
         if stopped
+        else "sky-clock's numbers are data from an exploratory tool, not a finding."
+        if sky_only
         else {
             "quick": "These are passages, not a checked answer.",
             "research": "Nothing is concluded until the run finishes.",
@@ -1082,3 +1257,61 @@ def parse_tool_text(result: Any) -> dict[str, Any]:
     text = content[0].text if content else "{}"
     data = json.loads(text)
     return json.loads(data["result"]) if isinstance(data.get("result"), str) else data
+
+
+def _sky_progress(result: dict[str, Any]) -> str:
+    if result.get("reading"):
+        src = result["reading"]["source"]
+        return f"Sky key: from sky-clock {src.get('version')} ({src.get('url')})"
+    if result.get("missing"):
+        return f"Sky key: not asked for; missing {', '.join(result['missing'])}"
+    return f"Sky key: sky-clock failed ({result.get('error', '')[:120]})"
+
+
+def _sky_block(result: dict[str, Any] | None) -> str:
+    """The full reply's sky section: every value sky-clock returned, as JSON."""
+    if not result:
+        return ""
+    if result.get("reading"):
+        return (
+            "**Sky key and clock times** (from sky-clock; data, not a finding)\n```json\n"
+            + json.dumps(result["reading"], indent=1)
+            + "\n```"
+        )
+    if result.get("missing"):
+        return (
+            "**Sky key:** missing "
+            + ", ".join(result["missing"])
+            + ". Call `sky__key` with lat and lon in decimal degrees."
+        )
+    return f"**Sky key:** sky-clock failed: {result.get('error', '')}"
+
+
+def _sight_progress(result: dict[str, Any]) -> str:
+    if result.get("located"):
+        n = len(result["located"].get("candidates", []))
+        return (
+            f"Sun sight: located by sky-clock ({n} place(s); {result['located']['source']['url']})"
+        )
+    if result.get("missing"):
+        return f"Sun sight: not asked for; missing {', '.join(result['missing'])}"
+    return f"Sun sight: sky-clock failed ({result.get('error', '')[:120]})"
+
+
+def _sight_block(result: dict[str, Any] | None) -> str:
+    """The full reply's sun-sight section: every value sky-clock returned, as JSON."""
+    if not result:
+        return ""
+    if result.get("located"):
+        return (
+            "**Sun sight** (located by sky-clock; data, not a finding)\n```json\n"
+            + json.dumps(result["located"], indent=1)
+            + "\n```"
+        )
+    if result.get("missing"):
+        return (
+            "**Sun sight:** missing "
+            + ", ".join(result["missing"])
+            + ". Call `sky__locate` with alt and az, or stick, shadow and bearing."
+        )
+    return f"**Sun sight:** sky-clock failed: {result.get('error', '')}"
