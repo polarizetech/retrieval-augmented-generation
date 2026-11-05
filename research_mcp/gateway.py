@@ -722,9 +722,9 @@ def build_server(
                             "description": "sigma-delta: the exact loop, or v17's circuit (slow)",
                         },
                         "level": {"type": "number", "description": "sigma-delta: input peak, 0-1"},
-                        "dither": {
+                        "noise": {
                             "type": "number",
-                            "description": "surprise: physical dither, times the input's rms (0.3)",
+                            "description": "surprise: entropy-fetch noise mixed in, x rms (0.3)",
                         },
                         "oversample": {
                             "type": "integer",

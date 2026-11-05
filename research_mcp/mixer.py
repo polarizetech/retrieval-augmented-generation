@@ -421,7 +421,7 @@ def _sigma_delta_argv(arguments: dict[str, Any]) -> list[str]:
 
 
 SURPRISE_LIMITS = {
-    "dither": (0.0, 10.0, float),
+    "noise": (0.0, 10.0, float),
     "oversample": (1, 16, int),
     "lags": (1, 16, int),
     "history": (0, 256, int),
