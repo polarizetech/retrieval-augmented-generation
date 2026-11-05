@@ -39,11 +39,14 @@ from research_mcp.routing import (
 from research_pipeline import agent_profiles, replies
 from research_pipeline.papers import PapersError
 
-# The library's reranker (a bge-reranker cross-encoder) scores each passage as a logit; below 0 it
-# judges the passage more likely irrelevant than relevant. Passages under the floor are not shown,
-# so a request the library cannot answer gets "nothing relevant" rather than unrelated text. Applied
-# only when the library reports a reranker: without one the score is a fused rank on another scale.
-RELEVANCE_FLOOR = 0.0
+# The library's reranker (a bge-reranker cross-encoder) scores each passage as a logit. Passages
+# under the floor are not shown, so a request the library cannot answer gets "nothing relevant"
+# rather than unrelated text. ask reranks against the whole question, which scores lower than a
+# short query: a passage holding the answer scored +0.14 that way and +1.47 as a short query, and
+# near-misses sit around -1. Unrelated text scored -4 to -6, so the floor sits between, at -3.
+# Applied only when the library reports a reranker: without one the score is a fused rank on
+# another scale.
+RELEVANCE_FLOOR = -3.0
 QUICK_PASSAGES = 5
 CODE_PASSAGES = 3
 EXCERPT = 320
