@@ -228,3 +228,16 @@ def test_sigma_delta_arguments_are_checked() -> None:
     ):
         with pytest.raises(ValueError, match=r"\w"):
             mixer._audio_argv(bad)
+
+
+def test_surprise_arguments_are_checked() -> None:
+    ref = "spaces/workbench~songs~super-8-orchestral@2e9efc7c820f83f6"
+    base = {"spaces": ref, "path": "full-mix.wav", "mixer": "surprise"}
+    argv = mixer._audio_argv({**base, "noise": 1.0, "oversample": 4, "min_bits": 2})
+    assert argv[argv.index("--mixer") + 1] == "surprise"
+    assert argv[argv.index("--noise") + 1] == "1.0"
+    assert argv[argv.index("--oversample") + 1] == "4"
+    assert argv[argv.index("--min-bits") + 1] == "2.0"
+    for bad in ({**base, "oversample": 64}, {**base, "noise": -1}, {**base, "lags": "x"}):
+        with pytest.raises(ValueError, match=r"\w"):
+            mixer._audio_argv(bad)
