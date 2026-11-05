@@ -352,8 +352,8 @@ def _audio_argv(arguments: dict[str, Any]) -> list[str]:
     else:
         raise ValueError("run needs spaces + path, or file")
     mixer_kind = arguments.get("mixer", "sign")
-    if mixer_kind not in ("sign", "voltage"):
-        raise ValueError("mixer is sign or voltage")
+    if mixer_kind not in ("sign", "voltage", "sigma-delta"):
+        raise ValueError("mixer is sign, voltage or sigma-delta")
     out += ["--mixer", mixer_kind]
     if arguments.get("start") is not None:
         out += ["--start", repr(float(arguments["start"]))]
@@ -363,8 +363,58 @@ def _audio_argv(arguments: dict[str, Any]) -> list[str]:
     out += ["--seconds", repr(seconds), "--channel", str(int(arguments.get("channel", -1)))]
     if mixer_kind == "voltage":
         out += _voltage_argv(arguments)
+    if mixer_kind == "sigma-delta":
+        out += _sigma_delta_argv(arguments)
     if not arguments.get("settle", True):
         out.append("--no-settle")
+    return out
+
+
+SD_NUMBERS = (
+    "level",
+    "scale",
+    "kappa",
+    "delta",
+    "b",
+    "sigma_in",
+    "sigma_th",
+    "band",
+    "window",
+    "key_rate",
+)
+SD_CIRCUIT = (
+    "gm",
+    "C",
+    "k_latch",
+    "itail",
+    "rc",
+    "vb",
+    "bf",
+    "T",
+    "tstep",
+    "noise_dt",
+    "chan_rms",
+    "pink_rms",
+    "rts_amp",
+    "rts_tau",
+    "thermal",
+    "shot",
+)
+
+
+def _sigma_delta_argv(arguments: dict[str, Any]) -> list[str]:
+    """The sigma-delta loop's arguments: the ideal loop or v17's circuit, and its settings."""
+    provider = arguments.get("provider", "ideal")
+    if provider not in ("ideal", "ngspice"):
+        raise ValueError("provider is ideal or ngspice")
+    out = ["--provider", provider]
+    for name in SD_NUMBERS:
+        if arguments.get(name) is not None:
+            out += [f"--{name.replace('_', '-')}", repr(float(arguments[name]))]
+    for name, value in (arguments.get("params") or {}).items():
+        if name not in SD_CIRCUIT:
+            raise ValueError(f"unknown circuit parameter {name}")
+        out += ["--param", f"{name}={float(value)!r}"]
     return out
 
 
@@ -461,8 +511,18 @@ def audio_step(config_path: Path | None, arguments: dict[str, Any]) -> dict[str,
                 "engine",
                 "cross_check",
                 "note",
+                "provider",
+                "rebuild",
+                "flip_rate_hz",
+                "twin_flip_rate_hz",
+                "t_transform_err",
             )
         }
+        | (
+            {"edges": {k: v for k, v in ch["edges"].items() if k != "track"}}
+            if "edges" in ch
+            else {}
+        )
         | {
             name: ch[name]["peaks"][:8]
             for name in ("keyed_vs_twin", "settled_vs_twin", "output_vs_input")
