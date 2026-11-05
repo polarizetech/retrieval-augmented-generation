@@ -352,8 +352,8 @@ def _audio_argv(arguments: dict[str, Any]) -> list[str]:
     else:
         raise ValueError("run needs spaces + path, or file")
     mixer_kind = arguments.get("mixer", "sign")
-    if mixer_kind not in ("sign", "voltage", "sigma-delta"):
-        raise ValueError("mixer is sign, voltage or sigma-delta")
+    if mixer_kind not in ("sign", "voltage", "sigma-delta", "surprise"):
+        raise ValueError("mixer is sign, voltage, sigma-delta or surprise")
     out += ["--mixer", mixer_kind]
     if arguments.get("start") is not None:
         out += ["--start", repr(float(arguments["start"]))]
@@ -365,6 +365,8 @@ def _audio_argv(arguments: dict[str, Any]) -> list[str]:
         out += _voltage_argv(arguments)
     if mixer_kind == "sigma-delta":
         out += _sigma_delta_argv(arguments)
+    if mixer_kind == "surprise":
+        out += _surprise_argv(arguments)
     if not arguments.get("settle", True):
         out.append("--no-settle")
     return out
@@ -415,6 +417,31 @@ def _sigma_delta_argv(arguments: dict[str, Any]) -> list[str]:
         if name not in SD_CIRCUIT:
             raise ValueError(f"unknown circuit parameter {name}")
         out += ["--param", f"{name}={float(value)!r}"]
+    return out
+
+
+SURPRISE_LIMITS = {
+    "noise": (0.0, 10.0, float),
+    "oversample": (1, 16, int),
+    "lags": (1, 16, int),
+    "history": (0, 256, int),
+    "kick": (0.0, 1.0, float),
+    "min_bits": (0.0, 64.0, float),
+    "band": (100.0, 96000.0, float),
+    "level": (0.01, 1.0, float),
+}
+
+
+def _surprise_argv(arguments: dict[str, Any]) -> list[str]:
+    """Surprise-only polarity: edges and differences of the song, only the loop's surprises."""
+    out: list[str] = []
+    for name, (lo, hi, kind) in SURPRISE_LIMITS.items():
+        if arguments.get(name) is None:
+            continue
+        v = kind(arguments[name])
+        if not lo <= v <= hi:
+            raise ValueError(f"{name} is {lo} to {hi}")
+        out += [f"--{name.replace('_', '-')}", repr(v) if kind is float else str(v)]
     return out
 
 

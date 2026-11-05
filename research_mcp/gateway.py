@@ -676,7 +676,11 @@ def build_server(
                     "sigma; engine=ngspice solves a circuit instead: diode_r, detector, tanh, "
                     "poly or a netlist, fed the noisy input from a file) or the sigma-delta loop "
                     "(your v17: exact loop or the BJT circuit in ngspice; rebuilt sound, polarity "
-                    "key, edge-and-difference reading against the key-only twin); "
+                    "key, edge-and-difference reading against the key-only twin) or surprise (the "
+                    "song treated as noise: polarities of its edges at lags 1, 2, 4, ... and its "
+                    "differences to the key-only twin and L-R, each watched by a loop held at the "
+                    "edge of chaos that keeps only what it fails to predict; rebuilt from the kept "
+                    "surprises alone, with shuffled, none and twin-only controls); "
                     "settle (the edge-of-chaos gain) on by default; key and noise from a fresh "
                     "physical "
                     "entropy-fetch draw. Every run is logged with its settings and results. "
@@ -709,7 +713,7 @@ def build_server(
                         "file": {"type": "string", "description": "a local audio file, full path"},
                         "mixer": {
                             "type": "string",
-                            "enum": ["sign", "voltage", "sigma-delta"],
+                            "enum": ["sign", "voltage", "sigma-delta", "surprise"],
                             "default": "sign",
                         },
                         "provider": {
@@ -718,6 +722,27 @@ def build_server(
                             "description": "sigma-delta: the exact loop, or v17's circuit (slow)",
                         },
                         "level": {"type": "number", "description": "sigma-delta: input peak, 0-1"},
+                        "noise": {
+                            "type": "number",
+                            "description": "surprise: entropy-fetch noise mixed in, x rms (0.3)",
+                        },
+                        "oversample": {
+                            "type": "integer",
+                            "description": "surprise: watch at this many times the audio rate (1)",
+                        },
+                        "lags": {
+                            "type": "integer",
+                            "description": "surprise: edge lags 1, 2, 4... (11)",
+                        },
+                        "history": {"type": "integer", "description": "surprise: loop memory (16)"},
+                        "kick": {
+                            "type": "number",
+                            "description": "surprise: kick on a kept surprise",
+                        },
+                        "min_bits": {
+                            "type": "number",
+                            "description": "surprise: min surprisal kept, bits (0: all)",
+                        },
                         "sigma_th": {
                             "type": "number",
                             "description": "sigma-delta: threshold jitter, V",
