@@ -674,7 +674,9 @@ def build_server(
                     "voltage "
                     "mixer (diode, diode_r, tanh, poly, sign at full_scale volts, input noise "
                     "sigma; engine=ngspice solves a circuit instead: diode_r, detector, tanh, "
-                    "poly or a netlist, fed the noisy input from a file); "
+                    "poly or a netlist, fed the noisy input from a file) or the sigma-delta loop "
+                    "(your v17: exact loop or the BJT circuit in ngspice; rebuilt sound, polarity "
+                    "key, edge-and-difference reading against the key-only twin); "
                     "settle (the edge-of-chaos gain) on by default; key and noise from a fresh "
                     "physical "
                     "entropy-fetch draw. Every run is logged with its settings and results. "
@@ -705,7 +707,28 @@ def build_server(
                             "description": "the file's path in the snapshot",
                         },
                         "file": {"type": "string", "description": "a local audio file, full path"},
-                        "mixer": {"type": "string", "enum": ["sign", "voltage"], "default": "sign"},
+                        "mixer": {
+                            "type": "string",
+                            "enum": ["sign", "voltage", "sigma-delta"],
+                            "default": "sign",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "enum": ["ideal", "ngspice"],
+                            "description": "sigma-delta: the exact loop, or v17's circuit (slow)",
+                        },
+                        "level": {"type": "number", "description": "sigma-delta: input peak, 0-1"},
+                        "sigma_th": {
+                            "type": "number",
+                            "description": "sigma-delta: threshold jitter, V",
+                        },
+                        "sigma_in": {
+                            "type": "number",
+                            "description": "sigma-delta: input noise, V",
+                        },
+                        "kappa": {"type": "number"},
+                        "delta": {"type": "number"},
+                        "band": {"type": "number", "description": "rebuild band limit, Hz"},
                         "kind": {
                             "type": "string",
                             "enum": ["diode", "diode_r", "tanh", "poly", "sign"],

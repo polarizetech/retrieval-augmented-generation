@@ -211,3 +211,20 @@ def test_ngspice_arguments_are_checked(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError, match=r"\w"):
             mixer._audio_argv(bad)
+
+
+def test_sigma_delta_arguments_are_checked() -> None:
+    ref = "spaces/workbench~songs~super-8-orchestral@2e9efc7c820f83f6"
+    base = {"spaces": ref, "path": "full-mix.wav", "mixer": "sigma-delta"}
+    argv = mixer._audio_argv(
+        {**base, "provider": "ngspice", "sigma_th": 3e-4, "params": {"k_latch": 0.05}}
+    )
+    assert argv[argv.index("--provider") + 1] == "ngspice"
+    assert argv[argv.index("--sigma-th") + 1] == "0.0003"
+    assert "k_latch=0.05" in argv
+    for bad in (
+        {**base, "provider": "brian"},
+        {**base, "params": {"rm -rf": 1}},
+    ):
+        with pytest.raises(ValueError, match=r"\w"):
+            mixer._audio_argv(bad)
