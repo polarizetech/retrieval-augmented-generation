@@ -66,9 +66,10 @@ triggers = [
 
 [sky]
 # Words that also run sky__key (sky-clock's key and clock times) in any mode, beside the built-in
-# ones in research_mcp/sky.py ("sky key", "solar time", "lunar time", "moon time", "sunrise", ...).
-# The request needs decimal coordinates ("48.43, -123.37" or "lat 48.43 lon -123.37"); a time
-# (ISO, UTC) is optional and defaults to now.
+# ones in research_mcp/sky.py ("solar time", "lunar time", "sunrise", ...). Like those, a word here
+# runs it only when the request also gives decimal coordinates ("48.43, -123.37" or
+# "lat 48.43 lon -123.37") or a time (ISO, UTC); without them the question goes to the papers.
+# Naming the tool ("sky key", "sky clock") always runs it.
 triggers = []
 
 [profiles]

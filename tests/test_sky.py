@@ -88,7 +88,18 @@ def test_sky_triggers() -> None:
     assert sky.wants_sky("What's the lunar time at 48.4, -123.4?") == "lunar time"
     assert sky.wants_sky("get a key for 48.43, -123.37") == "key"
     assert sky.wants_sky("what is the key finding of this paper?") is None
-    assert sky.wants_sky("tell me about the sky", ("sky",)) == "sky"
+    assert sky.wants_sky("tell me about the sky at 48.4, -123.4", ("sky",)) == "sky"
+
+
+def test_a_sky_word_alone_is_a_science_question() -> None:
+    """A sky word runs the key only with a place or time; naming the tool always does."""
+    q = "What does the Sun's position and gravity have to do with the plasmasphere?"
+    assert sky.wants_sky(q) is None
+    assert sky.mentions_sky(q) == "sun's position"
+    assert sky.wants_sky("why is the sky red at sunset?") is None
+    assert sky.wants_sky("sunset on 2026-11-05") == "sunset"
+    assert sky.wants_sky("sky key for Victoria") == "sky key"
+    assert sky.wants_sky("tell me about the sky", ("sky",)) is None
 
 
 def test_triangles_close_and_the_dance_cancels_the_sun() -> None:
@@ -129,8 +140,20 @@ def test_ask_runs_the_sky_key_without_retrieving(tmp_path: Path, stub: list) -> 
     assert "Sky key and clock times" in out["relay_full"]
 
 
+def test_ask_sends_a_sky_word_without_a_place_to_the_papers(tmp_path: Path, stub: list) -> None:
+    calls: list[tuple[str, Any]] = []
+    q = "What does the Sun's position and gravity have to do with the plasmasphere?"
+    out = asyncio.run(asker(tmp_path, calls).ask(q))
+    assert calls  # passages were retrieved
+    assert stub == []  # sky-clock was not asked
+    assert "sky" not in out["results"]
+    assert out["results"]["sky_hint"] == {"matched": "sun's position"}
+    assert 'say "sky key"' in out["relay"]
+    assert "A sky key was asked for" not in out["relay"]
+
+
 def test_ask_says_what_is_missing(tmp_path: Path, stub: list) -> None:
-    out = asyncio.run(asker(tmp_path, []).ask("What is the solar time in Victoria?"))
+    out = asyncio.run(asker(tmp_path, []).ask("What is the sky key in Victoria?"))
     assert out["results"]["sky"]["missing"] == ["lat", "lon"]
     assert stub == []
     assert "decimal latitude and longitude" in out["relay"]
