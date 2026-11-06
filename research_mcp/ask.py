@@ -735,6 +735,13 @@ class Asker:
         elif sky_term:
             results["sky"] = await self._sky(route.question, sky_term)
             progress.append(_sky_progress(results["sky"]))
+        else:
+            hint = sky.mentions_sky(route.question, rules.sky)
+            if hint:
+                results["sky_hint"] = {"matched": hint}
+                progress.append(
+                    f"Sky key: not run ('{hint}' with no place or time; papers instead)"
+                )
         # A sky request in quick mode is answered by sky-clock; papers don't hold clock times.
         context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
         if route.mode == "quick" and sky_term and not context:
@@ -1223,6 +1230,11 @@ def _short(
         else:
             got.append(f"sky-clock didn't answer: {first_sentence(sky_result.get('error', ''))}")
             you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
+    if results.get("sky_hint"):
+        you.append(
+            "For sky-clock's key or clock times instead, give the place as decimal latitude and "
+            'longitude (for example 48.43, -123.37), or say "sky key".'
+        )
     if spec.get("name") and route.mode != "research":
         got.append(f"Specialist: {spec['name']}.")
     sky_only = (
