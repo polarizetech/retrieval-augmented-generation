@@ -248,3 +248,7 @@ def _offline_hub(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.M
     config.write_text("[breaker]\nfailures = 3\ncooldown_seconds = 120\n")
     monkeypatch.setenv("HUB_CONFIG", str(config))
     monkeypatch.setenv("HUB_LEDGER", str(root / "hub.sqlite"))
+    # The call log stays local and in the same folder: no test reaches a database.
+    monkeypatch.setenv("CALL_LOG_LOCAL", str(root / "calls.sqlite"))
+    monkeypatch.delenv("CALL_LOG_DATABASE_URL", raising=False)
+    monkeypatch.delenv("RECORDS_URL", raising=False)

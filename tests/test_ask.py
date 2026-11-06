@@ -152,14 +152,27 @@ def test_passages_under_the_relevance_floor_are_not_shown(tmp_path: Path) -> Non
     out = asyncio.run(_floor_asker(tmp_path, [-4.2, -4.3, -5.5]).ask("use the reg tool to audit"))
     found = out["results"]["evidence"]
     assert found["results"] == []
-    assert found["below_floor"] == {"n": 3, "floor": 0.0, "best_score": -4.2}
+    assert found["below_floor"] == {"n": 3, "floor": -3.0, "best_score": -4.2}
     assert "No passage was relevant enough to show" in out["relay"]
     assert "Found" not in out["relay"]
 
 
+def test_near_misses_from_a_whole_question_are_still_shown(tmp_path: Path) -> None:
+    # Reranked against a long question, a relevant passage can score just under 0.
+    out = asyncio.run(
+        _floor_asker(tmp_path, [-0.03, -0.95, -2.9]).ask(
+            "How do two tones mix nonlinearly in the cochlea to create a difference tone?"
+        )
+    )
+    found = out["results"]["evidence"]
+    assert [r["score"] for r in found["results"]] == [-0.03, -0.95, -2.9]
+    assert "below_floor" not in found
+    assert "No passage was relevant enough to show" not in out["relay"]
+
+
 def test_the_floor_keeps_relevant_passages_and_says_what_it_left_out(tmp_path: Path) -> None:
     out = asyncio.run(
-        _floor_asker(tmp_path, [5.1, 0.4, -1.2]).ask("What is vibrational resonance?")
+        _floor_asker(tmp_path, [5.1, 0.4, -4.2]).ask("What is vibrational resonance?")
     )
     found = out["results"]["evidence"]
     assert [r["score"] for r in found["results"]] == [5.1, 0.4]
