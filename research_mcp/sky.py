@@ -40,12 +40,12 @@ from typing import Any
 
 DEFAULT_URL = "http://127.0.0.1:8803"
 USER_AGENT = "retrieval-augmented-generation (sky__key; https://github.com/polarizetech)"
-#: Words that make a request a sky-key request (config/routing.default.toml [sky] adds to these).
+#: Names of the tool itself: these make a request a sky-key request on their own.
+EXPLICIT = ("sky key", "sun key", "sky clock", "sky-clock")
+#: Words that make a request a sky-key request only when it also gives a place (decimal coordinates)
+#: or a time, so a science question that mentions the Sun's position still goes to the papers
+#: (config/routing.default.toml [sky] adds to these).
 TRIGGERS = (
-    "sky key",
-    "sun key",
-    "sky clock",
-    "sky-clock",
     "solar time",
     "lunar time",
     "moon time",
@@ -89,15 +89,38 @@ def base_url() -> str:
     return os.environ.get("SKY_CLOCK_URL", DEFAULT_URL).rstrip("/")
 
 
-def wants_sky(question: str, extra: tuple[str, ...] = ()) -> str | None:
-    """The trigger a request matched, or None. "key" alone is too common to count."""
-    low = question.lower()
-    for term in (*TRIGGERS, *extra):
+def _term(low: str, terms: tuple[str, ...]) -> str | None:
+    for term in terms:
         if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", low):
             return term
+    return None
+
+
+def gives_place_or_time(question: str) -> bool:
+    """Whether the request names a place in decimal coordinates or a date and time."""
+    p = parse(question)
+    return ("lat" in p and "lon" in p) or "t" in p
+
+
+def wants_sky(question: str, extra: tuple[str, ...] = ()) -> str | None:
+    """The trigger a request matched, or None. The tool's own name always counts; a sky word
+    ("sun's position", "sunrise") counts only with a place or time, and "key" only with a place."""
+    low = question.lower()
+    term = _term(low, EXPLICIT)
+    if term:
+        return term
+    term = _term(low, (*TRIGGERS, *extra))
+    if term and gives_place_or_time(question):
+        return term
     if re.search(r"\bkey\b", low) and (_LABELLED.search(question) or _PAIR.search(question)):
         return "key"
     return None
+
+
+def mentions_sky(question: str, extra: tuple[str, ...] = ()) -> str | None:
+    """A sky word in a request that gives no place or time: not a sky-key request, but worth a
+    hint on how to make one."""
+    return _term(question.lower(), (*TRIGGERS, *extra))
 
 
 def _signed(value: str, hemi: str | None) -> float:
