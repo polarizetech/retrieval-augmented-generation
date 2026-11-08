@@ -33,7 +33,7 @@ from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import Response
 
-from research_mcp import mixer, oauth, records, sky
+from research_mcp import mixer, oauth, physical_mix, records, sky
 from research_mcp.ask import Asker, parse_tool_text
 from research_mcp.calllog import CallLog
 from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
@@ -442,6 +442,10 @@ def build_server(
             "the calculator with a physical random key; math__audio_mix runs an audio file (local "
             "or "
             "in Spaces) through it, lists Spaces audio, and reads its run ledger. "
+            "math__physical_mix runs physical-nonlinear-mixing (pnm): tones or an equation through "
+            "a digital model or through real hardware in the audio interface's loop, listing every "
+            "line m·f1 + n·f2 with its level; it also reads the tool's recorded runs (the pickle) "
+            "and its interface and device records. Hardware lines are measured and exploratory. "
             "For the sky key or clock times (solar, lunar, mean solar time, the Sun's and Moon's "
             "positions, rise and set) at a place and time, sky__key asks sky-clock; never compute "
             "or recall them. To measure the Sun from a stick and its shadow, or to locate a place "
@@ -824,6 +828,54 @@ def build_server(
                     readOnlyHint=True, idempotentHint=True, openWorldHint=True
                 ),
             ),
+            Tool(
+                name="math__physical_mix",
+                description=(
+                    "physical-nonlinear-mixing (pnm, polarizetech/physical-nonlinear-mixing): real "
+                    "hardware as a nonlinear mixer. action=calc: tones ('1000:-20,1370:-20', "
+                    "HZ[:DBFS[:PHASE_DEG]]) or an equation in t, through a digital model "
+                    "(via=model: linear, square, cube, sign, hard[:DBFS], tanh[:DB], poly:a,b,... "
+                    "or y in x; exact, DERIVED) or through the audio interface's loop (via=loop: "
+                    "sent out of the interface, through the devices on the loop, read back on its "
+                    "input; MEASURED, exploratory). Returns every line with its level, phase and "
+                    "the combination m·f1 + n·f2 that made it; through the loop, each line's test "
+                    "across bursts. Name the hardware with interface (e.g. scarlett-2i2-3rd-gen) "
+                    "and devices (e.g. bonsai, fuzz-face-mini, pickle). action=calibrate: the "
+                    "loop's delay, polarity and gain. action=runs: the recorded runs (match "
+                    "narrows, name reads one: the pickle's two-tone, sweep, noise and Olimex runs "
+                    "are there). action=setup: the interface and device records. Nothing measured "
+                    "is a finding."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["calc", "calibrate", "runs", "setup"],
+                            "default": "calc",
+                        },
+                        "tones": {"type": "string", "description": "HZ[:DBFS[:PHASE_DEG]],..."},
+                        "expr": {
+                            "type": "string",
+                            "description": "an equation in t, full scale 1.0",
+                        },
+                        "via": {"type": "string", "enum": ["model", "loop"], "default": "model"},
+                        "model": {"type": "string", "default": "cube"},
+                        "order": {"type": "integer", "minimum": 1, "maximum": 9, "default": 5},
+                        "repeats": {"type": "integer", "minimum": 3, "maximum": 64, "default": 8},
+                        "interface": {"type": "string"},
+                        "devices": {"type": "array", "items": {"type": "string"}},
+                        "set": {"type": "array", "items": {"type": "string"}},
+                        "loop": {"type": "string"},
+                        "level": {"type": "number", "default": -30},
+                        "name": {"type": "string", "description": "runs: a .json file to read"},
+                        "match": {"type": "string", "description": "runs: narrow the list"},
+                    },
+                },
+                annotations=ToolAnnotations(
+                    readOnlyHint=False, idempotentHint=False, openWorldHint=False
+                ),
+            ),
         ]
         sky_tools = [
             Tool(
@@ -1095,9 +1147,9 @@ def build_server(
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
     )
 
-    # gateway_status, ask, four hub__, web__search (with SearXNG), five rag__, four math__, three
+    # gateway_status, ask, four hub__, web__search (with SearXNG), five rag__, five math__, three
     # sky__, two session tools.
-    builtin = (20 + bool(searxng)) if builtin_tools else 1
+    builtin = (21 + bool(searxng)) if builtin_tools else 1
 
     def caller() -> dict[str, str]:
         """Who is calling, inferred when the session does not say: the stdio bridge sends its
@@ -1195,6 +1247,10 @@ def build_server(
         "math__bionumber": ("BioNumbers lookup", lambda a: quantities.bionumber(a["bnid"])),
         "math__sign_mix": ("sign mixer", lambda a: mixer.sign_mix_step(config_path, a)),
         "math__audio_mix": ("audio mixer", lambda a: mixer.audio_step(config_path, a)),
+        "math__physical_mix": (
+            "physical mixer",
+            lambda a: physical_mix.step(config_path, a),
+        ),
         "sky__key": (
             "sky key",
             lambda a: sky.reading(

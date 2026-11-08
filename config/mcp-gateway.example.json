@@ -49,6 +49,13 @@
       "args": ["run", "--project", "/path/to/polarity-calculator", "python", "/path/to/polarity-calculator/apps/polarity-explorer/v5/engine/engine.py"],
       "cwd": "/path/to/polarity-calculator",
       "enabled": false
+    },
+    "physical_mixing": {
+      "_comment": "polarizetech/physical-nonlinear-mixing's pnm, for math__physical_mix: tones or an equation through a digital model or the audio interface's loop, plus its recorded runs and hardware records (read from cwd). Point both paths at your checkout and run `uv sync --extra audio` there first.",
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/physical-nonlinear-mixing", "--extra", "audio", "pnm"],
+      "cwd": "/path/to/physical-nonlinear-mixing",
+      "enabled": false
     }
   },
   "web_search": {
