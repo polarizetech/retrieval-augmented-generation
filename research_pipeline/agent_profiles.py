@@ -107,6 +107,22 @@ SPECIALIST_TERMS = {
         "righetti",
         "teetering",
     },
+    # Not "toroidal" or "helicity" alone: grid-cell tori and protein helices use them too.
+    "plasma-toroids": {
+        "co-helicity",
+        "compact-toroid",
+        "counter-helicity",
+        "field-reversed",
+        "frc",
+        "frcs",
+        "plasmoid",
+        "plasmoids",
+        "spheromak",
+        "spheromaks",
+        "theta-pinch",
+        "toroid",
+        "toroids",
+    },
     "relative-mapping": {
         "azimuth",
         "bearing",
