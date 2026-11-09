@@ -131,6 +131,38 @@ def test_relative_mapping_routes_geometric_layouts_not_compass_widgets(tmp_path:
         assert route(question, public, extensions_root=private)["specialist"] is None
 
 
+def test_plasma_toroids_routes_spheromaks_and_frcs_not_grid_cell_tori(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    private = tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    agents = private / "agents"
+    agents.mkdir(parents=True)
+    (agents / "plasma-toroids.md").write_text(
+        "---\nname: plasma-toroids\n"
+        "description: Use first for compact toroids: spheromaks, field-reversed configurations "
+        "(FRCs), and co- and counter-helicity spheromak merging.\n"
+        "extends: researcher\n---\n"
+        "Positive routing examples:\n\n"
+        "- What decides whether two merging spheromaks become an FRC?\n\n"
+        "Negative routing examples:\n\n"
+        "- Design a tokamak divertor.\n\n"
+        "## Pipeline guidance\n\nName the configuration first.\n"
+    )
+    for question in (
+        "What decides whether two counter-helicity spheromaks merge into an FRC?",
+        "Why is the field-reversed configuration tilt mode stable in experiments?",
+        "Write down the Taylor state of a spheromak",
+    ):
+        selected = route(question, public, extensions_root=private)
+        assert selected["specialist"] == "plasma-toroids"
+        assert selected["guidance"] == "Name the configuration first."
+    for question in (
+        "Do grid cells lie on a toroidal manifold?",
+        "Design a tokamak divertor",
+    ):
+        assert route(question, public, extensions_root=private)["specialist"] is None
+
+
 def test_the_command_line_routes_like_the_research_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
