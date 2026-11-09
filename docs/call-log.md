@@ -27,6 +27,8 @@ Code: [`research_mcp/calllog.py`](../research_mcp/calllog.py) (recording, copyin
    - `requests`: the history of the `ask` request it belongs to.
 
    Where the reply has a `relay`, a **Links** list is added to the end of it as well.
+   `ask` is recorded in full but sends the client a compact brief ([mcp-clients.md](mcp-clients.md)),
+   so its record is where the full reply lives.
    Status tools (`gateway_status`, `hub__status`, `hub__board`, `hub__usage`) are recorded but get
    no links.
 5. **Record pages are served by the gateway under `/records`.** They only answer requests from this
