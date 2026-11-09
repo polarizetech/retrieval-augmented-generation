@@ -42,6 +42,11 @@ There are two ways to use it:
   dataset-fetch reads) through that calculator's sign or voltage mixer. It can also list the audio in
   Spaces, and read the calculator's run ledger, which records every run's settings and results. No
   model is involved in any of these.
+  `math__physical_mix` runs [physical-nonlinear-mixing](https://github.com/polarizetech/physical-nonlinear-mixing)
+  (`pnm`, configured as `calculators.physical_mixing`). It sends tones, or an equation in t, through
+  a digital model (exact) or through real hardware in the audio interface's loop (measured,
+  exploratory), and lists every line m·f1 + n·f2 with its level. It also reads the tool's recorded
+  runs (`action=runs`) and its interface and device records (`action=setup`).
 - **The sky tool** (`sky__key`) gives the sky key and clock times at a place and time from a running
   [sky-clock](https://github.com/polarizetech/sky-clock) data server (`SKY_CLOCK_URL`, default
   `http://127.0.0.1:8803`): the key/1 hash of the Sun's direction and gravity, the Sun split against
