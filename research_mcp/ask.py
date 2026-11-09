@@ -629,11 +629,10 @@ class Asker:
             )
         status = problem.status if problem else "working"
         footer = _footer(rid, hub.meters.line())
-        text = replies.short(
-            [problem.short() if problem else f"Still working after {seconds} s."],
-            ["The request keeps running on the gateway."],
-            [f"Ask for the answer when you want it (request `{rid}`)."],
-        )
+        got = [problem.short() if problem else f"Still working after {seconds} s."]
+        nxt = ["The request keeps running on the gateway."]
+        you = [f"Ask for the answer when you want it (request `{rid}`)."]
+        text = replies.short(got, nxt, you)
         full = replies.join(
             problem.plain() if problem else f"**Still working after {seconds} s.** {after}",
             f"**What the research tool did so far** ({seconds} s)\n"
@@ -651,6 +650,7 @@ class Asker:
             "seconds": seconds,
             "relay": text,
             "relay_full": full,
+            "summary": {"results": got, "next": nxt, "for_you": you},
             "relay_instructions": (
                 "Show `relay` to the person exactly as written. Show `relay_full` only when the "
                 "person asks for more detail. Call hub__result with request_id when the person "
@@ -887,6 +887,7 @@ class Asker:
         if status == "done" and "research" in results:
             status = "working"
         usage = self.hub.meters.line() if self.hub is not None else ""
+        got, nxt, you = _short(route, spec, results, problems, rid)
         text, full = (
             relay(
                 route, spec, progress, results, seconds, problems=problems, usage=usage,
@@ -904,6 +905,7 @@ class Asker:
             "results": results,
             "relay": text,
             "relay_full": full,
+            "summary": {"results": got, "next": nxt, "for_you": you},
             "relay_instructions": (
                 "Show `relay` to the person exactly as written. It is short on purpose: show "
                 "`relay_full` (passages, steps, limits) only when the person asks for more. The "

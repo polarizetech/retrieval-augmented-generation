@@ -33,7 +33,7 @@ from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import Response
 
-from research_mcp import mixer, oauth, physical_mix, records, sky
+from research_mcp import brief, mixer, oauth, physical_mix, records, sky
 from research_mcp.ask import Asker, parse_tool_text
 from research_mcp.calllog import CallLog
 from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
@@ -411,13 +411,13 @@ def build_server(
         or (
             "Start every request with ask(question): it decides which parts of this server run "
             "(a passage retrieval for a question, the research pipeline for an evidence question, "
-            "the coder's tools only for a task or code review), runs them, and returns `relay`. "
-            "Show `relay` to the person exactly as written, and add anything of your own only "
-            "after it, labelled as yours. Keep the links a reply carries (its `links` field and "
-            "a relay's Links list): they open the record of the call and the research it "
-            "refers to. `relay` is three short lists (results, what happens "
-            "next, anything for the person); show `relay_full` only when the person asks for "
-            "more. Pass repo when the request is about a repository, and "
+            "the coder's tools only for a task or code review), runs them, and returns `brief`. "
+            "Answer the person yourself from `brief`, short and in the reply's `answer_format`: "
+            "bottom line, key points each citing an evidence id, gaps, sources. Say first when "
+            "its coverage is weak or none, and never fill gaps from memory. Keep the links a "
+            "reply carries (its `links` field): they open the record of the call, which holds "
+            "the full reply, and the research it refers to. Pass repo when the request is about "
+            "a repository, and "
             "a prefix such as research: or code: only when the person used one. "
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
@@ -1104,14 +1104,22 @@ def build_server(
             "(config/routing.default.toml and config/routing.toml) to the cheapest part of this "
             "server that serves it: one passage retrieval for a question, the research pipeline "
             "for an evidence question, retrieval plus the coder's repos__ tools for a task or code "
-            "review. Picks the specialist brief the same way. Returns `relay`, a short block to "
-            "show the person unchanged (results, next, and anything for them to do), and "
-            "`relay_full`, the detail, to show only when they ask."
+            "review. Picks the specialist brief the same way. Returns `brief` (each passage once, "
+            "with a coverage level saying how well the library covers the question) and "
+            "`answer_format`: write a short cited answer from the brief in that format. "
+            "detail='full' returns the whole reply instead."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "The person's request, verbatim."},
+                "detail": {
+                    "type": "string",
+                    "enum": ["", "full"],
+                    "default": "",
+                    "description": "'full' for the whole reply (relay, relay_full, progress, "
+                    "raw results) instead of the compact brief; for debugging.",
+                },
                 "repo": {"type": "string", "default": "", "description": "owner/name, if any."},
                 "mode": {
                     "type": "string",
@@ -1290,7 +1298,7 @@ def build_server(
     async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         started = time.monotonic()
         result = await dispatch(name, arguments)
-        return call_log.record(
+        recorded = call_log.record(
             CallLog.new_id(),
             name,
             arguments,
@@ -1298,6 +1306,10 @@ def build_server(
             seconds=time.monotonic() - started,
             who=caller(),
         )
+        # The call log keeps the full ask reply; the client gets the compact brief.
+        if name == "ask" and isinstance(recorded, dict) and arguments.get("detail") != "full":
+            return brief.compact(recorded)
+        return recorded
 
     async def dispatch(name: str, arguments: dict[str, Any]) -> Any:
         if name == "gateway_status":
