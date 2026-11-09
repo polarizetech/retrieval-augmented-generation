@@ -66,14 +66,27 @@ is chosen by `pipeline__profile_route`, or by the operator's own words. The word
 shape. Its lists are added to the defaults, and a `[profiles]` entry names the specialist its
 words pick. The file is read on every call, so edits apply without a restart.
 
-`ask` returns `relay`, a short Markdown block for the client to show unchanged: three lists of one
-sentence per item, **Results** (what came back, any problem, and the main limit), **Next** (what
-the assistant does next) and, only when the person has something to do, **For you**. The detail
-(what ran and why, the passages with their evidence ids, the Limits line, the request id and
-usage) is `relay_full`, which the client shows only when the person asks for more; the passages
-also come back in `results` for the assistant to ground its answer in. Anything the client adds
-goes after the relay, labelled as its own. A finished research run works the same way: its short
-`relay`, and the full `answer` on request. The gateway does not make code changes itself yet: on the code
+`ask` returns a compact `brief` for the assistant to answer from, and `answer_format`, which says
+how: a bottom line first, then at most five key points each citing an evidence id, a line on gaps
+and limits, and the sources cited. The assistant writes that answer itself; it does not paste the
+brief. In the brief:
+
+- `passages`: each retrieved passage once, with its evidence id, source and reranker score.
+- `coverage`: how well the library covers the question, from the best reranker score: `strong`
+  (1 or more), `partial` (−1 to 1), `weak` (under −1, loosely related only), `none`, or
+  `unscored` without a reranker. When it is weak or none, the answer says so first.
+- `specialist`: the specialist's name and guidance, when one was picked.
+- `found`, `next`, `for_you`: one sentence per item. `for_you` holds anything the person must do,
+  such as a choice after a failure, and the answer starts with it.
+- `tool_results`: anything else that ran (a research run, sky-clock, the sign mixer, the coder).
+- `limits`: the main limit.
+
+The full reply (`relay`, `relay_full`, progress and raw results) is kept in the call log, and the
+reply's `links.record` opens it ([call-log.md](call-log.md)). Pass `detail: "full"` to get it
+back from `ask` directly, for debugging. A finished research run still returns its short `relay`,
+and the full `answer` on request.
+
+The gateway does not make code changes itself yet: on the code
 route it gives context and names the tools, and the assistant makes the change.
 
 ## The hub: ledger, failures and usage

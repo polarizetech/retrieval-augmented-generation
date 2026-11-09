@@ -1,10 +1,12 @@
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from research_mcp.ask import Asker, parse_tool_text
+from research_mcp.brief import compact, coverage
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -184,3 +186,73 @@ def test_without_a_reranker_scores_are_ranks_and_no_floor_applies(tmp_path: Path
     out = asyncio.run(_floor_asker(tmp_path, [-0.1, -0.2], reranker=None).ask("What is noise?"))
     assert len(out["results"]["evidence"]["results"]) == 2
     assert "below_floor" not in out["results"]["evidence"]
+
+
+# The compact brief the gateway sends instead of the full reply (research_mcp/brief.py).
+
+
+def found(*scores: float, reranked: bool = True) -> dict[str, Any]:
+    return {
+        "query": "q",
+        "reranker": "onnx:bge" if reranked else None,
+        "results": [
+            {"evidence_id": f"W{i}#p0", "text": "t", "score": s} for i, s in enumerate(scores)
+        ],
+    }
+
+
+def test_coverage_levels_follow_the_best_reranker_score() -> None:
+    assert coverage(found(4.6, 2.0))["level"] == "strong"  # type: ignore[index]
+    assert coverage(found(0.4, -2.0))["level"] == "partial"  # type: ignore[index]
+    weak = coverage(found(-1.3, -2.7))
+    assert weak is not None
+    assert weak["level"] == "weak"
+    assert weak["best_score"] == -1.3
+    assert "Say so before anything else" in weak["note"]
+    assert coverage(
+        {"results": [], "below_floor": {"n": 5, "floor": -3.0, "best_score": -4.2}}
+    ) == {
+        "level": "none",
+        "note": "No passage in the library matched. Say so before answering any other way.",
+        "left_out": "5 weaker passage(s) scored under the relevance floor (-3; best -4.20).",
+    }
+    assert coverage(found(1.0, reranked=False))["level"] == "unscored"  # type: ignore[index]
+    assert coverage(None) is None
+
+
+def test_a_quick_reply_becomes_one_brief_with_each_passage_once(tmp_path: Path) -> None:
+    full = asyncio.run(asker(tmp_path, []).ask("What is pink noise?"))
+    full["links"] = {"record": "http://x/records/c1"}
+    out = compact(full)
+    assert set(out) == {"request_id", "status", "mode", "brief", "answer_format", "links"}
+    brief = out["brief"]
+    assert brief["passages"] == [
+        {
+            "id": "W1#p0.abcdef12",
+            "source": "Colours of noise, 2017, doi:10.1/x",
+            "text": "Pink noise has equal energy per octave.",
+        }
+    ]
+    assert brief["coverage"]["level"] == "unscored"  # the fake retrieval has no reranker
+    assert brief["specialist"] == {"name": "noise-engineering", "guidance": "Name the domain."}
+    assert "passages, not a checked answer" in brief["limits"]
+    assert out["links"] == {"record": "http://x/records/c1"}
+    # The passage text is sent once, not three times as in the full reply.
+    assert json.dumps(out).count("equal energy per octave") == 1
+    assert json.dumps(full).count("equal energy per octave") >= 2
+    assert "Bottom line" in out["answer_format"]
+    assert "evidence id" in out["answer_format"]
+
+
+def test_a_research_reply_keeps_its_run_and_next_step(tmp_path: Path) -> None:
+    full = asyncio.run(asker(tmp_path, []).ask("research: does pink noise improve sleep?"))
+    out = compact(full)
+    assert out["mode"] == "research"
+    assert out["brief"]["tool_results"]["research"]["run_id"] == "r1"
+    assert any("hub__result" in n for n in out["brief"]["next"])
+    assert "passages" not in out["brief"]
+
+
+def test_anything_that_is_not_a_full_ask_reply_passes_through() -> None:
+    error = {"error": {"status": "refused"}}
+    assert compact(error) is error
