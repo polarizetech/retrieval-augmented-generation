@@ -764,12 +764,20 @@ def test_the_gateway_lists_hub_tools_and_asks_through_the_contract(tmp_path: Pat
             out = asked.structuredContent or {}
             assert out["status"] == "needs_decision"
             assert out["error"]["component"] == "library"
-            assert out["relay_full"].startswith(
+            # The client gets the compact brief; the decision reaches the person through it.
+            assert "relay_full" not in out
+            assert out["brief"]["for_you"][0].startswith("Choose `fallback` or `stop`")
+            assert out["brief"]["limits"].startswith("Nothing was concluded")
+            assert out["links"]["record"].startswith("http://127.0.0.1:0/records/")
+            full = await session.call_tool(
+                "ask", {"question": "What is pink noise?", "detail": "full"}
+            )
+            assert (full.structuredContent or {})["relay_full"].startswith(
                 "**Your choice is needed: the paper library failed.**"
             )
 
             status = (await session.call_tool("hub__status", {})).structuredContent or {}
-            assert [r["id"] for r in status["active"]] == [out["request_id"]]
+            assert out["request_id"] in [r["id"] for r in status["active"]]
             assert status["active"][0]["session"].startswith("stdio-")
             assert status["active"][0]["session_inferred"] is True
             assert set(status["health"]) >= {"library", "provider", "github", "corpus"}
