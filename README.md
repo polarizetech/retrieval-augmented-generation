@@ -48,13 +48,13 @@ There are two ways to use it:
   exploratory), and lists every line m·f1 + n·f2 with its level. It also reads the tool's recorded
   runs (`action=runs`) and its interface and device records (`action=setup`).
 - **The sky tool** (`sky__key`) gives the sky key and clock times at a place and time from a running
-  [sky-clock](https://github.com/polarizetech/sky-clock) data server (`SKY_CLOCK_URL`, default
+  [polarize-clock](https://github.com/polarizetech/polarize-clock) data server (`POLARIZE_CLOCK_URL`, default
   `http://127.0.0.1:8803`): the key/1 hash of the Sun's direction and gravity, the Sun split against
   gravity as unit triangles (and, with a heading, the dance angle), solar, mean solar and lunar time,
   the equation of time, the Moon's position and phase, rise, set and transit times, and tidal gravity.
   `ask` runs it by itself when a request asks for a sky key or a clock time and gives decimal
   coordinates ("lunar time at 48.43, -123.37"); words for it go in `[sky]` in the routing config.
-  Two more come from sky-clock's sun sights: `sky__measure` turns a plumbed stick and its shadow
+  Two more come from polarize-clock's sun sights: `sky__measure` turns a plumbed stick and its shadow
   into the Sun's altitude and azimuth, and `sky__locate` turns those (or the stick and shadow) and a
   UTC time into the places that see the Sun there, with local solar time and how many km each moves
   per 0.1° of measuring error. `ask` runs a sight by itself when a request gives one ("where am I? a

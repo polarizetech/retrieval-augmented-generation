@@ -1,8 +1,8 @@
-"""The sky key and clock times for a place and time, from a running sky-clock data server.
+"""The sky key and clock times for a place and time, from a running polarize-clock data server.
 
-sky-clock (polarizetech/sky-clock) computes them; this module only asks it and arranges the answer.
-No model runs here, and nothing is recalled: every number comes back from sky-clock with the version
-and commit that produced it. Two routes are read:
+polarize-clock (polarizetech/polarize-clock) computes them; this module only asks it and arranges
+the answer. No model runs here, and nothing is recalled: every number comes back from polarize-clock
+with the version and commit that produced it. Two routes are read:
 
   /api/key     the key/1 document: the Sun's direction and gravity at the place, binned, hashed
   /api/clocks  solar time, lunar time, mean solar time and the equation of time, the Sun's and
@@ -22,8 +22,8 @@ into the places that see the Sun there, with local solar time and how far each p
 degree of measuring error. `parse_sight()` reads a stick, shadow and bearing (or the Sun's
 altitude and azimuth) out of a request, for `ask`.
 
-The location goes only to the sky-clock server named by SKY_CLOCK_URL (default the local one). It is
-not logged here.
+The location goes only to the polarize-clock server named by POLARIZE_CLOCK_URL (default the local
+one). It is not logged here.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from typing import Any
 DEFAULT_URL = "http://127.0.0.1:8803"
 USER_AGENT = "retrieval-augmented-generation (sky__key; https://github.com/polarizetech)"
 #: Names of the tool itself: these make a request a sky-key request on their own.
-EXPLICIT = ("sky key", "sun key", "sky clock", "sky-clock")
+EXPLICIT = ("sky key", "sun key", "sky clock", "polarize-clock", "polarize clock")
 #: Words that make a request a sky-key request only when it also gives a place (decimal coordinates)
 #: or a time, so a science question that mentions the Sun's position still goes to the papers
 #: (config/routing.default.toml [sky] adds to these).
@@ -86,7 +86,7 @@ _HEIGHT = re.compile(
 
 
 def base_url() -> str:
-    return os.environ.get("SKY_CLOCK_URL", DEFAULT_URL).rstrip("/")
+    return os.environ.get("POLARIZE_CLOCK_URL", DEFAULT_URL).rstrip("/")
 
 
 def _term(low: str, terms: tuple[str, ...]) -> str | None:
@@ -130,7 +130,7 @@ def _signed(value: str, hemi: str | None) -> float:
 
 def parse(question: str) -> dict[str, Any]:
     """Place, time, height and heading from a request. Missing pieces are listed in `missing`;
-    a missing time means now (sky-clock's default)."""
+    a missing time means now (polarize-clock's default)."""
     out: dict[str, Any] = {}
     for m in _LABELLED.finditer(question):
         which = "lat" if m.group(1).lower().startswith("lat") else "lon"
@@ -168,9 +168,9 @@ def _get(path: str, query: dict[str, Any], timeout: float) -> dict[str, Any]:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:300]
-        raise ValueError(f"sky-clock refused {path}: {exc.code} {detail}") from exc
+        raise ValueError(f"polarize-clock refused {path}: {exc.code} {detail}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise OSError(f"sky-clock is not reachable at {base_url()}: {exc}") from exc
+        raise OSError(f"polarize-clock is not reachable at {base_url()}: {exc}") from exc
 
 
 def jd_iso(jd: float | None) -> str | None:
@@ -230,7 +230,8 @@ def reading(
     heading: float | None = None,
     timeout: float = 60.0,
 ) -> dict[str, Any]:
-    """The key and the clock times at one place and time, from sky-clock, arranged for a reply."""
+    """The key and the clock times at one place and time, from polarize-clock, arranged for a
+    reply."""
     if not -90 <= lat <= 90:
         raise ValueError("lat must be in -90..90")
     if not -180 <= lon <= 360:
@@ -245,7 +246,7 @@ def reading(
     tide = clocks["gravity"]["tide"]
     return {
         "source": {
-            "tool": key.get("provider", {}).get("tool", "sky-clock"),
+            "tool": key.get("provider", {}).get("tool", "polarize-clock"),
             "version": key.get("provider", {}).get("version"),
             "commit": key.get("provider", {}).get("commit"),
             "url": base_url(),
@@ -302,10 +303,10 @@ def reading(
         },
         "tide": {"dg_ms2": tide["dg"], "moon_ms2": tide["moon"], "sun_ms2": tide["sun"]},
         "limits": [
-            "Computed by sky-clock, an exploratory tool: data, not a finding.",
+            "Computed by polarize-clock, an exploratory tool: data, not a finding.",
             "UT1 is taken as UTC from 1972 to 2030 (up to 0.9 s); Delta T is uncertain far from "
             "the present.",
-            "Tidal constants and refraction are marked UNVERIFIED by sky-clock.",
+            "Tidal constants and refraction are marked UNVERIFIED by polarize-clock.",
         ],
     }
 
@@ -316,7 +317,8 @@ def summary(r: dict[str, Any]) -> str:
     return (
         f"Sky key {r['key']['hex'][:12]}… at {r['place']['lat']:g}, {r['place']['lon']:g} "
         f"({r['time']['utc']} UTC): Sun {s['el_deg']:.2f}° up at {s['az_deg']:.2f}°; solar time "
-        f"{c['solar_time']}, lunar time {c['lunar_time']} (sky-clock {r['source']['version']})."
+        f"{c['solar_time']}, lunar time {c['lunar_time']} "
+        f"(polarize-clock {r['source']['version']})."
     )
 
 
@@ -415,12 +417,15 @@ def measure(
     tip_n: float | None = None,
     timeout: float = 60.0,
 ) -> dict[str, Any]:
-    """The Sun's altitude and azimuth from a vertical stick and its shadow, from sky-clock."""
+    """The Sun's altitude and azimuth from a vertical stick and its shadow, from polarize-clock."""
     q: dict[str, Any] = {"stick": stick}
     for k, v in (("shadow", shadow), ("bearing", bearing), ("tip_e", tip_e), ("tip_n", tip_n)):
         if v is not None:
             q[k] = v
-    return {**_get("/api/measure", q, timeout), "source": {"tool": "sky-clock", "url": base_url()}}
+    return {
+        **_get("/api/measure", q, timeout),
+        "source": {"tool": "polarize-clock", "url": base_url()},
+    }
 
 
 def locate(
@@ -436,7 +441,7 @@ def locate(
     timeout: float = 60.0,
 ) -> dict[str, Any]:
     """The places that see the Sun at (alt, az), or as a stick and shadow show it, at UTC t, from
-    sky-clock, with local solar time as hh:mm:ss and event times as ISO UTC."""
+    polarize-clock, with local solar time as hh:mm:ss and event times as ISO UTC."""
     q: dict[str, Any] = {"h": h}
     if t:
         q["t"] = t
@@ -457,7 +462,7 @@ def locate(
         c["local_solar_time"] = hours_hms(c.get("local_solar_time_h"))
         c["local_mean_time"] = hours_hms(c.get("local_mean_time_h"))
     out["time_utc"] = jd_iso(out.get("input", {}).get("jd_ut"))
-    out["source"] = {"tool": "sky-clock", "url": base_url()}
+    out["source"] = {"tool": "polarize-clock", "url": base_url()}
     return out
 
 

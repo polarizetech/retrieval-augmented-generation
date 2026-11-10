@@ -78,7 +78,7 @@ brief. In the brief:
 - `specialist`: the specialist's name and guidance, when one was picked.
 - `found`, `next`, `for_you`: one sentence per item. `for_you` holds anything the person must do,
   such as a choice after a failure, and the answer starts with it.
-- `tool_results`: anything else that ran (a research run, sky-clock, the sign mixer, the coder).
+- `tool_results`: anything else that ran (a research run, polarize-clock, the sign mixer, the coder).
 - `limits`: the main limit.
 
 The full reply (`relay`, `relay_full`, progress and raw results) is kept in the call log, and the

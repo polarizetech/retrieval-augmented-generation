@@ -1,5 +1,6 @@
 """sky__measure, sky__locate and the sun-sight step of `ask`: parsing a sight out of plain words,
-and arranging sky-clock's answer. sky-clock is stubbed; a live check runs with SKY_CLOCK_LIVE=1."""
+and arranging polarize-clock's answer. polarize-clock is stubbed; a live check runs with
+POLARIZE_CLOCK_LIVE=1."""
 
 import asyncio
 import os
@@ -77,7 +78,7 @@ def test_parse_sight_says_what_is_missing() -> None:
     assert got["missing"] == ["the shadow's bearing (degrees from true north)"]
 
 
-def test_locate_and_measure_arrange_sky_clocks_answer(stub: list) -> None:
+def test_locate_and_measure_arrange_polarize_clocks_answer(stub: list) -> None:
     r = sky.locate("2026-11-04T22:00:00Z", stick=1.0, shadow=2.69, bearing=32.0)
     assert stub[0] == (
         "/api/locate",
@@ -115,7 +116,9 @@ def test_ask_asks_for_the_missing_bearing(tmp_path: Path, stub: list) -> None:
     assert "the shadow's bearing" in out["relay"]
 
 
-@pytest.mark.skipif(os.environ.get("SKY_CLOCK_LIVE") != "1", reason="set SKY_CLOCK_LIVE=1")
+@pytest.mark.skipif(
+    os.environ.get("POLARIZE_CLOCK_LIVE") != "1", reason="set POLARIZE_CLOCK_LIVE=1"
+)
 def test_live_sun_sight() -> None:
     r = sky.locate("2026-11-04T22:00:00Z", stick=1.0, shadow=2.69, bearing=32.0)
     best = r["candidates"][0]

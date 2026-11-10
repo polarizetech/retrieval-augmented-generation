@@ -742,10 +742,12 @@ class Asker:
                 progress.append(
                     f"Sky key: not run ('{hint}' with no place or time; papers instead)"
                 )
-        # A sky request in quick mode is answered by sky-clock; papers don't hold clock times.
+        # A sky request in quick mode is answered by polarize-clock; papers don't hold clock times.
         context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
         if route.mode == "quick" and sky_term and not context:
-            progress.append(f"Retrieval: skipped (a {sky_term} request, answered by sky-clock)")
+            progress.append(
+                f"Retrieval: skipped (a {sky_term} request, answered by polarize-clock)"
+            )
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
         if route.mode in ("quick", "code") and context:
@@ -839,7 +841,7 @@ class Asker:
         )
 
     async def _sight(self, want: dict[str, Any]) -> dict[str, Any]:
-        """sky-clock's places for the sun sight in the request, or what is missing to ask."""
+        """polarize-clock's places for the sun sight in the request, or what is missing to ask."""
         base = {"asked": {k: v for k, v in want.items() if k != "missing"}}
         if want["missing"]:
             return {**base, "missing": want["missing"]}
@@ -851,7 +853,7 @@ class Asker:
         return {**base, "located": located}
 
     async def _sky(self, question: str, term: str) -> dict[str, Any]:
-        """sky-clock's key and clock times for the place and time in the request, or what is
+        """polarize-clock's key and clock times for the place and time in the request, or what is
         missing to ask for them."""
         want = sky.parse(question)
         base = {"matched": term, "asked": {k: v for k, v in want.items() if k != "missing"}}
@@ -1206,22 +1208,25 @@ def _short(
         if sight.get("located"):
             got.append(sky.sight_summary(sight["located"]))
             nxt.append(
-                "The assistant shows the place(s) and their solar time from sky-clock "
+                "The assistant shows the place(s) and their solar time from polarize-clock "
                 "(`relay_full` has every value), and computes none itself."
             )
         elif sight.get("missing"):
             got.append("A sun sight was given, but not all of it.")
             you.append("Give " + " and ".join(sight["missing"]) + ", and a UTC time if not now.")
         else:
-            got.append(f"sky-clock didn't answer: {first_sentence(sight.get('error', ''))}")
-            you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
+            got.append(f"polarize-clock didn't answer: {first_sentence(sight.get('error', ''))}")
+            you.append(
+                f"Start the polarize-clock data server ({sky.base_url()}), "
+                "or set POLARIZE_CLOCK_URL."
+            )
     sky_result = results.get("sky")
     if sky_result is not None:
         if sky_result.get("reading"):
             got.append(sky.summary(sky_result["reading"]))
             nxt.append(
-                "The assistant shows the key and clock times from sky-clock (`relay_full` has "
-                "every value), and computes none itself."
+                "The assistant shows the key and clock times from polarize-clock (`relay_full` "
+                "has every value), and computes none itself."
             )
         elif sky_result.get("missing"):
             got.append("A sky key was asked for, but the place isn't in decimal coordinates.")
@@ -1230,12 +1235,17 @@ def _short(
                 "and a UTC time if not now."
             )
         else:
-            got.append(f"sky-clock didn't answer: {first_sentence(sky_result.get('error', ''))}")
-            you.append(f"Start the sky-clock data server ({sky.base_url()}), or set SKY_CLOCK_URL.")
+            got.append(
+                f"polarize-clock didn't answer: {first_sentence(sky_result.get('error', ''))}"
+            )
+            you.append(
+                f"Start the polarize-clock data server ({sky.base_url()}), "
+                "or set POLARIZE_CLOCK_URL."
+            )
     if results.get("sky_hint"):
         you.append(
-            "For sky-clock's key or clock times instead, give the place as decimal latitude and "
-            'longitude (for example 48.43, -123.37), or say "sky key".'
+            "For polarize-clock's key or clock times instead, give the place as decimal latitude "
+            'and longitude (for example 48.43, -123.37), or say "sky key".'
         )
     if spec.get("name") and route.mode != "research":
         got.append(f"Specialist: {spec['name']}.")
@@ -1245,7 +1255,7 @@ def _short(
     got.append(
         "Nothing was concluded."
         if stopped
-        else "sky-clock's numbers are data from an exploratory tool, not a finding."
+        else "polarize-clock's numbers are data from an exploratory tool, not a finding."
         if sky_only
         else {
             "quick": "These are passages, not a checked answer.",
@@ -1276,19 +1286,19 @@ def parse_tool_text(result: Any) -> dict[str, Any]:
 def _sky_progress(result: dict[str, Any]) -> str:
     if result.get("reading"):
         src = result["reading"]["source"]
-        return f"Sky key: from sky-clock {src.get('version')} ({src.get('url')})"
+        return f"Sky key: from polarize-clock {src.get('version')} ({src.get('url')})"
     if result.get("missing"):
         return f"Sky key: not asked for; missing {', '.join(result['missing'])}"
-    return f"Sky key: sky-clock failed ({result.get('error', '')[:120]})"
+    return f"Sky key: polarize-clock failed ({result.get('error', '')[:120]})"
 
 
 def _sky_block(result: dict[str, Any] | None) -> str:
-    """The full reply's sky section: every value sky-clock returned, as JSON."""
+    """The full reply's sky section: every value polarize-clock returned, as JSON."""
     if not result:
         return ""
     if result.get("reading"):
         return (
-            "**Sky key and clock times** (from sky-clock; data, not a finding)\n```json\n"
+            "**Sky key and clock times** (from polarize-clock; data, not a finding)\n```json\n"
             + json.dumps(result["reading"], indent=1)
             + "\n```"
         )
@@ -1298,27 +1308,26 @@ def _sky_block(result: dict[str, Any] | None) -> str:
             + ", ".join(result["missing"])
             + ". Call `sky__key` with lat and lon in decimal degrees."
         )
-    return f"**Sky key:** sky-clock failed: {result.get('error', '')}"
+    return f"**Sky key:** polarize-clock failed: {result.get('error', '')}"
 
 
 def _sight_progress(result: dict[str, Any]) -> str:
     if result.get("located"):
         n = len(result["located"].get("candidates", []))
-        return (
-            f"Sun sight: located by sky-clock ({n} place(s); {result['located']['source']['url']})"
-        )
+        url = result["located"]["source"]["url"]
+        return f"Sun sight: located by polarize-clock ({n} place(s); {url})"
     if result.get("missing"):
         return f"Sun sight: not asked for; missing {', '.join(result['missing'])}"
-    return f"Sun sight: sky-clock failed ({result.get('error', '')[:120]})"
+    return f"Sun sight: polarize-clock failed ({result.get('error', '')[:120]})"
 
 
 def _sight_block(result: dict[str, Any] | None) -> str:
-    """The full reply's sun-sight section: every value sky-clock returned, as JSON."""
+    """The full reply's sun-sight section: every value polarize-clock returned, as JSON."""
     if not result:
         return ""
     if result.get("located"):
         return (
-            "**Sun sight** (located by sky-clock; data, not a finding)\n```json\n"
+            "**Sun sight** (located by polarize-clock; data, not a finding)\n```json\n"
             + json.dumps(result["located"], indent=1)
             + "\n```"
         )
@@ -1328,4 +1337,4 @@ def _sight_block(result: dict[str, Any] | None) -> str:
             + ", ".join(result["missing"])
             + ". Call `sky__locate` with alt and az, or stick, shadow and bearing."
         )
-    return f"**Sun sight:** sky-clock failed: {result.get('error', '')}"
+    return f"**Sun sight:** polarize-clock failed: {result.get('error', '')}"
