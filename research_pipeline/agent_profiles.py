@@ -123,6 +123,22 @@ SPECIALIST_TERMS = {
         "toroid",
         "toroids",
     },
+    # Build words, not subjects: "plasma", "coil", "mixer" and "signal" alone stay with the
+    # plasma-toroids and signal-processing specialists.
+    "macgyver": {
+        "arduino",
+        "breadboard",
+        "contact-mic",
+        "diy",
+        "esp32",
+        "homemade",
+        "household",
+        "macgyver",
+        "makeshift",
+        "photodiode",
+        "plasma-ball",
+        "plasma-globe",
+    },
     "relative-mapping": {
         "azimuth",
         "bearing",
@@ -228,6 +244,12 @@ def _has_specialist_anchor(name: str, words: set[str]) -> bool:
             or bool(words & RELATIVE_MAP_WORDS and words & RELATIVE_METHOD_WORDS)
             or {"compass", "ruler"} <= words
             or {"compass", "straightedge"} <= words
+        )
+    if name == "macgyver":
+        return (
+            bool(words & SPECIALIST_TERMS[name])
+            or {"plasma", "ball"} <= words
+            or {"plasma", "globe"} <= words
         )
     if name in SPECIALIST_TERMS:
         return bool(words & SPECIALIST_TERMS[name])
