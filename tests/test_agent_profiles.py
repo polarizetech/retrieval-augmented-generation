@@ -163,6 +163,58 @@ def test_plasma_toroids_routes_spheromaks_and_frcs_not_grid_cell_tori(tmp_path: 
         assert route(question, public, extensions_root=private)["specialist"] is None
 
 
+def test_macgyver_routes_diy_rigs_not_plasma_physics_or_mixing_maths(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    private = tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    agents = private / "agents"
+    agents.mkdir(parents=True)
+    (agents / "macgyver.md").write_text(
+        "---\nname: macgyver\n"
+        "description: Use first for DIY and home-built experiment rigs: household parts, Arduino "
+        "boards, sound cards, coils and a plasma ball as instruments, signal mixers and sensors.\n"
+        "extends: researcher\n---\n"
+        "Positive routing examples:\n\n"
+        "- How can I turn a battery plasma ball into a signal mixer with a stereo input?\n\n"
+        "Negative routing examples:\n\n"
+        "- Derive the intermodulation products of a cubic nonlinearity.\n\n"
+        "## Pipeline guidance\n\nStart from the question the rig must answer.\n"
+    )
+    (agents / "plasma-toroids.md").write_text(
+        "---\nname: plasma-toroids\n"
+        "description: Compact toroids: spheromaks and field-reversed configurations.\n"
+        "extends: researcher\n---\n"
+    )
+    (agents / "signal-processing.md").write_text(
+        "---\nname: signal-processing\n"
+        "description: Fourier analysis, nonlinear frequency mixing and intermodulation products.\n"
+        "extends: researcher\n---\n"
+    )
+    for question in (
+        "How do I make a DIY signal mixer from a battery plasma ball?",
+        "Build an Arduino magnetometer from household copper wire",
+        "Tape a photodiode to the plasma globe and record it on line-in",
+        "Turn a regular battery powered plasma ball into a signal mixer with a stereo input",
+    ):
+        selected = route(question, public, extensions_root=private)
+        assert selected["specialist"] == "macgyver"
+        assert selected["guidance"] == "Start from the question the rig must answer."
+    assert (
+        route("Why do two spheromaks merge into an FRC?", public, extensions_root=private)[
+            "specialist"
+        ]
+        == "plasma-toroids"
+    )
+    assert (
+        route(
+            "Derive the intermodulation products of two tones in a cubic mixer",
+            public,
+            extensions_root=private,
+        )["specialist"]
+        == "signal-processing"
+    )
+
+
 def test_the_command_line_routes_like_the_research_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
