@@ -139,6 +139,23 @@ SPECIALIST_TERMS = {
         "plasma-ball",
         "plasma-globe",
     },
+    # Not "energy", "motion", "force", "momentum" or "rolling" alone: neural, plasma, signal and
+    # optimiser questions use them too. "ramp", "terminal" and "drag" are guarded below.
+    "classical-mechanics": {
+        "coefficient-of-friction",
+        "drag",
+        "free-body",
+        "friction",
+        "frictional",
+        "incline",
+        "inclined",
+        "kinematics",
+        "projectile",
+        "projectiles",
+        "restitution",
+        "stick-slip",
+        "tribology",
+    },
     "relative-mapping": {
         "azimuth",
         "bearing",
@@ -148,6 +165,19 @@ SPECIALIST_TERMS = {
         "triangulation",
         "trilateration",
     },
+}
+# A "ramp" is also a signal shape: it anchors classical-mechanics only beside a moving object.
+RAMP_MOTION_WORDS = {
+    "ball",
+    "block",
+    "cart",
+    "cylinder",
+    "roll",
+    "rolling",
+    "rolls",
+    "slide",
+    "slides",
+    "sliding",
 }
 RELATIVE_MAP_WORDS = {"landmark", "landmarks", "layout", "map", "mapping", "sketch", "sketches"}
 RELATIVE_METHOD_WORDS = {
@@ -244,6 +274,13 @@ def _has_specialist_anchor(name: str, words: set[str]) -> bool:
             or bool(words & RELATIVE_MAP_WORDS and words & RELATIVE_METHOD_WORDS)
             or {"compass", "ruler"} <= words
             or {"compass", "straightedge"} <= words
+        )
+    if name == "classical-mechanics":
+        terms = SPECIALIST_TERMS[name] - ({"drag"} if "drop" in words else set())
+        return (
+            bool(words & terms)
+            or {"terminal", "velocity"} <= words
+            or ("ramp" in words and bool(words & RAMP_MOTION_WORDS))
         )
     if name == "macgyver":
         return (
