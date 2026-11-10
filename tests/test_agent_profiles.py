@@ -215,6 +215,64 @@ def test_macgyver_routes_diy_rigs_not_plasma_physics_or_mixing_maths(tmp_path: P
     )
 
 
+def test_classical_mechanics_routes_motion_not_ui_signals_or_optimisers(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    private = tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    agents = private / "agents"
+    agents.mkdir(parents=True)
+    (agents / "classical-mechanics.md").write_text(
+        "---\nname: classical-mechanics\n"
+        "description: Use first for motion, forces and energy: work and energy (conservation, "
+        "transfer and dissipation), ramps and inclined planes (sliding, rolling), friction "
+        "(static, kinetic, stick-slip), drag (linear and quadratic, terminal velocity).\n"
+        "extends: researcher\n---\n"
+        "Positive routing examples:\n\n"
+        "- How much energy does a ball lose to air drag on the way up and down?\n\n"
+        "Negative routing examples:\n\n"
+        "- Implement a symplectic integrator in JAX.\n\n"
+        "## Pipeline guidance\n\nDraw the free-body diagram first.\n"
+    )
+    (agents / "signal-processing.md").write_text(
+        "---\nname: signal-processing\n"
+        "description: Fourier analysis, spectral leakage, ramp and sawtooth signals, FFT.\n"
+        "extends: researcher\n---\n"
+    )
+    (agents / "plasma-toroids.md").write_text(
+        "---\nname: plasma-toroids\n"
+        "description: Compact toroids: spheromaks and field-reversed configurations.\n"
+        "extends: researcher\n---\n"
+    )
+    for question in (
+        "How much energy does a ball lose to air drag on the way up and down?",
+        "Why does a cylinder rolling down a ramp arrive later than a sliding block?",
+        "Measure the coefficient of friction with a phone on an inclined plane",
+        "What is the terminal velocity of a falling coffee filter?",
+        "What causes stick-slip squeaking in a sliding block?",
+    ):
+        selected = route(question, public, extensions_root=private)
+        assert selected["specialist"] == "classical-mechanics", question
+        assert selected["guidance"] == "Draw the free-body diagram first."
+    for question in (
+        "Implement drag and drop for the file list",
+        "Add momentum to the optimiser's energy function",
+        "Open a terminal and run the tests",
+    ):
+        assert route(question, public, extensions_root=private)["specialist"] is None, question
+    assert (
+        route("Generate a ramp signal and compute its FFT", public, extensions_root=private)[
+            "specialist"
+        ]
+        == "signal-processing"
+    )
+    assert (
+        route("Why do two spheromaks merge into an FRC?", public, extensions_root=private)[
+            "specialist"
+        ]
+        == "plasma-toroids"
+    )
+
+
 def test_the_command_line_routes_like_the_research_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
