@@ -1,7 +1,8 @@
-"""sky__key and the sky step of `ask`: parsing, unit triangles, and arranging sky-clock's answer.
+"""sky__key and the sky step of `ask`: parsing, unit triangles, and arranging polarize-clock's
+answer.
 
-sky-clock itself is stubbed: these tests check this repo's side. A live check against a running
-sky-clock server runs when SKY_CLOCK_LIVE=1.
+polarize-clock itself is stubbed: these tests check this repo's side. A live check against a running
+polarize-clock server runs when POLARIZE_CLOCK_LIVE=1.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from tests.test_ask import asker
 
 KEY = {
     "schema": "key/1",
-    "provider": {"tool": "sky-clock", "version": "0.2.0", "commit": "abc123"},
+    "provider": {"tool": "polarize-clock", "version": "0.4.0", "commit": "abc123"},
     "time": {"utc_iso": "2026-11-04T22:00:00", "jd_ut": 2461349.4166666665, "deltaT_s": 69.184},
     "ephemeris": "DE440s",
     "gravity": {"enu": [0.0, 0.0, -9.8093], "g_ms2": 9.8093},
@@ -145,7 +146,7 @@ def test_ask_sends_a_sky_word_without_a_place_to_the_papers(tmp_path: Path, stub
     q = "What does the Sun's position and gravity have to do with the plasmasphere?"
     out = asyncio.run(asker(tmp_path, calls).ask(q))
     assert calls  # passages were retrieved
-    assert stub == []  # sky-clock was not asked
+    assert stub == []  # polarize-clock was not asked
     assert "sky" not in out["results"]
     assert out["results"]["sky_hint"] == {"matched": "sun's position"}
     assert 'say "sky key"' in out["relay"]
@@ -159,18 +160,20 @@ def test_ask_says_what_is_missing(tmp_path: Path, stub: list) -> None:
     assert "decimal latitude and longitude" in out["relay"]
 
 
-def test_ask_reports_sky_clock_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ask_reports_polarize_clock_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def down(path: str, query: dict[str, Any], timeout: float) -> dict[str, Any]:
-        raise OSError("sky-clock is not reachable at http://127.0.0.1:8803: refused")
+        raise OSError("polarize-clock is not reachable at http://127.0.0.1:8803: refused")
 
     monkeypatch.setattr(sky, "_get", down)
     out = asyncio.run(asker(tmp_path, []).ask("sky key at 48.43, -123.37"))
     assert "error" in out["results"]["sky"]
-    assert "sky-clock didn't answer" in out["relay"]
+    assert "polarize-clock didn't answer" in out["relay"]
 
 
-@pytest.mark.skipif(os.environ.get("SKY_CLOCK_LIVE") != "1", reason="set SKY_CLOCK_LIVE=1")
-def test_live_sky_clock() -> None:
+@pytest.mark.skipif(
+    os.environ.get("POLARIZE_CLOCK_LIVE") != "1", reason="set POLARIZE_CLOCK_LIVE=1"
+)
+def test_live_polarize_clock() -> None:
     r = sky.reading(48.43, -123.37, "2026-11-04T22:00:00Z", h=10.0, heading=250)
     assert abs(r["triangles"]["res_elev"]) < 1e-12
     assert r["clocks"]["solar_time"]
