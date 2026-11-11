@@ -60,8 +60,19 @@ derived line table and, when configured, the calculator's run with a physical ra
 on.
 
 A question never recruits the coder, even a question about code ("how does the hook work?"). A
-prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`. The specialist brief
-is chosen by `pipeline__profile_route`, or by the operator's own words. The words are in
+prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`.
+
+Up to three specialist briefs answer one question:
+- any profile the question names ("ask classical-mechanics", "@plasma-toroids", "plasma toroids")
+  or the operator's own `[profiles]` words pick, first;
+- then the best-scoring one by `pipeline__profile_route`;
+- then any other whose trigger words appear and whose score is close to the best.
+
+With several, each one's guidance is labelled by profile. A research run adds a **Specialist
+views** section: one short paragraph per specialist, written only from the verified claims, and
+each sentence is checked like the bottom line. A quick reply's `brief.specialists` asks the
+assistant for the same. "Which profiles are available?" lists every specialist and what it is
+for, with no retrieval. The words are in
 `config/routing.default.toml`; put your own in the gitignored `config/routing.toml` in the same
 shape. Its lists are added to the defaults, and a `[profiles]` entry names the specialist its
 words pick. The file is read on every call, so edits apply without a restart.
@@ -241,8 +252,8 @@ the suggested route and any generic-policy fallback are recorded.
 
 Set `PIPELINE_AGENT_PROFILES_DIR` to the local scientific-research-agents checkout and, when you
 have a private specialist overlay, set `PIPELINE_AGENT_EXTENSIONS_DIR` to that checkout in the
-gitignored `config/rag.env`. The router reads `agents/*.md` from both, selects a matching
-`extends: researcher` brief, and records each selected file's hash and repository commit. Only
+gitignored `config/rag.env`. The router reads `agents/*.md` from both, selects up to three
+matching `extends: researcher` briefs, and records each selected file's hash and repository commit. Only
 the brief's bounded `## Pipeline guidance` section shapes search planning and claim synthesis;
 the pipeline's evidence and verification rules still control the result. Use
 `pipeline__profile_route(question)` to inspect selection before a run. A specialist without that

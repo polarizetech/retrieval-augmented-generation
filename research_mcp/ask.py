@@ -141,26 +141,50 @@ class Asker:
         return load_rules(*self.rules_paths)
 
     def specialist(self, question: str, rules: Rules) -> dict[str, Any]:
+        """The specialists for a question: up to three, those the person's own words or profile
+        names recruit first, then the best-scoring ones (agent_profiles.route)."""
         own = profile_override(question, rules)
-        route = agent_profiles.route(question, self.profiles_dir, "", self.extensions_dir)
-        name = own[0] if own else route.get("specialist")
-        why = f"your word '{own[1]}'" if own else route.get("reason", "")
-        profile = next((p for p in route.get("profiles", []) if p.get("name") == name), {})
-        guidance = route.get("guidance", "") if name == route.get("specialist") else ""
-        if own and not profile:
-            briefs = agent_profiles.load(self.extensions_dir) if self.extensions_dir else {}
-            brief = briefs.get(own[0]) or agent_profiles.load(self.profiles_dir).get(own[0])
-            if brief is not None:
-                profile = {"name": name, "path": str(brief.path), "repository": str(brief.root)}
-                guidance = brief.guidance
-        return {
-            "name": name or None,
+        route = agent_profiles.route(
+            question,
+            self.profiles_dir,
+            "",
+            self.extensions_dir,
+            requested=[own[0]] if own else (),
+        )
+        names = list(route.get("specialists") or [])
+        guidances = route.get("guidances") or {}
+        paths = {p.get("name"): p for p in route.get("profiles", [])}
+        reasons = str(route.get("reason") or "").split("; ")
+        why = reasons[0] if reasons else ""
+        if own and names and names[0] == own[0]:
+            why = f"your word '{own[1]}'"
+        listed = [
+            {
+                "name": n,
+                "guidance": guidances.get(n, ""),
+                "brief": paths.get(n, {}).get("path", ""),
+                "repository": paths.get(n, {}).get("repository", ""),
+            }
+            for n in names
+        ]
+        first = listed[0] if listed else {}
+        out: dict[str, Any] = {
+            "name": first.get("name"),
             "why": why,
             "roles": route.get("roles", ["researcher"]),
-            "brief": profile.get("path", ""),
-            "repository": profile.get("repository", ""),
-            "guidance": guidance,
+            "brief": first.get("brief", ""),
+            "repository": first.get("repository", ""),
+            "guidance": first.get("guidance", ""),
+            "specialists": listed,
+            "reason": route.get("reason", ""),
         }
+        if route.get("unknown_requested"):
+            out["unknown"] = route["unknown_requested"]
+        return out
+
+    def profiles(self) -> list[dict[str, str]]:
+        """Every specialist profile a question can recruit."""
+        return agent_profiles.catalogue(self.profiles_dir, self.extensions_dir)
 
     # -- failures and fallbacks ----------------------------------------------------------------
     def _retry(self, component: str) -> int | None:
@@ -538,9 +562,7 @@ class Asker:
             )
             self.hub.refresh_usage_soon()
         progress = [f"Route: {route.mode} ({route.reason})"]
-        progress.append(
-            f"Specialist: {spec['name']} ({spec['why']})" if spec["name"] else "Specialist: none"
-        )
+        progress.append(_specialist_line(spec))
         results: dict[str, Any] = {}
         turn.rid = rid
         work = self._work(
@@ -726,7 +748,12 @@ class Asker:
     ) -> None:
         # A code task gets passages only when it has research content: the library holds papers,
         # not code, so "fix the failing test" would get unrelated passages and cost seconds.
-        research_words = [p for p in rules.research if p in route.question.lower()]
+        low = route.question.lower()
+        if route.mode == "quick" and any(_has(low, t) for t in rules.profiles_list):
+            results["profiles"] = self.profiles()
+            progress.append(f"Profiles: listed {len(results['profiles'])}; no retrieval")
+            return
+        research_words = [p for p in rules.research if p in low]
         sight = sky.parse_sight(route.question)
         sky_term = "sun sight" if sight is not None else sky.wants_sky(route.question, rules.sky)
         if sight is not None:
@@ -1027,6 +1054,8 @@ def relay(
     }[route.mode]
     if any(p.status == "needs_decision" for p in problems):
         limits = "Nothing was concluded: the request stopped to ask how to handle a failure."
+    elif results.get("profiles") is not None:
+        limits = PROFILES_LIMIT
     guidance = str(spec.get("guidance") or "") if route.mode != "research" else ""
     footer = _footer(request_id, usage)
     passages = ""
@@ -1037,7 +1066,12 @@ def relay(
     return replies.join(
         "\n\n".join(p.plain() for p in problems),
         f"**What the research tool did** ({seconds} s)\n" + "\n".join(f"- {p}" for p in progress),
-        guidance and f"**{spec.get('name') or ''} guidance:** {guidance}",
+        *(
+            f"**{one['name']} guidance:** {one['guidance']}"
+            for one in (spec.get("specialists") or [])
+            if guidance and one.get("guidance")
+        ),
+        _profiles_block(results.get("profiles")),
         passages,
         blocks["search"]
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
@@ -1049,6 +1083,15 @@ def relay(
         blocks["mixer"],
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
+    )
+
+
+def _profiles_block(rows: list[dict[str, str]] | None) -> str:
+    if not rows:
+        return ""
+    return (
+        "**Specialist profiles** (name one in a question to recruit it, up to three)\n"
+        + "\n".join(f"- `{r['name']}` ({r['source']}): {r['for']}" for r in rows)
     )
 
 
@@ -1121,6 +1164,16 @@ def _short(
     nxt: list[str] = []
     you: list[str] = [p.ask_person() for p in problems]
     stopped = any(p.status == "needs_decision" for p in problems)
+    if results.get("profiles") is not None:
+        rows = results["profiles"]
+        got.append(
+            f"{len(rows)} specialist profiles: " + ", ".join(r["name"] for r in rows) + "."
+            if rows
+            else "No specialist profiles are installed."
+        )
+        you.append("Name a profile in your question to recruit it (up to three answer at once).")
+    for name in spec.get("unknown") or []:
+        got.append(f"No profile is named {name}; ask for the list of profiles.")
     mix = results.get("mixer")
     if mix:
         top = mix["prediction"]["lines"][:3]
@@ -1248,7 +1301,8 @@ def _short(
             'and longitude (for example 48.43, -123.37), or say "sky key".'
         )
     if spec.get("name") and route.mode != "research":
-        got.append(f"Specialist: {spec['name']}.")
+        names = [one["name"] for one in spec.get("specialists") or []] or [spec["name"]]
+        got.append(f"Specialist{'s' if len(names) > 1 else ''}: {', '.join(names)}.")
     sky_only = (
         (sky_result is not None or sight is not None) and found is None and route.mode == "quick"
     )
@@ -1266,6 +1320,16 @@ def _short(
     if stopped:
         nxt = ["Waiting for your choice."]
     return got, nxt, you
+
+
+PROFILES_LIMIT = "This is the list of installed profiles, not an answer: nothing was retrieved."
+
+
+def _specialist_line(spec: dict[str, Any]) -> str:
+    names = [s["name"] for s in spec.get("specialists") or []]
+    if len(names) > 1:
+        return f"Specialists: {', '.join(names)} ({spec.get('reason') or spec['why']})"
+    return f"Specialist: {spec['name']} ({spec['why']})" if spec["name"] else "Specialist: none"
 
 
 def _footer(request_id: str, usage: str) -> str:
