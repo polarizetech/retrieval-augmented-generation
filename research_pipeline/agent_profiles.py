@@ -162,6 +162,32 @@ SPECIALIST_TERMS = {
         "stick-slip",
         "tribology",
     },
+    # Not "string", "resonance", "pitch", "note", "tone" or "harmonics" alone: programming, neural,
+    # hearing and signal questions use them too. "string" is guarded below.
+    "musical-acoustics": {
+        "banjo",
+        "cello",
+        "flageolet",
+        "fretboard",
+        "frets",
+        "fretted",
+        "guitar",
+        "guitars",
+        "harp",
+        "musical-acoustics",
+        "overtone",
+        "overtones",
+        "pluck",
+        "plucked",
+        "plucking",
+        "soundboard",
+        "strum",
+        "strummed",
+        "strumming",
+        "timbre",
+        "violin",
+        "violins",
+    },
     "relative-mapping": {
         "azimuth",
         "bearing",
@@ -185,6 +211,8 @@ RAMP_MOTION_WORDS = {
     "slides",
     "sliding",
 }
+# A "string" is also a data type: it anchors musical-acoustics only beside a vibration word.
+STRING_SOUND_WORDS = {"bowed", "instrument", "tension", "tuning", "vibrating", "vibration"}
 RELATIVE_MAP_WORDS = {"landmark", "landmarks", "layout", "map", "mapping", "sketch", "sketches"}
 RELATIVE_METHOD_WORDS = {
     "angle",
@@ -287,6 +315,12 @@ def _has_specialist_anchor(name: str, words: set[str]) -> bool:
             bool(words & terms)
             or {"terminal", "velocity"} <= words
             or ("ramp" in words and bool(words & RAMP_MOTION_WORDS))
+        )
+    if name == "musical-acoustics":
+        return (
+            bool(words & SPECIALIST_TERMS[name])
+            or ("musical" in words and bool(words & {"instrument", "instruments"}))
+            or (bool(words & {"string", "strings"}) and bool(words & STRING_SOUND_WORDS))
         )
     if name == "macgyver":
         return (
