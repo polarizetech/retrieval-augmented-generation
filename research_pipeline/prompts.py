@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from .domains import GENERIC, DomainPolicy
@@ -44,6 +44,7 @@ class Prompts:
         profile: dict[str, Any] | None = None,
         companions: Mapping[str, Companion] | None = None,
         agent_guidance: str = "",
+        agent_specialists: Sequence[str] = (),
     ) -> None:
         self.policy = policy
         # The paper library's discipline profile for this field (its indexed terms, measures and
@@ -54,6 +55,8 @@ class Prompts:
         self.companions = dict(companions or {})
         # Curated local brief section, never text retrieved from a paper or web page.
         self.agent_guidance = agent_guidance.strip()
+        # The selected specialists, in order: several mean the guidance is labelled per profile.
+        self.agent_specialists = tuple(agent_specialists)
 
     # -- plan ------------------------------------------------------------------------------
     @property
@@ -68,13 +71,19 @@ class Prompts:
             "Also write falsification queries: searches that would find null results, failed "
             "replications, or contradicting findings for the most likely answer.",
             (
-                "Use this selected specialist's decomposition and controls where relevant: "
+                f"Use {self._whose}decomposition and controls where relevant: "
                 + self.agent_guidance
                 if self.agent_guidance
                 else ""
             ),
             self._companion_guidance(),
         )
+
+    @property
+    def _whose(self) -> str:
+        if len(self.agent_specialists) > 1:
+            return "these selected specialists' (each labelled with its profile) "
+        return "this selected specialist's "
 
     def _companion_guidance(self) -> str:
         if not self.companions:
@@ -228,7 +237,7 @@ class Prompts:
             "If the findings do not answer the sub-question, return no claims and set "
             "insufficient to true. No finding found is not evidence of absence.",
             (
-                "Apply this selected specialist's distinctions only where the findings support "
+                f"Apply {self._whose}distinctions only where the findings support "
                 "them; they never supply evidence themselves: " + self.agent_guidance
                 if self.agent_guidance
                 else ""
@@ -366,6 +375,28 @@ class Prompts:
             "required": ["sentences"],
         }
 
+    # -- specialist views ------------------------------------------------------------------
+    @staticmethod
+    def view_system(name: str, guidance: str) -> str:
+        return _join(
+            f"You are the {name} specialist. You are given the question and a numbered list of "
+            "verified claims from the literature. Write a short paragraph (1-3 sentences) on what "
+            "these claims mean from your field's point of view, using ONLY those claims. Each "
+            "sentence lists the claim ids it rests on. If none of the claims bears on your field, "
+            "return no sentences.",
+            "Keep hedging. Your field's guidance shapes what you pick out and how you frame it; "
+            "it never supplies facts: " + guidance
+            if guidance
+            else "",
+        )
+
+    @staticmethod
+    def view_schema(claim_ids: list[str]) -> dict[str, Any]:
+        schema = Prompts.summary_schema(claim_ids)
+        rows = schema["properties"]["sentences"]
+        rows["minItems"], rows["maxItems"] = 0, 3
+        return schema
+
     # -- identity --------------------------------------------------------------------------
     @property
     def version(self) -> str:
@@ -387,6 +418,7 @@ class Prompts:
                 self.policy.summary(),
                 self.profile,
                 self.agent_guidance,
+                *([list(self.agent_specialists)] if len(self.agent_specialists) > 1 else []),
                 sorted(self.companions),
             ],
             sort_keys=True,

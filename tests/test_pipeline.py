@@ -211,6 +211,59 @@ def test_offline_runs_say_so_and_skip_retraction_checks(run_log: dict[str, Any])
     assert "editorial status not checked" in run_log["answer"]
 
 
+class SpecialistModel(ScriptedModel):
+    """Writes a view for each specialist; the cardiology one also overreaches once."""
+
+    def specialist_view(self, user: str) -> dict[str, Any]:
+        ids = re.findall(r"^\[(S\d+-C\d+)\]", user, flags=re.M)[:1]
+        rows = [{"text": "Training lowered systolic pressure by 5 mmHg.", "claim_ids": ids}]
+        if sum(c["task"] == "specialist_view" for c in self.calls) == 1:
+            rows.append({"text": "Training cures heart failure.", "claim_ids": ids})
+        return {"sentences": rows}
+
+    def verify(self, _: str) -> dict[str, Any]:
+        bad = "cures heart failure" in _
+        return {
+            "closest_sentence": "",
+            "claim_adds": "a cure" if bad else "",
+            "verdict": "NOT_SUPPORTED" if bad else "SUPPORTED",
+        }
+
+
+def test_each_specialist_writes_a_checked_paragraph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import pipeline as module
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    route = {
+        "specialist": "cardiology",
+        "specialists": ["cardiology", "exercise-physiology"],
+        "guidances": {"cardiology": "Name the pressure.", "exercise-physiology": "Name the dose."},
+        "guidance": "[cardiology] Name the pressure.\n\n[exercise-physiology] Name the dose.",
+    }
+    pipeline = Pipeline(settings_for(tmp_path), offline=True, agent_route=route)
+    pipeline.llm = SpecialistModel()  # type: ignore[assignment]
+    log = asyncio.run(pipeline.run(QUESTION))
+    views = log["specialist_views"]
+    assert list(views) == ["cardiology", "exercise-physiology"]
+    assert [r["kept"] for r in views["cardiology"]] == [True, False]
+    answer = log["answer"]
+    section = answer.split("## Specialist views")[1].split("\n## ")[0]
+    assert "**cardiology.** Training lowered systolic pressure by 5 mmHg. [1]" in section
+    assert "1 sentence(s) dropped" in section
+    assert "cures heart failure" not in answer.split("## Limits")[0]
+    assert "**exercise-physiology.**" in section
+
+
+def test_a_run_with_no_specialist_has_no_views_section(run_log: dict[str, Any]) -> None:
+    assert run_log["specialist_views"] == {}
+    assert "## Specialist views" not in run_log["answer"]
+
+
 class FakeLibrary(LibraryAdapter):
     """A real library whose search is scripted: one provider never answers."""
 

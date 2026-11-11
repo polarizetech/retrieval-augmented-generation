@@ -70,6 +70,8 @@ class State:
     gaps: list[dict[str, Any]] = field(default_factory=list)
     dropped_passages: list[dict[str, Any]] = field(default_factory=list)
     summary: list[dict[str, Any]] = field(default_factory=list)
+    # One short paragraph per selected specialist: {name: [{text, claim_ids, verdict, kept}]}.
+    views: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     integrity: dict[str, dict[str, Any]] = field(default_factory=dict)  # doi -> Crossref status
     requests: list[dict[str, Any]] = field(
         default_factory=list
@@ -117,7 +119,9 @@ class Pipeline:
         self.domain = domain if isinstance(domain, Domain) else active(domain or settings.domain)
         self.policy = self.domain.policy
         self.prompts = Prompts(
-            self.policy, agent_guidance=str(self.agent_route.get("guidance") or "")
+            self.policy,
+            agent_guidance=str(self.agent_route.get("guidance") or ""),
+            agent_specialists=self._specialists(),
         )
 
     # -- setup -----------------------------------------------------------------------------
@@ -871,6 +875,52 @@ class Pipeline:
                 }
             )
 
+    def _specialists(self) -> list[str]:
+        named = self.agent_route.get("specialists")
+        if named is None:  # a route recorded before several specialists could answer
+            one = self.agent_route.get("specialist")
+            return [one] if one else []
+        return [str(n) for n in named]
+
+    def specialist_views(self, st: State, verifier: str) -> None:
+        """A short paragraph from each selected specialist, written only from the verified
+        claims; each sentence is judged against its claims like the bottom line, and dropped
+        when it outruns them."""
+        usable = [c for c in st.claims if c.verdict in ("SUPPORTED", "DISPUTED")]
+        names = self._specialists()
+        if not usable or not names:
+            return
+        guidances = self.agent_route.get("guidances") or {}
+        listing = "\n".join(f"[{c.id}] {c.text}" for c in usable)
+        by_id = {c.id: c for c in usable}
+        for name in names:
+            got = self.llm.chat_json(
+                "specialist_view",
+                self.prompts.view_system(name, str(guidances.get(name) or "")),
+                f"Question: {st.question}\n\nVerified claims:\n{listing}",
+                self.prompts.view_schema([c.id for c in usable]),
+            )
+            rows = [r for r in got.get("sentences", []) if r.get("text", "").strip()]
+            bases = [
+                " ".join(by_id[i].text for i in row["claim_ids"] if i in by_id) for row in rows
+            ]
+            verdicts = self._parallel(
+                [
+                    partial(verify.judge, self.llm, verifier, row["text"], basis, self.prompts)
+                    for row, basis in zip(rows, bases, strict=True)
+                ]
+            )
+            st.views[name] = [
+                {
+                    "text": row["text"].strip(),
+                    "claim_ids": row["claim_ids"],
+                    "verdict": verdict,
+                    "reason": reason,
+                    "kept": verdict == "SUPPORTED",
+                }
+                for row, (verdict, reason) in zip(rows, verdicts, strict=True)
+            ]
+
     # -- the run ---------------------------------------------------------------------------
     async def run(self, question: str) -> dict[str, Any]:
         started = time.time()
@@ -910,6 +960,7 @@ class Pipeline:
                 self.profile,
                 self.companions,
                 agent_guidance=str(self.agent_route.get("guidance") or ""),
+                agent_specialists=self._specialists(),
             )
 
             self.progress("plan", f"decomposing the question ({self.policy.label})")
@@ -949,6 +1000,7 @@ class Pipeline:
 
         await asyncio.to_thread(self.verify_and_grade, st, verifiers)
         await asyncio.to_thread(self.summarise, st, verifiers[0])
+        await asyncio.to_thread(self.specialist_views, st, verifiers[0])
         self.models["embedding"] = {
             "name": self.index_stats.get("embedding_model"),
             "via": "paper library",
@@ -1033,6 +1085,7 @@ class Pipeline:
             "critique": st.gaps,
             "dropped_passages": st.dropped_passages,
             "summary": st.summary,
+            "specialist_views": st.views,
             "integrity": st.integrity,
             "notes": st.notes,
             "llm_calls": self.llm.calls,
