@@ -1311,6 +1311,8 @@ def _short(
         if stopped
         else "polarize-clock's numbers are data from an exploratory tool, not a finding."
         if sky_only
+        else "Nothing was retrieved."
+        if results.get("profiles") is not None
         else {
             "quick": "These are passages, not a checked answer.",
             "research": "Nothing is concluded until the run finishes.",
