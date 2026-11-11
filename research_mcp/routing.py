@@ -57,6 +57,7 @@ class Rules:
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
     mixer: tuple[str, ...] = ()
     sky: tuple[str, ...] = ()
+    profiles_list: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         profiles=profiles,
         mixer=tuple(words("mixer", "triggers")),
         sky=tuple(words("sky", "triggers")),
+        profiles_list=tuple(words("profiles_list", "triggers")),
     )
 
 

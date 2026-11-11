@@ -37,6 +37,11 @@ ANSWER_FORMAT = (
     "evidence id in backticks; quote only the few words that matter. "
     "(4) **Gaps**: one line on what the passages leave open, and `brief.limits`. "
     "(5) **Sources**: the papers you cited, as title (year), doi. "
+    "When `brief.specialists` lists more than one, add **Specialist views** after the key "
+    "points: one short paragraph (1-3 sentences) per specialist, reading the same passages "
+    "through its guidance and citing evidence ids; a specialist the passages don't serve gets "
+    "one line saying so. When `brief.tool_results.profiles` is there, list each profile's name "
+    "and what it is for, and say a question recruits one by naming it. "
     "Then the `links`. Use only the passages and tool results in `brief`, never facts from "
     "memory; anything of your own goes after, under a heading saying it is yours. When the "
     "person asks for more, open the record link: it holds the full reply."
@@ -113,6 +118,11 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         brief["passages"] = [_passage(r) for r in found.get("results", [])]
     if spec.get("name"):
         brief["specialist"] = {"name": spec["name"], "guidance": spec.get("guidance") or ""}
+        several = spec.get("specialists") or []
+        if len(several) > 1:
+            brief["specialists"] = [
+                {"name": one["name"], "guidance": one.get("guidance") or ""} for one in several
+            ]
     if hits := results.pop("search", None):
         brief["titles_only"] = {
             "note": "Scholarly index titles: no verbatim passages, so not citable.",
@@ -126,6 +136,8 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
     brief["limits"] = (
         "Nothing was concluded: the request is waiting for the person's choice."
         if reply.get("status") == "needs_decision"
+        else "This is the list of installed profiles, not an answer: nothing was retrieved."
+        if "profiles" in brief.get("tool_results", {})
         else LIMITS.get(mode, "")
     )
     out: dict[str, Any] = {
