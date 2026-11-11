@@ -72,6 +72,18 @@ triggers = [
 # Naming the tool ("sky key", "sky clock", "polarize-clock") always runs it.
 triggers = []
 
+[profiles_list]
+# A quick request with one of these gets the list of specialist profiles instead of passages.
+# Naming a profile in a question ("ask classical-mechanics", "plasma toroids") recruits it; up to
+# three specialists answer one question.
+triggers = [
+  "list profiles", "list the profiles", "list agent profiles", "list the agent profiles",
+  "list specialists", "list the specialists", "list agents", "list the agents",
+  "which profiles", "what profiles", "available profiles", "profiles available",
+  "profiles are available", "specialists are available", "which specialists can",
+  "what specialists can", "profiles can i",
+]
+
 [profiles]
 # Your own words for a specialist, added to its routing brief, e.g.
 # noise-engineering = ["hiss", "rumble", "entropy source"]

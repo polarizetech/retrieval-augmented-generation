@@ -256,3 +256,40 @@ def test_a_research_reply_keeps_its_run_and_next_step(tmp_path: Path) -> None:
 def test_anything_that_is_not_a_full_ask_reply_passes_through() -> None:
     error = {"error": {"status": "refused"}}
     assert compact(error) is error
+
+
+def test_several_specialists_each_get_guidance_and_a_place_in_the_brief(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    a = asker(tmp_path, calls)
+    brief(tmp_path / "private", "signal-processing", "fourier spectrum noise", "Give the rate.")
+    out = asyncio.run(a.ask("Ask signal-processing: what is the spectrum of pink noise?"))
+    names = [s["name"] for s in out["specialist"]["specialists"]]
+    assert names == ["signal-processing", "noise-engineering"]
+    assert "Specialists: signal-processing, noise-engineering" in out["relay_full"]
+    assert "**signal-processing guidance:** Give the rate." in out["relay_full"]
+    assert "**noise-engineering guidance:** Name the domain." in out["relay_full"]
+    small = compact(out)["brief"]
+    assert small["specialists"] == [
+        {"name": "signal-processing", "guidance": "Give the rate."},
+        {"name": "noise-engineering", "guidance": "Name the domain."},
+    ]
+    assert "Specialist views" in compact(out)["answer_format"]
+
+
+def test_asking_for_the_profiles_lists_them_without_retrieving(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    out = asyncio.run(asker(tmp_path, calls).ask("Which profiles are available?"))
+    assert calls == []
+    rows = out["results"]["profiles"]
+    assert [r["name"] for r in rows] == ["noise-engineering"]
+    assert "`noise-engineering` (private)" in out["relay_full"]
+    assert "1 specialist profiles: noise-engineering." in out["relay"]
+    assert "list of installed profiles" in compact(out)["brief"]["limits"]
+
+
+def test_an_unknown_profile_in_my_words_is_reported(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    a = asker(tmp_path, calls, '[profiles]\nghost-profile = ["tape hiss"]\n')
+    out = asyncio.run(a.ask("Where does tape hiss come from?"))
+    assert out["specialist"]["unknown"] == ["ghost-profile"]
+    assert "No profile is named ghost-profile" in out["relay"]

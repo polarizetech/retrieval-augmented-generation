@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from research_pipeline.agent_profiles import route
+from research_pipeline.agent_profiles import catalogue, route
 from research_pipeline.prompts import Prompts
 
 
@@ -381,3 +381,111 @@ def test_a_reference_brief_is_anchored_by_its_curated_terms(tmp_path: Path) -> N
     question = "Derive the Adler lock range for a Righetti loop driven by the keyed polarity stream"
     result = route(question, public, extensions_root=private)
     assert result["specialist"] == "nonlinear-signal-mixing"
+
+
+def _specialist(root: Path, name: str, description: str, example: str, guidance: str) -> None:
+    agents = root / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: Use first for {description} in {{{{name}}}}. More.\n"
+        f"extends: researcher\n---\n\nPositive routing examples:\n\n1. {example}\n\n"
+        f"## Pipeline guidance\n\n{guidance}\n"
+    )
+
+
+@pytest.fixture
+def three_fields(tmp_path: Path) -> tuple[Path, Path]:
+    public, private = tmp_path / "public", tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    _specialist(
+        private,
+        "classical-mechanics",
+        "friction, drag and energy of moving objects",
+        "How much energy does a block lose to friction and drag?",
+        "Draw the free-body diagram first.",
+    )
+    _specialist(
+        private,
+        "plasma-toroids",
+        "spheromaks and plasma energy",
+        "How much energy does a spheromak lose?",
+        "Name the confinement regime.",
+    )
+    _specialist(
+        private,
+        "signal-processing",
+        "Fourier analysis",
+        "Take the FFT of a recording",
+        "State the sample rate.",
+    )
+    return public, private
+
+
+def test_up_to_three_specialists_answer_a_question_that_spans_fields(
+    three_fields: tuple[Path, Path],
+) -> None:
+    public, private = three_fields
+    both = route(
+        "How much energy does a spheromak lose to drag and friction?",
+        public,
+        extensions_root=private,
+    )
+    assert both["specialists"] == ["classical-mechanics", "plasma-toroids"]
+    assert both["specialist"] == "classical-mechanics"
+    assert both["guidances"]["plasma-toroids"] == "Name the confinement regime."
+    # Several specialists' guidance reaches the prompts labelled by profile.
+    assert "[classical-mechanics] Draw the free-body" in both["guidance"]
+    assert "[plasma-toroids] Name the confinement" in both["guidance"]
+    assert {p["name"] for p in both["profiles"]} >= {"classical-mechanics", "plasma-toroids"}
+    prompts = Prompts(agent_guidance=both["guidance"], agent_specialists=both["specialists"])
+    assert "these selected specialists'" in prompts.plan_system
+
+    # One field: its guidance unlabelled, as before.
+    one = route("Take the FFT of a recording", public, extensions_root=private)
+    assert one["specialists"] == ["signal-processing"]
+    assert one["guidance"] == "State the sample rate."
+
+
+def test_a_named_profile_is_recruited_and_unknown_names_are_reported(
+    three_fields: tuple[Path, Path],
+) -> None:
+    public, private = three_fields
+    named = route(
+        "Ask signal processing and @plasma-toroids: why does friction heat a block?",
+        public,
+        extensions_root=private,
+    )
+    # Named profiles come first, in the order named, then the scored one; never more than three.
+    assert named["specialists"] == ["signal-processing", "plasma-toroids", "classical-mechanics"]
+    assert "named in the question (signal-processing)" in named["reason"]
+
+    asked = route(
+        "Why does friction heat a block?",
+        public,
+        extensions_root=private,
+        requested=["plasma-toroids", "no-such-profile", "researcher"],
+    )
+    assert asked["specialists"][0] == "plasma-toroids"
+    assert asked["unknown_requested"] == ["no-such-profile", "researcher"]
+    # A profile's name inside a longer word is not a request for it.
+    assert (
+        route("Read the signal-processingx notes", public, extensions_root=private)["specialists"]
+        == []
+    )
+
+
+def test_the_catalogue_lists_specialists_with_what_they_are_for(
+    three_fields: tuple[Path, Path],
+) -> None:
+    public, private = three_fields
+    rows = catalogue(public, private)
+    assert [r["name"] for r in rows] == [
+        "classical-mechanics",
+        "plasma-toroids",
+        "signal-processing",
+    ]
+    assert rows[0] == {
+        "name": "classical-mechanics",
+        "source": "private",
+        "for": "Friction, drag and energy of moving objects",
+    }

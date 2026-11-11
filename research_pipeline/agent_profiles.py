@@ -10,12 +10,18 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 WORD = re.compile(r"[a-z][a-z0-9-]+")
 MAX_GUIDANCE_CHARS = 2000
+# How many specialists one question recruits, the least score that recruits one, and how far
+# below the best a second or third may score and still join it.
+MAX_SPECIALISTS = 3
+MIN_SCORE = 3
+CLOSE_SCORE = 6
 STOPWORDS = {
     "a",
     "an",
@@ -384,28 +390,79 @@ def _commit(root: Path) -> str:
         return ""
 
 
+def _all_briefs(root: Path, extensions_root: Path | None) -> dict[str, Brief]:
+    """The public briefs, plus the private overlay's researcher extensions when it is there."""
+    briefs = load(root)
+    if extensions_root is not None and extensions_root.is_dir():
+        for name, brief in load(extensions_root).items():
+            if brief.extends == "researcher" and name not in briefs:
+                briefs[name] = brief
+    return briefs
+
+
+def _is_specialist(name: str, brief: Brief) -> bool:
+    return name != "researcher" and (brief.extends == "researcher" or name in SPECIALIST_TERMS)
+
+
+def named_profiles(question: str, names: Iterable[str]) -> list[str]:
+    """Profiles the question names outright ("ask classical-mechanics", "@plasma-toroids", or
+    "plasma toroids"), in the order they appear."""
+    low = question.lower()
+    found: list[tuple[int, str]] = []
+    for name in names:
+        spelled = r"[\s-]+".join(re.escape(part) for part in name.split("-"))
+        hit = re.search(rf"(?<![a-z0-9-]){spelled}(?![a-z0-9-])", low)
+        if hit:
+            found.append((hit.start(), name))
+    return [name for _, name in sorted(found)]
+
+
+def catalogue(root: Path, extensions_root: Path | None = None) -> list[dict[str, str]]:
+    """Every profile a question can recruit, with a one-sentence summary of what it is for."""
+    if not root.is_dir():
+        return []
+    out = []
+    public = set(load(root))
+    for name, brief in sorted(_all_briefs(root, extensions_root).items()):
+        if not _is_specialist(name, brief):
+            continue
+        text = re.sub(r"(\s+(in|for|of))?\s*\{\{\s*name\s*\}\},?", "", brief.description)
+        text = re.sub(r"^Use (proactively |first )?for ", "", text).strip()
+        summary = re.split(r"(?<=[.;])\s|\s[—–-]\s", text, maxsplit=1)[0].rstrip(".;")
+        out.append(
+            {
+                "name": name,
+                "source": "public" if name in public else "private",
+                "for": summary[:1].upper() + summary[1:],
+            }
+        )
+    return out
+
+
 def route(
     question: str,
     root: Path,
     explicit_domain: str = "",
     extensions_root: Path | None = None,
+    requested: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Return an auditable route; never silently invent a missing profile."""
+    """Return an auditable route; never silently invent a missing profile.
+
+    Up to MAX_SPECIALISTS specialists answer: those the question names (or `requested` names)
+    first, then the best-scoring anchored one, then any other anchored one that scores close to
+    it (within CLOSE_SCORE of the best)."""
     if not root.is_dir():
         return {
             "available": False,
             "repository": str(root),
             "roles": ["researcher"],
             "specialist": None,
+            "specialists": [],
             "domain": explicit_domain or "",
             "reason": "agent profile repository is unavailable",
         }
-    briefs = load(root)
+    briefs = _all_briefs(root, extensions_root)
     extensions_available = extensions_root is None or extensions_root.is_dir()
-    if extensions_root is not None and extensions_available:
-        for name, brief in load(extensions_root).items():
-            if brief.extends == "researcher" and name not in briefs:
-                briefs[name] = brief
     words = _words(question)
     roles = ["researcher"]
     roles.extend(name for name, terms in ROLE_TERMS.items() if words & terms and name in briefs)
@@ -421,7 +478,16 @@ def route(
     # prose alone is too permissive. Require at least one specialist anchor term as well; the
     # score then breaks ties and remains useful in the provenance record.
     anchored = [row for row in ranked if _has_specialist_anchor(row[0], words)]
-    specialist = anchored[0][0] if anchored and anchored[0][1] >= 3 else None
+    scored = []
+    if anchored and anchored[0][1] >= MIN_SCORE:
+        best = anchored[0][1]
+        scored = [n for n, sc in anchored if sc >= MIN_SCORE and sc >= best - CLOSE_SCORE]
+    eligible = [n for n, b in briefs.items() if _is_specialist(n, b)]
+    asked = [n for n in requested if n in briefs and _is_specialist(n, briefs[n])]
+    unknown = [n for n in requested if n not in asked]
+    asked += named_profiles(question, eligible)
+    specialists = list(dict.fromkeys([*asked, *scored]))[:MAX_SPECIALISTS]
+    specialist = specialists[0] if specialists else None
     domain = explicit_domain
     if not domain:
         if specialist in {
@@ -436,7 +502,12 @@ def route(
                 key=lambda row: (-row[1], row[0]),
             )
             domain = scored[0][0] if scored and scored[0][1] else ""
-    selected = [*roles, *([specialist] if specialist else [])]
+    selected = [*roles, *specialists]
+    score = dict(ranked)
+    why = [
+        f"named in the question ({n})" if n in asked else f"specialist score {score[n]} for {n}"
+        for n in specialists
+    ]
     records = [
         {
             "name": name,
@@ -460,18 +531,24 @@ def route(
         ),
         "roles": roles,
         "specialist": specialist,
-        "guidance": briefs[specialist].guidance if specialist else "",
+        "specialists": specialists,
+        "guidance": combined_guidance({n: briefs[n].guidance for n in specialists}),
+        "guidances": {n: briefs[n].guidance for n in specialists},
+        **({"unknown_requested": unknown} if unknown else {}),
         "domain": domain,
         "profiles": records,
-        "reason": (
-            f"specialist score {next(score for name, score in ranked if name == specialist)} "
-            f"for {specialist}"
-            if specialist
-            else "general route"
-        )
+        "reason": ("; ".join(why) or "general route")
         + (
             f"; private overlay unavailable at {extensions_root}"
             if not extensions_available
             else ""
         ),
     }
+
+
+def combined_guidance(guidances: dict[str, str]) -> str:
+    """One specialist's guidance as it is; several, each labelled with its profile."""
+    kept = {n: g for n, g in guidances.items() if g}
+    if len(guidances) <= 1:
+        return next(iter(kept.values()), "")
+    return "\n\n".join(f"[{n}] {g}" for n, g in kept.items())

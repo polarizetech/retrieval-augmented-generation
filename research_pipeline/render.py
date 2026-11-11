@@ -117,6 +117,26 @@ def render(
         out.append("")
     take("findings")
 
+    # Each selected specialist's paragraph, only its sentences that passed the claim check.
+    by_claim = {c.id: c for c in kept}
+    for name, rows in st.views.items():
+        said = []
+        for row in (r for r in rows if r.get("kept")):
+            works = {
+                ref(st.evidence[e].work)
+                for i in row["claim_ids"]
+                if i in by_claim
+                for e in (by_claim[i].supported_by or by_claim[i].evidence_ids)
+            }
+            said.append(row["text"] + " " + "".join(f"[{n}]" for n in sorted(works)))
+        dropped = sum(1 for r in rows if not r.get("kept"))
+        note = (
+            f" *({dropped} sentence(s) dropped: not supported by the claims.)*" if dropped else ""
+        )
+        body = " ".join(said) if said else "*Nothing in the verified claims bears on this field.*"
+        out += [f"**{name}.** {body}{note}", ""]
+    take("views")
+
     # Disagreement is computed from the direction of each retrieved result, never asserted by a
     # model.
     f1 = next(sq for sq in st.plan.subquestions if sq.id == "F1")
@@ -318,6 +338,7 @@ def _answer(b: Mapping[str, str]) -> str:
         section("Why this answer is thin", "thin", always=False),
         section("Verification risk", "risk", always=False),
         section("Findings", "findings"),
+        section("Specialist views", "views", always=False),
         section("Conflicting or negative evidence", "conflicts"),
         b.get("tools", ""),
         section("Limits of this answer", "limits"),
