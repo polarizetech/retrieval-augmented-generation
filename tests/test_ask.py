@@ -284,6 +284,8 @@ def test_asking_for_the_profiles_lists_them_without_retrieving(tmp_path: Path) -
     assert [r["name"] for r in rows] == ["noise-engineering"]
     assert "`noise-engineering` (private)" in out["relay_full"]
     assert "1 specialist profiles: noise-engineering." in out["relay"]
+    assert "These are passages" not in out["relay"]
+    assert "Nothing was retrieved." in out["relay"]
     assert "list of installed profiles" in compact(out)["brief"]["limits"]
 
 
