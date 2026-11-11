@@ -215,6 +215,50 @@ def test_macgyver_routes_diy_rigs_not_plasma_physics_or_mixing_maths(tmp_path: P
     )
 
 
+def test_musical_acoustics_routes_instruments_not_code_strings_or_spectra(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    private = tmp_path / "private"
+    _brief(public, "researcher", "literature evidence researcher")
+    agents = private / "agents"
+    agents.mkdir(parents=True)
+    (agents / "musical-acoustics.md").write_text(
+        "---\nname: musical-acoustics\n"
+        "description: Use first for how instruments make sound: vibrating strings, standing "
+        "waves and harmonics, plucking point, fretting, natural harmonics, decay, pitch glide.\n"
+        "extends: researcher\n---\n"
+        "Positive routing examples:\n\n"
+        "- Why does a guitar string ring out, and what sets how long it sustains?\n\n"
+        "Negative routing examples:\n\n"
+        "- Is this FFT peak leakage or a real partial?\n\n"
+        "## Pipeline guidance\n\nName the resonator, excitation, constraints and loss paths.\n"
+    )
+    (agents / "signal-processing.md").write_text(
+        "---\nname: signal-processing\n"
+        "description: Fourier analysis, spectral leakage, harmonics, FFT.\n"
+        "extends: researcher\n---\n"
+    )
+    for question in (
+        "Why does a guitar string ring out, and what sets how long it sustains?",
+        "Why does the pitch start sharp when a string is plucked hard?",
+        "Why does a vibrating string under more tension sound higher?",
+        "How does the soundboard change the decay of a note?",
+        "Why does fretting a guitar string change the note?",
+    ):
+        selected = route(question, public, extensions_root=private)
+        assert selected["specialist"] == "musical-acoustics", question
+        assert selected["guidance"] == "Name the resonator, excitation, constraints and loss paths."
+    for question in (
+        "Parse this string and split it on commas",
+        "Why does the build fail on a format string?",
+        "Raise the pitch of the sales deck",
+    ):
+        assert route(question, public, extensions_root=private)["specialist"] is None, question
+    assert (
+        route("Is this FFT peak spectral leakage?", public, extensions_root=private)["specialist"]
+        == "signal-processing"
+    )
+
+
 def test_classical_mechanics_routes_motion_not_ui_signals_or_optimisers(tmp_path: Path) -> None:
     public = tmp_path / "public"
     private = tmp_path / "private"
