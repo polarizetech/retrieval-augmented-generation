@@ -18,6 +18,7 @@ answer a whole batch per turn; with Ollama they run one at a time, as a single r
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import re
@@ -29,7 +30,17 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, agent_profiles, companions, grading, integrity, safety, verify, web
+from . import (
+    __version__,
+    agent_profiles,
+    companions,
+    grading,
+    integrity,
+    panel,
+    safety,
+    verify,
+    web,
+)
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, UnknownDomain, active
@@ -81,6 +92,10 @@ class State:
     )  # companion tools the plan asked for
     companions: dict[str, dict[str, Any]] = field(default_factory=dict)  # key -> what it returned
     fetches: int = 0  # library fetches attempted this run, against PIPELINE_MAX_FETCH
+    # Every batch of passages the run's model read, in order: the panel reads the same ones.
+    selections: list[list[tuple[SubQuestion, list[tuple[Passage, float]]]]] = field(
+        default_factory=list
+    )
     notes: list[str] = field(default_factory=list)
 
 
@@ -102,6 +117,8 @@ class Pipeline:
         self.progress = progress or (lambda stage, detail: None)
         self.llm: Model = llm or make_llm(settings)
         self.client = isinstance(self.llm, ClientLLM)
+        # Other models that read the same passages, for the answer's comparison (panel.py).
+        self.panel: list[panel.Member] = panel.members(settings)
         # A client answers a batch per turn; a single resident local model answers one at a time;
         # a hosted endpoint takes as many at once as it is configured for.
         self.concurrency = 32 if self.client else getattr(self.llm, "concurrency", 1)
@@ -957,6 +974,67 @@ class Pipeline:
                 }
             )
 
+    # -- the model panel (panel.py) ---------------------------------------------------------
+    def panel_read(self, member: panel.Member, st: State) -> None:
+        """One panel model reads every passage this run's model read, batch by batch, and
+        drafts its own claims. A failure stops that model only."""
+        assert member.llm is not None
+        reader = copy.copy(self)
+        reader.llm = member.llm
+        reader.client = False
+        reader.concurrency = getattr(member.llm, "concurrency", 1)
+        own = State(st.question, plan=st.plan)
+        try:
+            for batch in st.selections:
+                reader.extract_many(own, batch, {})
+                reader.synthesise_many(own, [sq for sq, _ in batch])
+        except Exception as exc:  # noqa: BLE001 - one member's failure never ends the run
+            member.error = f"{type(exc).__name__}: {exc}"[:300]
+            return
+        member.state = own
+
+    def _panel_report(self, st: State) -> tuple[str, dict[str, Any] | None]:
+        """The answer's comparison section and the run log's `panel` record."""
+        if not self.panel:
+            return "", None
+        ran = {m.name: m.state for m in self.panel if m.state is not None}
+        result = panel.compare({"run": st, **ran}) if ran else {}
+        result["not_run"] = [
+            f"{m.label} did not take part: {m.skipped or m.error}"
+            for m in self.panel
+            if m.state is None
+        ]
+        for m in self.panel:
+            if m.state is not None and m.retention:
+                st.notes.append(f"{m.label} read this run's passages; {m.retention}")
+        own = str(getattr(self.llm, "name", "") or "the run's model")
+        top, label = getattr(self.llm, "top", ""), getattr(self.llm, "label", None)
+        if top and callable(label):  # a ladder: the hub's label for its first provider
+            own = str(label(top))
+        labels = {"run": f"{own} (this run's model)"}
+        labels.update({m.name: m.label for m in self.panel})
+        log = {
+            "members": [
+                {
+                    "name": m.name,
+                    "label": m.label,
+                    "model": m.model,
+                    "url": m.url,
+                    "retention": m.retention or None,
+                    "skipped": m.skipped or None,
+                    "error": m.error or None,
+                    "usage": _usage(getattr(m.llm, "calls", [])) if m.llm is not None else None,
+                }
+                for m in self.panel
+            ],
+            "comparison": result,
+            "claims": {m.name: to_json(m.state.claims) for m in self.panel if m.state},
+            "evidence": {
+                m.name: to_json(list(m.state.evidence.values())) for m in self.panel if m.state
+            },
+        }
+        return panel.render(result, labels), log
+
     def _specialists(self) -> list[str]:
         named = self.agent_route.get("specialists")
         if named is None:  # a route recorded before several specialists could answer
@@ -1023,6 +1101,7 @@ class Pipeline:
         ) -> None:
             pools = await self.pool(st, lib, targets)
             ranked = [(sq, self.select(sq, pools[sq.id])) for sq, _ in targets]
+            st.selections.append(ranked)
             works = [p.work for _, chosen in ranked for p, _ in chosen]
             openings = await self.openings(lib, works)
             await asyncio.to_thread(self.extract_many, st, ranked, openings)
@@ -1086,7 +1165,19 @@ class Pipeline:
                 # Newly fetched papers can also bear on the falsification pass.
                 await work(lib, [(by_id["F1"], None)])
 
-        await asyncio.to_thread(self.verify_and_grade, st, verifiers)
+        # The panel reads on its own APIs while the local verifier checks this run's claims.
+        readers = [m for m in self.panel if m.llm is not None]
+        if readers:
+            self.progress("panel", ", ".join(m.label for m in readers))
+        await asyncio.gather(
+            asyncio.to_thread(self.verify_and_grade, st, verifiers),
+            *(asyncio.to_thread(self.panel_read, m, st) for m in readers),
+        )
+        for m in readers:
+            if m.state is not None:
+                self.progress("panel", f"checking {m.label}'s claims")
+                await asyncio.to_thread(self.verify_and_grade, m.state, verifiers)
+        panel_section, panel_log = self._panel_report(st)
         await asyncio.to_thread(self.summarise, st, verifiers[0])
         await asyncio.to_thread(self.specialist_views, st, verifiers[0])
         self.models["embedding"] = {
@@ -1110,6 +1201,7 @@ class Pipeline:
             companions=self.companions,
             risk=risk,
             max_fetch=self.s.max_fetch,
+            panel=panel_section,
         )
         log = {
             "pipeline_version": __version__,
@@ -1160,6 +1252,7 @@ class Pipeline:
             "plan": to_json(st.plan),
             "searches": st.searches,
             "web": st.web,
+            "panel": panel_log,
             "fetches": st.fetches,
             "candidates": to_json(list(st.candidates.values())),
             "evidence": to_json(list(st.evidence.values())),
@@ -1183,6 +1276,20 @@ class Pipeline:
         }
         log["run_dir"] = str(write_run(self.s, log))
         return log
+
+
+def _usage(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Calls, tokens and cost (when the provider reports it) of one model's call log."""
+
+    def total(key: str) -> float:
+        return sum(float(c.get(key) or 0) for c in calls)
+
+    return {
+        "calls": len(calls),
+        "input_tokens": int(total("input_tokens")),
+        "output_tokens": int(total("output_tokens")),
+        "cost_usd": round(total("cost"), 4) if any(c.get("cost") for c in calls) else None,
+    }
 
 
 def candidate_key(ids: dict[str, Any], title: str | None) -> str:

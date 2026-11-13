@@ -632,3 +632,137 @@ def test_a_run_without_searxng_says_the_web_was_not_searched(
 ) -> None:
     assert online_log["web"] == [{"query": "", "error": "not configured"}]
     assert "The web was not searched" in online_log["answer"]
+
+
+class ContraryModel(ScriptedModel):
+    """A panel model that reads the effect passage the other way and writes its own claim."""
+
+    def extract(self, user: str) -> dict[str, Any]:
+        got = super().extract(user)
+        if got["direction"] == "affirms":
+            got = got | {"direction": "denies", "finding": "No reliable change in pressure."}
+        return got
+
+    def synthesise(self, user: str) -> dict[str, Any]:
+        ids = re.findall(r"^\[(S\d+-E\d+)\]", user, flags=re.M)
+        if not ids:
+            return {"claims": [], "insufficient": True}
+        text = "Aerobic training did not reliably change resting systolic pressure."
+        return {"insufficient": False, "claims": [{"text": text, "evidence_ids": ids[:1]}]}
+
+
+@pytest.fixture
+def panel_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from research_pipeline import pipeline as module
+    from research_pipeline.panel import Member
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    pipeline = Pipeline(settings_for(tmp_path), offline=True)
+    pipeline.llm = ScriptedModel()  # type: ignore[assignment]
+    pipeline.panel = [
+        Member("same", "Same model", "m1", "u", llm=ScriptedModel()),  # type: ignore[arg-type]
+        Member(
+            "contrary",
+            "Contrary model",
+            "m2",
+            "u",
+            retention="keeps requests 30 days.",
+            llm=ContraryModel(),  # type: ignore[arg-type]
+        ),
+        Member("absent", "Absent model", "m3", "u", skipped="no API key in x"),
+    ]
+    return asyncio.run(pipeline.run(QUESTION))
+
+
+def test_panel_models_read_the_same_passages(panel_log: dict[str, Any]) -> None:
+    totals = panel_log["panel"]["comparison"]["totals"]
+    assert set(totals) == {"run", "same", "contrary"}
+    # Every model read exactly the passages the run's model read.
+    assert totals["same"]["passages_read"] == totals["run"]["passages_read"]
+    assert totals["contrary"]["passages_read"] == totals["run"]["passages_read"]
+
+
+def test_the_comparison_shows_agreement_and_opposite_readings(panel_log: dict[str, Any]) -> None:
+    comparison = panel_log["panel"]["comparison"]
+    run_claims = comparison["claims"]["run"]
+    assert run_claims
+    assert all(row["also_reached_by"] == ["same"] for row in run_claims)
+    assert comparison["claims"]["contrary"][0]["also_reached_by"] == []
+    opposite = comparison["opposite_readings"]
+    assert len(opposite) == 1
+    assert opposite[0]["readings"]["run"] == "affirms"
+    assert opposite[0]["readings"]["contrary"] == "denies"
+    answer = panel_log["answer"]
+    assert "## Model comparison" in answer
+    assert "Passages read in opposite directions" in answer
+    assert "(also reached by Same model)" in answer
+
+
+def test_panel_limits_name_retention_and_absent_members(panel_log: dict[str, Any]) -> None:
+    answer = panel_log["answer"]
+    assert "Contrary model read this run's passages; keeps requests 30 days." in answer
+    assert "Absent model did not take part: no API key in x" in answer
+    members = {m["name"]: m for m in panel_log["panel"]["members"]}
+    assert members["absent"]["skipped"] == "no API key in x"
+    assert members["contrary"]["usage"]["calls"] > 0
+
+
+def test_a_failing_panel_member_never_ends_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import pipeline as module
+    from research_pipeline.panel import Member
+
+    class Broken(ScriptedModel):
+        def extract(self, user: str) -> dict[str, Any]:
+            raise RuntimeError("HTTP 401")
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    pipeline = Pipeline(settings_for(tmp_path), offline=True)
+    pipeline.llm = ScriptedModel()  # type: ignore[assignment]
+    pipeline.panel = [Member("broken", "Broken model", "m", "u", llm=Broken())]  # type: ignore[arg-type]
+    log = asyncio.run(pipeline.run(QUESTION))
+    assert log["claims"]
+    assert "Broken model did not take part: RuntimeError: HTTP 401" in log["answer"]
+
+
+def test_no_panel_means_no_comparison(run_log: dict[str, Any]) -> None:
+    assert run_log["panel"] is None
+    assert "Model comparison" not in run_log["answer"]
+
+
+def test_panel_members_come_from_the_hub_config(tmp_path: Path) -> None:
+    from research_pipeline.panel import members
+
+    key = tmp_path / "k.key"
+    key.write_text("sk-test\n")
+    config = {
+        "providers": {
+            "a": {
+                "kind": "openai",
+                "url": "https://api.example/v1",
+                "model": "m",
+                "key_file": str(key),
+                "label": "A",
+            },
+            "b": {
+                "kind": "openai",
+                "url": "https://api.example/v1",
+                "model": "m",
+                "key_file": str(tmp_path / "missing.key"),
+            },
+            "c": {"kind": "ollama", "model": "x"},
+        }
+    }
+    got = {m.name: m for m in members(settings_for(tmp_path, panel="a, b,c,d"), config)}
+    assert got["a"].llm is not None
+    assert got["a"].llm.name == "m"
+    assert got["b"].skipped.startswith("no API key")
+    assert "OpenAI-compatible" in got["c"].skipped
+    assert got["d"].skipped == "no such provider in the hub config"
