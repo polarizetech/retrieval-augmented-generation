@@ -12,6 +12,7 @@ One gateway process (`research-rag-gateway`) exposes:
 | `session__read_capsule`, `session__propose` | session store and research PR gate | no |
 | `research__*` | trusted research-repository reads and proposals | no |
 | `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
+| `rules__project` | a project's binding rules: its AGENTS.md and CLAUDE.md, and the owner's shared polarize profile | no |
 | `polarize__read`, `polarize__renders`, `polarize__render` | the polarize tools' own repos (pinned to tags) and polarize-holo's render scripts | no |
 | `web__search` | an optional SearXNG instance; listed only when `SEARXNG_URL` is set | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
@@ -101,6 +102,19 @@ how: a bottom line first, then at most five key points each citing an evidence i
 and limits, and the sources cited. The assistant writes that answer itself; it does not paste the
 brief. In the brief:
 
+- `project_rules`, first, when the request comes from a project with rules (`[project_rules]` in
+  the routing config: the polarize-* projects). The project is `ask`'s `project`, else its repo's
+  name, else the client's folder (the stdio bridge sends it). The rules are read from the project's
+  checkout on every call: the bold-led rules of its `AGENTS.md` and `CLAUDE.md`, and for the
+  polarize tools and polarize-thesis the rule sections of the owner's shared profile
+  (polarize-thesis `.claude/agents/polarize-integrator.md`). A rule in both is listed once, in the
+  project's wording, with the copy under `also_in`. The five nearest the request come in full, the
+  rest as one line with their source. `answer_format` then starts with the rules: they bind before
+  anything else, a conflict stops the assistant to name the rule and ask, and the reply ends with a
+  **Rules checked:** line. `exceptions` says what the request set aside: only explicit wording
+  from `exception_words` ("make an exception to", "break the rule", ...) together with the rule's
+  id, its title or most of its title's words, for that request only. Wording that names no rule
+  sets nothing aside, and `for_you` asks the person which rule.
 - `passages`: each retrieved passage once, with its evidence id, source and reranker score.
 - `coverage`: how well the library covers the question, from the best reranker score: `strong`
   (1 or more), `partial` (−1 to 1), `weak` (under −1, loosely related only), `none`, or
