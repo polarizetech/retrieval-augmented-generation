@@ -55,6 +55,45 @@ Sources: [pricing](https://huggingface.co/pricing), [Spaces](https://huggingface
 Open checks: a private Space on the free tier (does it stay private, how long is the wake-up); whether
 an idle Inference Endpoint at zero replicas bills.
 
+## Claude Code cloud sessions (checked 2026-11-13)
+
+Claude Code sessions on Anthropic's machines, started from claude.ai/code, the desktop app or
+`claude --cloud`. A coding workspace, not hosting.
+
+| | |
+|---|---|
+| Cost | no separate charge for the machine: each session counts against the Claude plan's usage limits (Pro, Max, Ultra, Team, Enterprise), shared with the rest of Claude; parallel sessions use them up faster |
+| Machine | a new Ubuntu 24.04 VM per session, about 4 vCPU, 16 GB RAM and 30 GB disk; `uv`, Python, pytest, ruff and Docker installed |
+| Lifetime | pauses after a few minutes idle with files kept; a paused VM can be reclaimed, and reopening then starts a new one (the conversation returns, background commands do not) |
+| Ports | none: no shell for the person and no port exposure, so it cannot serve the gateway or an app |
+| Network | None, Limited (default: GitHub, package registries, Anthropic) or Full; other hosts such as `openrouter.ai` are added to the environment's list |
+| Secrets | environment variables are readable by anyone using the environment; "network secrets" are added by Anthropic's proxy for listed hosts and never enter the VM |
+| GitHub | the Claude GitHub App on the organisation (private repos, Auto-fix), or `/web-setup`, which stores the `gh` token with Anthropic; the GitHub proxy blocks GraphQL, so `gh pr` and `gh issue` fail and `gh api` works |
+| Retention | transcripts kept: 30 days, or 5 years on a consumer account that allows training; not zero retention |
+| Unpublished | how many sessions can run at once, and the longest a session can run |
+
+What it would mean here:
+
+- **Setup:** install the Claude GitHub App on polarizetech; create an environment (Limited network, plus
+  `openrouter.ai` if runs should call models; keys as network secrets); a setup script that runs `uv sync`,
+  under about five minutes so it is cached.
+- **What carries over:** the repo's `CLAUDE.md`, `.claude/settings.json`, `.mcp.json`, skills and agents.
+  The person's own `~/.claude/CLAUDE.md`, user-level MCP servers and plugins do not, so the
+  retrieval-first rule must be in the repo to apply there.
+- **This machine is out of reach:** the VM cannot see localhost, the tailnet or local disks, so SearXNG, the
+  paper library, Ollama and the polarize checkouts are unavailable. Code changes and the tests fit; research
+  runs do not.
+- **research-rag still works** as a claude.ai connector (it is on the public MCP host, and connectors go
+  through Anthropic's servers), while this machine is awake.
+- **Remote Control** is the alternative that keeps everything local: a session runs on this machine and is
+  driven from a phone or the web, on the same plan, with outbound connections only.
+
+Sources: [cloud sessions](https://code.claude.com/docs/en/claude-code-on-the-web.md),
+[cloud environments](https://code.claude.com/docs/en/cloud-environments.md),
+[quickstart](https://code.claude.com/docs/en/web-quickstart.md),
+[Remote Control](https://code.claude.com/docs/en/remote-control.md),
+[data usage](https://code.claude.com/docs/en/data-usage.md), [pricing](https://claude.com/pricing).
+
 ## Model providers
 
 How the model steps are paid for and where they run is in [the hub plan](hub-plan.md#usage-meters-and-provider-ladders).
