@@ -61,6 +61,8 @@ class Rules:
     # Tool key -> the words that name it (config [polarize_tools]); and the words asking for audio.
     polarize: dict[str, tuple[str, ...]] = field(default_factory=dict)
     polarize_audio: tuple[str, ...] = ()
+    # Config [project_rules]: whose rules every reply carries (research_mcp/project_rules.py).
+    project_rules: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -111,7 +113,20 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
             if tool != "audio"
         },
         polarize_audio=tuple(words("polarize_tools", "audio")),
+        project_rules=_project_rules(data.get("project_rules", {}), extra.get("project_rules", {})),
     )
+
+
+def _project_rules(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
+    """Lists are added to (projects, files, exception words, shared profiles); nothing removed."""
+    out: dict[str, Any] = {}
+    for key in ("projects", "files", "exception_words"):
+        merged = [*base.get(key, []), *local.get(key, [])]
+        out[key] = list(
+            dict.fromkeys(str(v) if key != "exception_words" else str(v).lower() for v in merged)
+        )
+    out["shared"] = [*base.get("shared", []), *local.get("shared", [])]
+    return out
 
 
 def _words(text: str) -> list[str]:

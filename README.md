@@ -74,6 +74,19 @@ There are two ways to use it:
   (`[polarize_tools]` in the routing config). It renders audio when holo is named with an audio word and
   a render's name ("an audio file of the spiral with polarize-holo"), and with a place it passes
   polarize-clock's Sun azimuth to the spiral.
+- **Project rules** go with every reply from a polarize-* project. `ask` reads the project's own
+  rules (the bold-led rules in its `AGENTS.md` and `CLAUDE.md`, the owner's marked "(owner, date)")
+  and the owner's shared profile for the polarize tools (polarize-thesis
+  `.claude/agents/polarize-integrator.md`, its rule sections) from the local checkout on every call,
+  and puts them first in `brief.project_rules` as binding: the rules nearest the request in full,
+  the rest as one line with their source. `answer_format` then tells the assistant to check what it
+  is about to do against them, to stop and name the rule when the request conflicts with one, and to
+  end with a **Rules checked:** line. A rule is set aside only when the request itself says so in
+  explicit words and names it ("make an exception to the departures, never averages rule"), for
+  that request; wording that names no rule sets nothing aside and asks which. The project is
+  `ask`'s `project`, else its repo's name, else the client's folder; `rules__project` returns the
+  same for any project. Which projects, files and exception words: `[project_rules]` in the routing
+  config; checkouts are found in `PROJECT_RULES_DIRS`, else `POLARIZE_TOOLS_DIR`.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.
