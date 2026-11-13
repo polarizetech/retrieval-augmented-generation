@@ -272,6 +272,45 @@ What it does (`research_pipeline/llm.py`, `Endpoint`):
   Near AI's public model list; for any other host set `PIPELINE_ENDPOINT_PRICE` (USD per million
   tokens, `input,output`). Without a price, the log records the cost as unknown, not zero.
 
+#### Model panel: other models on the same evidence
+
+`PIPELINE_PANEL` names other models, by hub provider, that read the same passages as the run's
+model and write their own claims (`research_pipeline/panel.py`). Searching, fetching and choosing
+passages happen once. Each panel model then reads every passage the run's model read, in the same
+order, and drafts its own claims. Its reading runs on its own API while the local verifier checks
+the run's claims. Every model's claims go through the same local verifier, so the comparison sets
+readings of one evidence set side by side, all checked one way.
+
+```bash
+# config/rag.env (gitignored)
+PIPELINE_PANEL=openai,gemini
+```
+
+`config/hub.default.toml` defines both members:
+
+- **`openai`** is OpenAI's own API (`gpt-6.1-sol`), key in `~/.config/polarize/openai.key`.
+  OpenAI may keep API requests for up to 30 days for abuse monitoring unless the account has a
+  zero-retention agreement, and every answer it took part in says so in its limits.
+- **`gemini`** is Gemini 4 Carbon through OpenRouter, on the OpenRouter key, with zero retention.
+  It cannot turn its reasoning off, so its calls cost extra output tokens. A live extraction call
+  cost about $0.0014 (November 2026).
+
+Change a member's model, or add another OpenAI-compatible provider, in the gitignored
+`config/hub.toml`.
+
+The run's own answer, bottom line and claims are unchanged. The answer gains a **Model comparison**
+section, computed and never written by a model:
+
+- each model's passages read, passages found relevant, claims, and verified claims;
+- how many passages every model read the same way, and the passages two models read in opposite
+  directions (affirms against denies);
+- each model's verified claims, each marked with the other models that reached a verified claim on
+  at least one of the same passages in the same direction.
+
+A member without a key, or whose calls fail, is named in the section; the run carries on without
+it. The run log keeps every member's evidence, claims, call count, tokens and cost (when the
+provider reports it) under `panel`.
+
 #### Providers
 
 A provider is configuration, not code: a URL, a model name as that host spells it, and a key file
