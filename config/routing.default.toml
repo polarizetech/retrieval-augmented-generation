@@ -88,6 +88,32 @@ audio = [
   "make audio", "render a sound", "render the sound", "sound file", "listen to",
 ]
 
+[project_rules]
+# A request from one of these projects (ask's `project`, else its repo's name, else the client's
+# folder) carries the project's rules in `brief.project_rules`, as binding
+# (research_mcp/project_rules.py). Rules are the bold-led bullets and paragraphs of these files.
+projects = ["polarize-*"]
+files = ["AGENTS.md", "CLAUDE.md"]
+# A request sets a rule aside only with one of these phrases and the rule named, for that request.
+exception_words = [
+  "make an exception", "making an exception", "exception to", "exception for",
+  "break the rule", "break this rule", "break that rule", "breaking the rule",
+  "ignore the rule", "ignore this rule", "ignore that rule",
+  "override the rule", "override this rule", "override that rule", "overriding the rule",
+  "set aside the rule", "set aside this rule", "suspend the rule", "waive the rule",
+  "you may break", "you can break", "i'm overriding", "i am overriding",
+]
+
+# The owner's single list of rules for the five polarize tools and the thesis (its own words:
+# "the single list of the owner's rules"). Only its rule sections are read.
+[[project_rules.shared]]
+path = "polarize-thesis/.claude/agents/polarize-integrator.md"
+applies_to = [
+  "polarize-clock", "polarize-physics", "polarize-holo", "polarize-mixer", "polarize-particle",
+  "polarize-thesis",
+]
+sections = ["rules", "added in"]
+
 [profiles_list]
 # A quick request with one of these gets the list of specialist profiles instead of passages.
 # Naming a profile in a question ("ask classical-mechanics", "plasma toroids") recruits it; up to
