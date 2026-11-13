@@ -42,6 +42,7 @@ from research_mcp.hub.ledger import Ledger
 from research_mcp.hub.processes import stale
 from research_mcp.quantities import QuantityStore, corpus_root
 from research_mcp.rag import EvidenceStore
+from research_pipeline import web as websearch
 from research_pipeline.config import ROOT, Settings, load_env
 from research_pipeline.papers import PaperLibrary, PapersError
 from research_pipeline.usage import Meters, load_config
@@ -178,9 +179,7 @@ def _contract_for(prefix: str, result: CallToolResult) -> CallToolResult:
 
 def _load_searxng(config: dict[str, Any]) -> str:
     """Base URL of an optional SearXNG instance: SEARXNG_URL, else the gateway config."""
-    direct = os.environ.get("SEARXNG_URL", "").strip()
-    configured = str(config.get("web_search", {}).get("searxng_url", "")).strip()
-    return (direct or configured).rstrip("/")
+    return websearch.searxng_url(config)
 
 
 def _run_artifact(runs_dir: Path, supplied: str, name: str) -> Path:
@@ -212,26 +211,8 @@ async def _web_search(base: str, arguments: dict[str, Any]) -> CallToolResult:
     if not query:
         return _tool_error("query is required", status="refused")
 
-    def fetch() -> dict[str, Any]:
-        url = (
-            base
-            + "/search?"
-            + urllib.parse.urlencode({"q": query, "format": "json", "categories": categories})
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": SERVER_NAME})
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.load(response)
-
     try:
-        body = await asyncio.to_thread(fetch)
-        rows = [
-            {
-                "title": row.get("title", ""),
-                "url": row.get("url", ""),
-                "snippet": row.get("content", ""),
-            }
-            for row in body.get("results", [])[:limit]
-        ]
+        rows = await websearch.search(base, query, limit, categories=categories, timeout=30)
         payload = {"query": query, "results": rows, "n": len(rows), "source": base}
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps(payload, indent=2))],
@@ -314,10 +295,20 @@ def build_server(
                     "title": h.get("title"),
                     "year": h.get("year"),
                     "doi": (h.get("ids") or {}).get("doi"),
+                    "is_oa": h.get("is_oa"),
+                    "in_library": bool(h.get("full_text_in_library")),
                 }
                 for h in hits[:limit]
-            ]
+            ],
+            "not_answered": sorted(
+                name
+                for name, rep in (found.get("providers") or {}).items()
+                if rep.get("status") in ("unavailable", "error")
+            ),
         }
+
+    async def web_search(query: str, limit: int) -> list[dict[str, str]]:
+        return await websearch.search(searxng, query, limit)
 
     asker = Asker(
         retrieve=evidence_store.retrieve,
@@ -328,6 +319,7 @@ def build_server(
         extensions_dir=settings.agent_extensions_dir,
         hub=hub,
         search=scholarly_search,
+        web=web_search if searxng else None,
         plain_retrieve=plain_retrieve,
         can_switch=can_switch,
         sign_mixer=lambda a: mixer.sign_mix_step(config_path, a),

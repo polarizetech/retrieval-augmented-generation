@@ -29,7 +29,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from . import __version__, agent_profiles, companions, grading, integrity, safety, verify
+from . import __version__, agent_profiles, companions, grading, integrity, safety, verify, web
 from .client_llm import ClientLLM
 from .config import Settings
 from .domains import Domain, UnknownDomain, active
@@ -53,6 +53,7 @@ from .strictness import resolve as resolve_strictness
 from .upstream import UpstreamError
 
 Progress = Callable[[str, str], None]
+WEB_CATEGORIES = ("science", "general")  # SearXNG categories each web query is asked in
 Model = Ollama | Endpoint | ClientLLM
 
 
@@ -61,6 +62,8 @@ class State:
     question: str
     plan: Plan | None = None
     searches: list[dict[str, Any]] = field(default_factory=list)
+    # One row per web search: {query, n_results, n_leads, new_candidates, results}, or an error.
+    web: list[dict[str, Any]] = field(default_factory=list)
     candidates: dict[str, Candidate] = field(default_factory=dict)
     evidence: dict[str, Evidence] = field(default_factory=dict)
     passages: dict[str, str] = field(default_factory=dict)  # evidence id -> full passage text
@@ -323,10 +326,7 @@ class Pipeline:
                     # the component's own title and ids, which would fetch the figure again.
                     ids, title, work = {"doi": parent}, None, None
                     st.notes.append(f"search listed {doi}, a component of {parent}; using {parent}")
-                key = (ids.get("doi") or "").lower() or next(
-                    (f"{k}:{ids[k]}" for k in ("pmid", "pmcid", "openalex", "arxiv") if ids.get(k)),
-                    title_key(title),
-                )
+                key = candidate_key(ids, title)
                 if not key:
                     continue
                 cand = st.candidates.get(key)
@@ -347,6 +347,87 @@ class Pipeline:
                 cand.full_text_in_library = cand.full_text_in_library or bool(
                     hit.get("full_text_in_library")
                 )
+        self._fold_versions(st)
+
+    async def web_discover(self, st: State, lib: PaperLibrary, queries: list[str]) -> None:
+        """Search the web for the first `web_queries` queries and add every paper a result links
+        to (a DOI, PMID, PMCID or arXiv id in its URL or snippet) as a candidate. A result with no
+        identifier stays in the run log only: a web page is never evidence."""
+        base = web.searxng_url(self.s.gateway_config)
+        queries = list(dict.fromkeys(q for q in queries if q.strip()))[: self.s.web_queries]
+        if not queries:
+            return
+        if not base:
+            if not any(row.get("error") == "not configured" for row in st.web):
+                st.web.append({"query": "", "error": "not configured"})
+                st.notes.append(
+                    "The web was not searched: no SearXNG instance is configured "
+                    "(SEARXNG_URL, or web_search.searxng_url in the gateway config)."
+                )
+            return
+        sem = asyncio.Semaphore(self.s.search_concurrency)
+
+        async def _one(query: str) -> tuple[str, list[dict[str, str]] | None, str]:
+            self.progress("web", query)
+            rows: dict[str, dict[str, str]] = {}
+            errors: list[str] = []
+            # SearXNG's science engines (arXiv, Europe PMC, Semantic Scholar...) return paper
+            # links; the general web adds lab pages and repositories that carry a DOI.
+            for category in WEB_CATEGORIES:
+                async with sem:
+                    try:
+                        got = await web.search(base, query, self.s.web_hits, categories=category)
+                    except Exception as exc:  # noqa: BLE001 - a failed web search never ends a run
+                        errors.append(f"{category}: {type(exc).__name__}: {exc}"[:300])
+                        continue
+                for row in got:
+                    rows.setdefault(row["url"], {**row, "category": category})
+            if errors and not rows:
+                return query, None, "; ".join(errors)
+            return query, list(rows.values()), "; ".join(errors)
+
+        for query, rows, error in await asyncio.gather(*(_one(q) for q in queries)):
+            if rows is None:
+                st.web.append({"query": query, "error": error})
+                continue
+            items = {f"{r['url']} {r['title']} {r['snippet']}"[:300]: r for r in rows}
+            try:
+                found = await lib.leads(list(items)) if items else {"leads": []}
+            except PapersError as exc:
+                st.web.append({"query": query, "n_results": len(rows), "error": f"leads: {exc}"})
+                continue
+            added = 0
+            for lead in found.get("leads", []):
+                row = items.get(str(lead.get("from", "")), {})
+                ids = {k: v for k, v in (lead.get("ids") or {}).items() if v}
+                if not ids:
+                    continue
+                title = row.get("title") or None
+                key = candidate_key(ids, title)
+                cand = st.candidates.get(key)
+                if cand is None:
+                    added += 1
+                    cand = st.candidates[key] = Candidate(key, title, None, ids, [], None, ["web"])
+                elif "web" not in cand.providers:
+                    cand.providers.append("web")
+                cand.queries.append(query)
+                cand.work = cand.work or lead.get("work")
+                cand.full_text_in_library = cand.full_text_in_library or bool(
+                    lead.get("full_text_in_library")
+                )
+            st.web.append(
+                {
+                    "query": query,
+                    **({"partly_failed": error} if error else {}),
+                    "n_results": len(rows),
+                    "n_leads": len(found.get("leads", [])),
+                    "new_candidates": added,
+                    "results": [
+                        {"title": r["title"], "url": r["url"], "category": r["category"]}
+                        for r in rows
+                    ],
+                }
+            )
         self._fold_versions(st)
 
     @staticmethod
@@ -408,6 +489,7 @@ class Pipeline:
                 or (
                     f"pmid:{cand.ids['pmid']}" if cand.ids.get("pmid") else cand.ids.get("openalex")
                 )
+                or (f"arxiv:{cand.ids['arxiv']}" if cand.ids.get("arxiv") else None)
             )
             if not ident:
                 cand.outcome = "fetch_failed"
@@ -927,10 +1009,13 @@ class Pipeline:
         st = State(question.strip())
         verifiers = self._resolve_models(st)
 
-        async def gather(lib: PaperLibrary, queries: list[str]) -> None:
+        async def gather(
+            lib: PaperLibrary, queries: list[str], web_first: tuple[str, ...] | list[str] = ()
+        ) -> None:
             if self.offline:
                 return
             await self.discover(st, lib, queries)
+            await self.web_discover(st, lib, [*web_first, *queries])
             await self.acquire(st, lib)
 
         async def work(
@@ -974,8 +1059,11 @@ class Pipeline:
                 )
 
             await self.run_companions(st, lib)
+            # The web gets the question itself first: a search engine takes it as asked.
             await gather(
-                lib, list(dict.fromkeys(q for sq in plan.subquestions for q in sq.queries))
+                lib,
+                list(dict.fromkeys(q for sq in plan.subquestions for q in sq.queries)),
+                web_first=[st.question],
             )
             # Evidence passes first; the falsification pass then skips passages they already used.
             await work(lib, [(sq, None) for sq in plan.subquestions if sq.kind != "falsification"])
@@ -1071,6 +1159,7 @@ class Pipeline:
             "index": self.index_stats,
             "plan": to_json(st.plan),
             "searches": st.searches,
+            "web": st.web,
             "fetches": st.fetches,
             "candidates": to_json(list(st.candidates.values())),
             "evidence": to_json(list(st.evidence.values())),
@@ -1094,6 +1183,14 @@ class Pipeline:
         }
         log["run_dir"] = str(write_run(self.s, log))
         return log
+
+
+def candidate_key(ids: dict[str, Any], title: str | None) -> str:
+    """One paper's key across searches: its DOI, else another identifier, else its title."""
+    return (ids.get("doi") or "").lower() or next(
+        (f"{k}:{ids[k]}" for k in ("pmid", "pmcid", "openalex", "arxiv") if ids.get(k)),
+        title_key(title),
+    )
 
 
 def route_question(

@@ -37,6 +37,11 @@ ANSWER_FORMAT = (
     "evidence id in backticks; quote only the few words that matter. "
     "(4) **Gaps**: one line on what the passages leave open, and `brief.limits`. "
     "(5) **Sources**: the papers you cited, as title (year), doi. "
+    "When coverage is partial, weak or none and `brief.fresh_search` has papers or web results, "
+    "add **Fresh leads** after the gaps: up to five that look closest to the question, each "
+    "with its link (https://doi.org/ for a DOI), labelled as found but not read; no claim may "
+    "rest on them, and suggest asking again with `research:` to fetch and read them. Name "
+    "anything in `brief.fresh_search.not_run` in one line. "
     "When `brief.specialists` lists more than one, add **Specialist views** after the key "
     "points: one short paragraph (1-3 sentences) per specialist, reading the same passages "
     "through its guidance and citing evidence ids; a specialist the passages don't serve gets "
@@ -127,6 +132,22 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         brief["titles_only"] = {
             "note": "Scholarly index titles: no verbatim passages, so not citable.",
             "papers": [_source(r) for r in hits.get("results", [])],
+        }
+    if (fresh := results.pop("fresh", None)) is not None:
+        brief["fresh_search"] = {
+            "note": "A fresh scholarly and web search run with this request: titles and links "
+            "only, nothing read, so not citable.",
+            "papers": [
+                {
+                    "source": _source(r),
+                    "link": f"https://doi.org/{r['doi']}" if r.get("doi") else "",
+                    "open_access": r.get("is_oa"),
+                    "in_library": bool(r.get("in_library")),
+                }
+                for r in fresh.get("papers", [])
+            ],
+            "web": fresh.get("web", []),
+            "not_run": fresh.get("not_run", []),
         }
     if results:
         brief["tool_results"] = results
