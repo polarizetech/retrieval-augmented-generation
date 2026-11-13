@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import mixer, sky
+from research_mcp import brief, mixer, sky
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -57,11 +57,18 @@ RETRIEVE_SECONDS = 40.0
 # Code work on the same repository from another session within this window is mentioned.
 OVERLAP_SECONDS = 2 * 3600
 RETRIEVAL_ERRORS = (PapersError, ValueError, KeyError, OSError, RuntimeError)
+# Every quick answer also searches outside the library, alongside the passage retrieval: the
+# scholarly indexes (fresh, not the held papers) and the web. What comes back are leads, never
+# evidence: titles and links the answer can point to, especially when the library falls short.
+FRESH_PAPERS = 8
+FRESH_WEB = 6
+FRESH_SECONDS = 25.0
 
 Retrieve = Callable[[str, int, int], Awaitable[dict[str, Any]]]
 # Retrieval with one part of the library's ranking off ("reranker" or "embeddings").
 PlainRetrieve = Callable[[str, int, int, str], Awaitable[dict[str, Any]]]
 Search = Callable[[str, int], Awaitable[dict[str, Any]]]
+WebSearch = Callable[[str, int], Awaitable[list[dict[str, str]]]]
 CallTool = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -118,6 +125,7 @@ class Asker:
         extensions_dir: Path | None,
         hub: Hub | None = None,
         search: Search | None = None,
+        web: WebSearch | None = None,
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
         sign_mixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
@@ -130,6 +138,7 @@ class Asker:
         self.extensions_dir = extensions_dir
         self.hub = hub
         self.search = search
+        self.web = web
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
         self.sign_mixer = sign_mixer
@@ -342,6 +351,42 @@ class Asker:
                     retry_after=self._retry("library"),
                 )
             ) from exc
+
+    async def _fresh(self, query: str, papers: bool) -> dict[str, Any]:
+        """A fresh scholarly search and a web search, run at once. Each part that fails or is
+        not set up is named in `not_run`; neither ever stops the answer."""
+
+        async def scholarly() -> dict[str, Any]:
+            assert self.search is not None
+            return await asyncio.wait_for(self.search(query, FRESH_PAPERS), FRESH_SECONDS)
+
+        async def web() -> list[dict[str, str]]:
+            assert self.web is not None
+            return await asyncio.wait_for(self.web(query, FRESH_WEB), FRESH_SECONDS)
+
+        out: dict[str, Any] = {"papers": [], "web": [], "not_run": []}
+        jobs: dict[str, Awaitable[Any]] = {}
+        if papers and self.search is not None:
+            jobs["papers"] = scholarly()
+        elif papers:
+            out["not_run"].append("scholarly search: not connected")
+        if self.web is not None:
+            jobs["web"] = web()
+        else:
+            out["not_run"].append("web search: no SearXNG instance is configured")
+        got = await asyncio.gather(*jobs.values(), return_exceptions=True)
+        for key, value in zip(jobs, got, strict=True):
+            label = "scholarly search" if key == "papers" else "web search"
+            if isinstance(value, BaseException):
+                why = "timed out" if isinstance(value, TimeoutError) else type(value).__name__
+                out["not_run"].append(f"{label}: {why}")
+            elif key == "papers":
+                out["papers"] = value.get("results", [])
+                for name in value.get("not_answered") or []:
+                    out["not_run"].append(f"scholarly provider {name}: did not answer")
+            else:
+                out["web"] = value
+        return out
 
     async def _duplicate(self, turn: Turn, question: str) -> dict[str, Any] | None:
         """Attach to a research request on the go that asks the same thing; else None. A near
@@ -780,14 +825,28 @@ class Asker:
         if route.mode in ("quick", "code") and context:
             limit = QUICK_PASSAGES if route.mode == "quick" else CODE_PASSAGES
             t = time.monotonic()
-            kind, found = await self._evidence(turn, route.question, limit)
+            fresh: dict[str, Any] | None = None
+            spent = 0.0
+
+            async def evidence() -> tuple[str, dict[str, Any]]:
+                nonlocal spent
+                got = await self._evidence(turn, route.question, limit)
+                spent = time.monotonic() - t
+                return got
+
+            if route.mode == "quick":
+                (kind, found), fresh = await asyncio.gather(
+                    evidence(), self._fresh(route.question, papers=True)
+                )
+            else:
+                kind, found = await evidence()
             if kind == "evidence":
                 found = apply_relevance_floor(found)
             results[kind] = found
             if kind == "evidence":
                 progress.append(
                     f"Retrieved {found.get('n', 0)} passage(s) ({found.get('retrieval', '?')}) in "
-                    f"{time.monotonic() - t:.1f} s"
+                    f"{spent:.1f} s"
                 )
                 low = found.get("below_floor")
                 if low:
@@ -798,7 +857,17 @@ class Asker:
             else:
                 progress.append(
                     f"Searched the scholarly indexes instead: {len(found.get('results', []))} "
-                    f"hit(s) in {time.monotonic() - t:.1f} s"
+                    f"hit(s) in {spent:.1f} s"
+                )
+            if fresh is not None:
+                if kind == "search":
+                    fresh["papers"] = []  # the fallback above already listed the indexes' titles
+                results["fresh"] = fresh
+                progress.append(
+                    f"Fresh search outside the library: {len(fresh['papers'])} paper(s) from the "
+                    f"scholarly indexes, {len(fresh['web'])} web result(s) in "
+                    f"{time.monotonic() - t:.1f} s"
+                    + (f"; not run: {'; '.join(fresh['not_run'])}" if fresh["not_run"] else "")
                 )
         if route.mode == "research":
             run = await self._research(turn, route.question, strictness)
@@ -1022,6 +1091,7 @@ def relay(
     hits = results.get("search")
     if hits is not None:
         blocks["search"] = "\n".join(_hits(hits) or ["None matched."])
+    fresh_block = _fresh_block(results.get("fresh"))
     run = results.get("research")
     out: list[str] = []
     if run is not None and run.get("attached_to"):
@@ -1076,6 +1146,7 @@ def relay(
         blocks["search"]
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
+        fresh_block,
         _sky_block(results.get("sky")),
         _sight_block(results.get("sight")),
         blocks["research"],
@@ -1084,6 +1155,32 @@ def relay(
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
+
+
+def _fresh_block(fresh: dict[str, Any] | None) -> str:
+    """The fresh scholarly and web search, as leads: titles and links, nothing read."""
+    if fresh is None:
+        return ""
+    lines = ["**Fresh search outside the library** (unread leads: not citable)"]
+    for i, r in enumerate(fresh.get("papers", []), 1):
+        marks = ", ".join(
+            x
+            for x in (
+                r.get("year") and str(r["year"]),
+                r.get("doi") and f"https://doi.org/{r['doi']}",
+                "open access" if r.get("is_oa") else "",
+                "in the library" if r.get("in_library") else "",
+            )
+            if x
+        )
+        lines.append(f"{i}. {r.get('title') or '(untitled)'}" + (f" ({marks})" if marks else ""))
+    for r in fresh.get("web", []):
+        lines.append(f"- {r.get('title') or r['url']}: {r['url']}")
+    if len(lines) == 1:
+        lines.append("Nothing came back.")
+    if fresh.get("not_run"):
+        lines.append("Not searched: " + "; ".join(fresh["not_run"]) + ".")
+    return "\n".join(lines)
 
 
 def _profiles_block(rows: list[dict[str, str]] | None) -> str:
@@ -1235,6 +1332,24 @@ def _short(
             "which can't be cited."
         )
         nxt.append("The assistant says no passage applies before answering any other way.")
+    fresh = results.get("fresh")
+    if fresh is not None:
+        n_papers, n_web = len(fresh.get("papers", [])), len(fresh.get("web", []))
+        if n_papers or n_web:
+            got.append(
+                f"A fresh search outside the library found {n_papers} paper(s) in the scholarly "
+                f"indexes and {n_web} web result(s): unread leads, not evidence."
+            )
+            level = (brief.coverage(found) or {}).get("level") if found is not None else "none"
+            if level in ("partial", "weak", "none"):
+                nxt.append(
+                    "The assistant points to the closest fresh leads, with their links, and "
+                    "suggests `research:` to fetch and read them."
+                )
+        else:
+            got.append("A fresh search outside the library found nothing either.")
+        if fresh.get("not_run"):
+            got.append("Not searched: " + "; ".join(fresh["not_run"]) + ".")
     run = results.get("research")
     if run is not None and run.get("attached_to"):
         got.append(

@@ -85,6 +85,11 @@ class PaperLibrary(Upstream):
             )
         )["data"]
 
+    async def leads(self, found: list[str]) -> dict[str, Any]:
+        """Paper identifiers parsed from web results (URLs and text), marked with what is held.
+        Parsed, not resolved: `fetch` decides whether an open copy exists. No network."""
+        return (await self._call("leads", found=found))["data"]
+
     async def fetch(self, identifier: str, collection: str = "") -> dict[str, Any]:
         return (await self._call("fetch", identifier=identifier, collection=collection))["data"]
 

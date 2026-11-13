@@ -174,6 +174,10 @@ class Settings:
         default_factory=lambda: _int("PIPELINE_QUERIES_PER_SUBQ", 2)
     )
     hits_per_query: int = field(default_factory=lambda: _int("PIPELINE_HITS_PER_QUERY", 8))
+    # Every run also searches the web (SearXNG) for the question and its first planned queries,
+    # and turns paper links in the results into candidates. 0 turns the web search off.
+    web_queries: int = field(default_factory=lambda: _int("PIPELINE_WEB_QUERIES", 4))
+    web_hits: int = field(default_factory=lambda: _int("PIPELINE_WEB_HITS", 8))
     max_fetch: int = field(default_factory=lambda: _int("PIPELINE_MAX_FETCH", 12))
     # Passages asked of the library per retrieval query. The library ranks them (BM25 + vectors,
     # then its cross-encoder when PAPER_FETCH_RERANK_MODEL is set); nothing here re-scores them.

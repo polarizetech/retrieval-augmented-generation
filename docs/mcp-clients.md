@@ -21,6 +21,22 @@ annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) from the config
 can decide what needs approval. One broken upstream is reported by `gateway_status` and does not
 take the others down.
 
+**Every request searches outside the library.** With SearXNG configured, every answer also looks
+beyond the papers already held, so a gap in the library is met with leads, not just "no passage":
+
+- **`ask`, quick route.** Alongside the passage retrieval, it runs a fresh scholarly search
+  (`papers__search`) and a web search. The brief carries both as `fresh_search`: titles and links,
+  marked as unread and not citable. When coverage is partial, weak or none, the answer lists the
+  closest of them as **Fresh leads** and suggests `research:` to read them.
+- **Research runs.** After the scholarly searches, the pipeline web-searches the question and its
+  first planned queries (`PIPELINE_WEB_QUERIES`, default 4; 0 turns this off;
+  `PIPELINE_WEB_HITS`, default 8 results each). It then passes the result URLs to `papers__leads`,
+  and every paper they link to becomes a candidate to fetch and read. A web page is never evidence
+  itself. The run log keeps every web result under `web`, and the answer's Limits section says what
+  the web search added.
+
+A search that fails or isn't set up is named, and the answer carries on without it.
+
 **Web search without SearXNG.** The scholarly indexes rarely miss an open copy (1.2% of searches
 across 265 runs, October 2026), so no web search engine is required. When `papers__search` wants
 the web fallback and no SearXNG is configured, its result carries `ask_the_web`: a client that can

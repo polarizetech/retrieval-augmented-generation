@@ -253,6 +253,16 @@ def render(
             f"- Search providers that did not answer at least once: {', '.join(silent)}. "
             "Their silence is not zero results."
         )
+    searched = [w for w in getattr(st, "web", []) if w.get("query")]
+    if searched:
+        added = sum(int(w.get("new_candidates", 0)) for w in searched)
+        failed = sum(1 for w in searched if w.get("error"))
+        out.append(
+            f"- The web was searched for {len(searched)} quer{'y' if len(searched) == 1 else 'ies'}"
+            f"; its results added {added} paper(s) to the candidates. A web page is never "
+            "evidence: only papers fetched and read can support a claim."
+            + (f" {failed} web search(es) failed." if failed else "")
+        )
     injected = [d for d in st.dropped_passages if "prompt_injection_pattern" in d["flags"]]
     if injected:
         out.append(
