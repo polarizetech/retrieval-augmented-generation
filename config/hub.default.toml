@@ -65,6 +65,26 @@ reporting_file = "~/.config/polarize/nearai-reporting.env"
 min_usd = 1.0
 max_used_fraction = 0.95
 
+# Panel members (PIPELINE_PANEL="openai,gemini"; research_pipeline/panel.py): they read the same
+# passages as the run's model and write their own claims for the answer's comparison. They are on
+# no ladder. `retention` is said in the answer's limits whenever the member read passages.
+[providers.openai]
+kind = "openai"
+label = "OpenAI GPT-6.1 Sol"
+url = "https://api.openai.com/v1"
+model = "gpt-6.1-sol"
+key_file = "~/.config/polarize/openai.key"
+retention = "OpenAI may keep API requests for up to 30 days for abuse monitoring (no zero-retention agreement)."
+
+[providers.gemini]
+kind = "openai"
+label = "Gemini 4 Carbon via OpenRouter"
+url = "https://openrouter.ai/api/v1"
+model = "google/gemini-4-carbon"
+key_file = "~/.config/polarize/openrouter.key"
+# OpenRouter routes it only to Google endpoints with zero data retention.
+zdr = true
+
 [providers.local]
 kind = "ollama"
 label = "local qwen3:4b-instruct-2507"
