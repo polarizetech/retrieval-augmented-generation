@@ -25,8 +25,10 @@ take the others down.
 **Every request searches outside the library.** With SearXNG configured, every answer also looks
 beyond the papers already held, so a gap in the library is met with leads, not just "no passage":
 
-- **`ask`, quick route.** Alongside the passage retrieval, it runs a fresh scholarly search
-  (`papers__search`) and a web search. The brief carries both as `fresh_search`: titles and links,
+- **`ask`, quick route.** Alongside the passage retrieval, it runs a fresh paper search through
+  SearXNG's science engines (arXiv, PubMed, Europe PMC, Semantic Scholar) and a general web
+  search. It does not use `papers__search`: the paper library runs its tools one at a time, so
+  a 30-second search there held up every retrieval behind it. The brief carries both as `fresh_search`: titles and links,
   marked as unread and not citable. When coverage is partial, weak or none, the answer lists the
   closest of them as **Fresh leads** and suggests `research:` to read them.
 - **Research runs.** After the scholarly searches, the pipeline web-searches the question and its

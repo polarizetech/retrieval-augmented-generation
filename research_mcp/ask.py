@@ -57,21 +57,21 @@ RETRIEVE_SECONDS = 40.0
 # Code work on the same repository from another session within this window is mentioned.
 OVERLAP_SECONDS = 2 * 3600
 RETRIEVAL_ERRORS = (PapersError, ValueError, KeyError, OSError, RuntimeError)
-# Every quick answer also searches outside the library, alongside the passage retrieval: the
-# scholarly indexes (fresh, not the held papers) and the web. What comes back are leads, never
+# Every quick answer also searches outside the library, alongside the passage retrieval, through
+# SearXNG: its science engines (arXiv, PubMed, Europe PMC, Semantic Scholar...) for papers, and the
+# general web. Not through the paper library's own search: its tools run one at a time, so a 30 s
+# search there held up every retrieval behind it (November 2026). What comes back are leads, never
 # evidence: titles and links the answer can point to, especially when the library falls short.
 FRESH_PAPERS = 8
 FRESH_WEB = 6
-# The scholarly search asks about nine providers and took over 25 s live (November 2026); the
-# library retrieval beside it took 16 s. The same limit as retrieval keeps the reply inside the
-# 45 s reply deadline. A search cut off here still finishes in the library and is cached.
-FRESH_SECONDS = RETRIEVE_SECONDS
+# SearXNG answers in a second or two; a search past this is dropped and named.
+FRESH_SECONDS = 20.0
 
 Retrieve = Callable[[str, int, int], Awaitable[dict[str, Any]]]
 # Retrieval with one part of the library's ranking off ("reranker" or "embeddings").
 PlainRetrieve = Callable[[str, int, int, str], Awaitable[dict[str, Any]]]
 Search = Callable[[str, int], Awaitable[dict[str, Any]]]
-WebSearch = Callable[[str, int], Awaitable[list[dict[str, str]]]]
+WebSearch = Callable[[str, int, str], Awaitable[list[dict[str, str]]]]  # query, limit, category
 CallTool = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -356,39 +356,27 @@ class Asker:
             ) from exc
 
     async def _fresh(self, query: str, papers: bool) -> dict[str, Any]:
-        """A fresh scholarly search and a web search, run at once. Each part that fails or is
-        not set up is named in `not_run`; neither ever stops the answer."""
-
-        async def scholarly() -> dict[str, Any]:
-            assert self.search is not None
-            return await asyncio.wait_for(self.search(query, FRESH_PAPERS), FRESH_SECONDS)
-
-        async def web() -> list[dict[str, str]]:
-            assert self.web is not None
-            return await asyncio.wait_for(self.web(query, FRESH_WEB), FRESH_SECONDS)
-
+        """A fresh paper search (SearXNG's science engines) and a web search, run at once. Each
+        part that fails or is not set up is named in `not_run`; neither ever stops the answer."""
         out: dict[str, Any] = {"papers": [], "web": [], "not_run": []}
-        jobs: dict[str, Awaitable[Any]] = {}
-        if papers and self.search is not None:
-            jobs["papers"] = scholarly()
-        elif papers:
-            out["not_run"].append("scholarly search: not connected")
-        if self.web is not None:
-            jobs["web"] = web()
-        else:
-            out["not_run"].append("web search: no SearXNG instance is configured")
-        got = await asyncio.gather(*jobs.values(), return_exceptions=True)
+        if self.web is None:
+            out["not_run"].append("web and paper search: no SearXNG instance is configured")
+            return out
+        web = self.web
+        jobs = {"web": ("general", FRESH_WEB)}
+        if papers:
+            jobs["papers"] = ("science", FRESH_PAPERS)
+        got = await asyncio.gather(
+            *(asyncio.wait_for(web(query, n, cat), FRESH_SECONDS) for cat, n in jobs.values()),
+            return_exceptions=True,
+        )
         for key, value in zip(jobs, got, strict=True):
-            label = "scholarly search" if key == "papers" else "web search"
+            label = "paper search" if key == "papers" else "web search"
             if isinstance(value, BaseException):
                 why = "timed out" if isinstance(value, TimeoutError) else type(value).__name__
                 out["not_run"].append(f"{label}: {why}")
-            elif key == "papers":
-                out["papers"] = value.get("results", [])
-                for name in value.get("not_answered") or []:
-                    out["not_run"].append(f"scholarly provider {name}: did not answer")
             else:
-                out["web"] = value
+                out[key] = value
         return out
 
     async def _duplicate(self, turn: Turn, question: str) -> dict[str, Any] | None:
@@ -875,7 +863,7 @@ class Asker:
                 results["fresh"] = fresh
                 progress.append(
                     f"Fresh search outside the library: {len(fresh['papers'])} paper(s) from the "
-                    f"scholarly indexes, {len(fresh['web'])} web result(s) in "
+                    f"science engines, {len(fresh['web'])} web result(s) in "
                     f"{time.monotonic() - t:.1f} s"
                     + (f"; not run: {'; '.join(fresh['not_run'])}" if fresh["not_run"] else "")
                 )
@@ -1260,17 +1248,7 @@ def _fresh_block(fresh: dict[str, Any] | None) -> str:
         return ""
     lines = ["**Fresh search outside the library** (unread leads: not citable)"]
     for i, r in enumerate(fresh.get("papers", []), 1):
-        marks = ", ".join(
-            x
-            for x in (
-                r.get("year") and str(r["year"]),
-                r.get("doi") and f"https://doi.org/{r['doi']}",
-                "open access" if r.get("is_oa") else "",
-                "in the library" if r.get("in_library") else "",
-            )
-            if x
-        )
-        lines.append(f"{i}. {r.get('title') or '(untitled)'}" + (f" ({marks})" if marks else ""))
+        lines.append(f"{i}. {r.get('title') or '(untitled)'}: {r.get('url', '')}".rstrip(": "))
     for r in fresh.get("web", []):
         lines.append(f"- {r.get('title') or r['url']}: {r['url']}")
     if len(lines) == 1:
@@ -1434,8 +1412,8 @@ def _short(
         n_papers, n_web = len(fresh.get("papers", [])), len(fresh.get("web", []))
         if n_papers or n_web:
             got.append(
-                f"A fresh search outside the library found {n_papers} paper(s) in the scholarly "
-                f"indexes and {n_web} web result(s): unread leads, not evidence."
+                f"A fresh search outside the library found {n_papers} paper(s) from the science "
+                f"engines and {n_web} web result(s): unread leads, not evidence."
             )
             level = (brief.coverage(found) or {}).get("level") if found is not None else "none"
             if level in ("partial", "weak", "none"):

@@ -66,8 +66,7 @@ def test_a_question_runs_one_retrieval_and_nothing_else(tmp_path: Path) -> None:
     assert set(out["results"]) == {"evidence", "fresh"}
     # With no scholarly or web search connected, the fresh search says so instead of failing.
     assert out["results"]["fresh"]["not_run"] == [
-        "scholarly search: not connected",
-        "web search: no SearXNG instance is configured",
+        "web and paper search: no SearXNG instance is configured"
     ]
     relay = out["relay_full"]
     for part in ("Route: quick", "`W1#p0.abcdef12`", "Name the domain.", "**Limits:**"):
@@ -303,26 +302,21 @@ def test_an_unknown_profile_in_my_words_is_reported(tmp_path: Path) -> None:
     assert "No profile is named ghost-profile" in out["relay"]
 
 
-async def _search(query: str, limit: int) -> dict[str, Any]:
-    return {
-        "results": [
-            {"title": "Octave-band noise", "year": 2021, "doi": "10.2/y", "is_oa": True},
-        ],
-        "not_answered": ["core"],
-    }
-
-
-async def _web(query: str, limit: int) -> list[dict[str, str]]:
+async def _web(query: str, limit: int, categories: str = "general") -> list[dict[str, str]]:
+    if categories == "science":
+        return [{"title": "Octave-band noise", "url": "https://doi.org/10.2/y", "snippet": "…"}]
     return [{"title": "Pink noise explained", "url": "https://example.org/pink", "snippet": "…"}]
 
 
 def test_every_quick_question_also_searches_the_indexes_and_the_web(tmp_path: Path) -> None:
     calls: list[tuple[str, Any]] = []
-    out = asyncio.run(asker(tmp_path, calls, search=_search, web=_web).ask("What is pink noise?"))
+    out = asyncio.run(asker(tmp_path, calls, web=_web).ask("What is pink noise?"))
     fresh = out["results"]["fresh"]
-    assert [p["doi"] for p in fresh["papers"]] == ["10.2/y"]
+    assert [p["url"] for p in fresh["papers"]] == ["https://doi.org/10.2/y"]
     assert [w["url"] for w in fresh["web"]] == ["https://example.org/pink"]
-    assert fresh["not_run"] == ["scholarly provider core: did not answer"]
+    assert fresh["not_run"] == []
+    # The paper library's own search is never asked: it would hold up retrieval.
+    assert [c[0] for c in calls] == ["retrieve"]
     assert any(
         p.startswith("Fresh search outside the library: 1 paper(s)") for p in out["progress"]
     )
@@ -334,14 +328,14 @@ def test_every_quick_question_also_searches_the_indexes_and_the_web(tmp_path: Pa
         "fresh search outside the library found 1 paper" in g for g in out["summary"]["results"]
     )
     sent = compact(out)["brief"]
-    assert sent["fresh_search"]["papers"][0]["link"] == "https://doi.org/10.2/y"
+    assert sent["fresh_search"]["papers"][0]["url"] == "https://doi.org/10.2/y"
     assert sent["fresh_search"]["web"][0]["url"] == "https://example.org/pink"
     assert "fresh" not in sent.get("tool_results", {})
 
 
 def test_fresh_leads_are_offered_when_the_library_falls_short(tmp_path: Path) -> None:
     calls: list[tuple[str, Any]] = []
-    a = asker(tmp_path, calls, search=_search, web=_web)
+    a = asker(tmp_path, calls, web=_web)
 
     async def nothing(query: str, limit: int, max_chars: int) -> dict[str, Any]:
         return {"retrieval": "hybrid", "n": 0, "excluded": [], "results": []}
@@ -353,11 +347,11 @@ def test_fresh_leads_are_offered_when_the_library_falls_short(tmp_path: Path) ->
 
 
 def test_a_failed_web_search_never_stops_the_answer(tmp_path: Path) -> None:
-    async def broken(query: str, limit: int) -> list[dict[str, str]]:
+    async def broken(query: str, limit: int, categories: str = "") -> list[dict[str, str]]:
         raise RuntimeError("SearXNG is down")
 
     calls: list[tuple[str, Any]] = []
-    out = asyncio.run(asker(tmp_path, calls, search=_search, web=broken).ask("What is pink noise?"))
+    out = asyncio.run(asker(tmp_path, calls, web=broken).ask("What is pink noise?"))
     assert out["status"] == "done"
     assert "web search: RuntimeError" in out["results"]["fresh"]["not_run"]
     assert out["results"]["evidence"]["results"]
