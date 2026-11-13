@@ -62,7 +62,10 @@ RETRIEVAL_ERRORS = (PapersError, ValueError, KeyError, OSError, RuntimeError)
 # evidence: titles and links the answer can point to, especially when the library falls short.
 FRESH_PAPERS = 8
 FRESH_WEB = 6
-FRESH_SECONDS = 25.0
+# The scholarly search asks about nine providers and took over 25 s live (November 2026); the
+# library retrieval beside it took 16 s. The same limit as retrieval keeps the reply inside the
+# 45 s reply deadline. A search cut off here still finishes in the library and is cached.
+FRESH_SECONDS = RETRIEVE_SECONDS
 
 Retrieve = Callable[[str, int, int], Awaitable[dict[str, Any]]]
 # Retrieval with one part of the library's ranking off ("reranker" or "embeddings").
