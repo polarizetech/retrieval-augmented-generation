@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import brief, mixer, polarize, sky
+from research_mcp import brief, mixer, polarize, project_rules, sky
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -600,6 +600,18 @@ class Asker:
         progress = [f"Route: {route.mode} ({route.reason})"]
         progress.append(_specialist_line(spec))
         results: dict[str, Any] = {}
+        # The rules of the project the request comes from go with every reply, first.
+        where = (
+            project.strip()
+            or (repo.rsplit("/", maxsplit=1)[-1] if repo else "")
+            or caller.get("project", "")
+        )
+        held = await asyncio.to_thread(
+            project_rules.load, where, route.question, rules.project_rules
+        )
+        if held is not None:
+            results["project_rules"] = held
+            progress.append(project_rules.summary(held))
         turn.rid = rid
         work = self._work(
             turn,
@@ -623,7 +635,10 @@ class Asker:
         done, _ = await asyncio.wait({task}, timeout=self.hub.deadline)
         if task in done:
             return task.result()
-        return self._pending(rid, route, spec=spec, progress=progress, started=started)
+        pending = self._pending(rid, route, spec=spec, progress=progress, started=started)
+        if held is not None:
+            pending["results"] = {"project_rules": held}
+        return pending
 
     def _settled(self, rid: str) -> Callable[[asyncio.Task[dict[str, Any]]], None]:
         """Record a request that failed after its reply had already gone."""
@@ -1171,6 +1186,7 @@ def relay(
         passages = replies.join(f"**Passages:** {blocks['passages_none']}", blocks["excluded"])
     return replies.join(
         "\n\n".join(p.plain() for p in problems),
+        _rules_block(results.get("project_rules")),
         f"**What the research tool did** ({seconds} s)\n" + "\n".join(f"- {p}" for p in progress),
         *(
             f"**{one['name']} guidance:** {one['guidance']}"
@@ -1192,6 +1208,20 @@ def relay(
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
+
+
+def _rules_block(held: dict[str, Any] | None) -> str:
+    """The project's binding rules, for the full relay: each rule's title, source and status."""
+    if not held:
+        return ""
+    if held.get("error"):
+        return f"**Project rules ({held['project']}):** {held['error']}"
+    lines = [f"**Project rules ({held['project']}, binding):** {held['binding']}"]
+    for rule in held["rules"]:
+        mark = " **(set aside for this request)**" if rule.get("set_aside") else ""
+        owner = f" (owner, {rule['owner']})" if rule.get("owner") else ""
+        lines.append(f"- {rule['title']}{owner}{mark}: `{rule['source']}`")
+    return "\n".join(lines)
 
 
 def _polarize_block(tools: dict[str, Any] | None) -> str:
@@ -1336,6 +1366,18 @@ def _short(
     nxt: list[str] = []
     you: list[str] = [p.ask_person() for p in problems]
     stopped = any(p.status == "needs_decision" for p in problems)
+    held = results.get("project_rules")
+    if held:
+        got.append(project_rules.summary(held) + ".")
+        nxt.append(
+            "The assistant follows every rule in `brief.project_rules`, stops and says which rule "
+            "when the request conflicts with one, and ends its reply with the rules it checked."
+        )
+        ex = held.get("exceptions") or {}
+        if ex.get("asked") and not ex.get("rules"):
+            you.append(
+                "Name the rule you want set aside for this request; until then every rule holds."
+            )
     if results.get("profiles") is not None:
         rows = results["profiles"]
         got.append(

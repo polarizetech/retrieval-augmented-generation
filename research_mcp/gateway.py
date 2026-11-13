@@ -33,7 +33,7 @@ from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import Response
 
-from research_mcp import brief, mixer, oauth, physical_mix, polarize, records, sky
+from research_mcp import brief, mixer, oauth, physical_mix, polarize, project_rules, records, sky
 from research_mcp.ask import Asker, parse_tool_text
 from research_mcp.calllog import CallLog
 from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
@@ -408,8 +408,11 @@ def build_server(
             "bottom line, key points each citing an evidence id, gaps, sources. Say first when "
             "its coverage is weak or none, and never fill gaps from memory. Keep the links a "
             "reply carries (its `links` field): they open the record of the call, which holds "
-            "the full reply, and the research it refers to. Pass repo when the request is about "
-            "a repository, and "
+            "the full reply, and the research it refers to. A request from a project with rules "
+            "(the polarize-* projects) carries them in brief.project_rules: they bind before "
+            "anything else, the reply ends with the rules it checked, and only the person's own "
+            "explicit words set one aside; pass project (the repository you are working in) when "
+            "you know it. Pass repo when the request is about a repository, and "
             "a prefix such as research: or code: only when the person used one. "
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
             "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
@@ -876,6 +879,33 @@ def build_server(
         ]
         polarize_tools = [
             Tool(
+                name="rules__project",
+                description=(
+                    "The binding rules of a project (config [project_rules]: the polarize-* "
+                    "projects): the bold-led rules in its AGENTS.md and CLAUDE.md, and the "
+                    "owner's shared profile for the polarize tools, read from its checkout now. "
+                    "The rules nearest `question` come with their full text, the rest as one "
+                    "line with their source. `ask` returns the same in brief.project_rules for "
+                    "the caller's project. A rule is set aside only by the person's explicit "
+                    "words in `question` ('make an exception to <rule>')."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "e.g. polarize-mixer"},
+                        "question": {
+                            "type": "string",
+                            "description": "the person's request, verbatim; ranks the rules and "
+                            "is the only place an exception can come from",
+                        },
+                    },
+                    "required": ["project"],
+                },
+                annotations=ToolAnnotations(
+                    readOnlyHint=True, idempotentHint=True, openWorldHint=False
+                ),
+            ),
+            Tool(
                 name="polarize__read",
                 description=(
                     "A polarize tool's own files, for answering questions about it: README.md "
@@ -1226,8 +1256,8 @@ def build_server(
     )
 
     # gateway_status, ask, four hub__, web__search (with SearXNG), five rag__, five math__, three
-    # sky__, three polarize__, two session tools.
-    builtin = (24 + bool(searxng)) if builtin_tools else 1
+    # sky__, three polarize__, rules__project, two session tools.
+    builtin = (25 + bool(searxng)) if builtin_tools else 1
 
     def caller() -> dict[str, str]:
         """Who is calling, inferred when the session does not say: the stdio bridge sends its
@@ -1395,7 +1425,9 @@ def build_server(
             }
         if not builtin_tools and (
             name in ("web__search", "ask")
-            or name.startswith(("rag__", "math__", "sky__", "polarize__", "session__", "hub__"))
+            or name.startswith(
+                ("rag__", "math__", "sky__", "polarize__", "rules__", "session__", "hub__")
+            )
         ):
             return _tool_error(f"unknown tool: {name}", status="refused")
         if name == "ask":
@@ -1445,6 +1477,22 @@ def build_server(
                 return await handler(arguments)
             except (ValueError, KeyError, OSError, PapersError) as exc:
                 return _tool_error(f"{label} failed: {type(exc).__name__}: {exc}", "library")
+        if name == "rules__project":
+            project = str(arguments["project"]).strip()
+            held = await asyncio.to_thread(
+                project_rules.load,
+                project,
+                str(arguments.get("question") or ""),
+                asker.rules().project_rules,
+            )
+            if held is None:
+                return {
+                    "project": project,
+                    "rules": [],
+                    "note": "No rules are configured for this project (config [project_rules] "
+                    "projects).",
+                }
+            return held
         if name == "polarize__read":
             try:
                 return await polarize.read(
