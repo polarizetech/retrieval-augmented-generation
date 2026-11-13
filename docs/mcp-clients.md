@@ -12,6 +12,7 @@ One gateway process (`research-rag-gateway`) exposes:
 | `session__read_capsule`, `session__propose` | session store and research PR gate | no |
 | `research__*` | trusted research-repository reads and proposals | no |
 | `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
+| `polarize__read`, `polarize__renders`, `polarize__render` | the polarize tools' own repos (pinned to tags) and polarize-holo's render scripts | no |
 | `web__search` | an optional SearXNG instance; listed only when `SEARXNG_URL` is set | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
 

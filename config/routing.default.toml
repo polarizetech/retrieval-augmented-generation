@@ -72,6 +72,22 @@ triggers = [
 # Naming the tool ("sky key", "sky clock", "polarize-clock") always runs it.
 triggers = []
 
+[polarize_tools]
+# Naming a polarize tool adds the polarize tools step to any route: its README.md, TOOL.toml and a
+# code search, read at the tool's newest release tag (research_mcp/polarize.py). One list per tool.
+holo = ["polarize-holo", "polarize holo", "holo"]
+mixer = ["polarize-mixer", "polarize mixer"]
+particle = ["polarize-particle", "polarize particle"]
+physics = ["polarize-physics", "polarize physics"]
+clock = ["polarize-clock", "polarize clock"]
+# With polarize-holo named, these words also run one of holo's renders and return its WAV files.
+# The render is named by a word of its folder ("spiral", "guitar pluck"); without one, the step
+# lists holo's renders.
+audio = [
+  "audio", "audio file", "audio files", "wav", "wav file", "render audio", "generate audio",
+  "make audio", "render a sound", "render the sound", "sound file", "listen to",
+]
+
 [profiles_list]
 # A quick request with one of these gets the list of specialist profiles instead of passages.
 # Naming a profile in a question ("ask classical-mechanics", "plasma toroids") recruits it; up to
