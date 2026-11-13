@@ -174,6 +174,9 @@ class Settings:
         default_factory=lambda: _int("PIPELINE_QUERIES_PER_SUBQ", 2)
     )
     hits_per_query: int = field(default_factory=lambda: _int("PIPELINE_HITS_PER_QUERY", 8))
+    # Other models that read the same passages and write their own claims, by hub provider name
+    # ("openai,gemini"; see research_pipeline/panel.py). Empty: no panel.
+    panel: str = field(default_factory=lambda: os.environ.get("PIPELINE_PANEL", ""))
     # Every run also searches the web (SearXNG) for the question and its first planned queries,
     # and turns paper links in the results into candidates. 0 turns the web search off.
     web_queries: int = field(default_factory=lambda: _int("PIPELINE_WEB_QUERIES", 4))

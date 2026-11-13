@@ -42,6 +42,7 @@ def render(
     companions: Mapping[str, Companion] | None = None,
     risk: dict[str, Any] | None = None,
     max_fetch: int | None = None,
+    panel: str = "",
 ) -> str:
     """`library`: what the paper library said about each cited work (title, year, doi, authors)."""
     assert st.plan
@@ -136,6 +137,8 @@ def render(
         body = " ".join(said) if said else "*Nothing in the verified claims bears on this field.*"
         out += [f"**{name}.** {body}{note}", ""]
     take("views")
+    out.append(panel)
+    take("panel")
 
     # Disagreement is computed from the direction of each retrieved result, never asserted by a
     # model.
@@ -349,6 +352,7 @@ def _answer(b: Mapping[str, str]) -> str:
         section("Verification risk", "risk", always=False),
         section("Findings", "findings"),
         section("Specialist views", "views", always=False),
+        section("Model comparison", "panel", always=False),
         section("Conflicting or negative evidence", "conflicts"),
         b.get("tools", ""),
         section("Limits of this answer", "limits"),
