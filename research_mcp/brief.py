@@ -135,17 +135,9 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         }
     if (fresh := results.pop("fresh", None)) is not None:
         brief["fresh_search"] = {
-            "note": "A fresh scholarly and web search run with this request: titles and links "
-            "only, nothing read, so not citable.",
-            "papers": [
-                {
-                    "source": _source(r),
-                    "link": f"https://doi.org/{r['doi']}" if r.get("doi") else "",
-                    "open_access": r.get("is_oa"),
-                    "in_library": bool(r.get("in_library")),
-                }
-                for r in fresh.get("papers", [])
-            ],
+            "note": "A fresh paper search (SearXNG's science engines) and web search run with "
+            "this request: titles, links and snippets only, nothing read, so not citable.",
+            "papers": fresh.get("papers", []),
             "web": fresh.get("web", []),
             "not_run": fresh.get("not_run", []),
         }

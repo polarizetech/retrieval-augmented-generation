@@ -307,8 +307,8 @@ def build_server(
             ),
         }
 
-    async def web_search(query: str, limit: int) -> list[dict[str, str]]:
-        return await websearch.search(searxng, query, limit)
+    async def web_search(query: str, limit: int, categories: str) -> list[dict[str, str]]:
+        return await websearch.search(searxng, query, limit, categories=categories)
 
     asker = Asker(
         retrieve=evidence_store.retrieve,
