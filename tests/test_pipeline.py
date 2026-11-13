@@ -121,7 +121,8 @@ def settings_for(tmp_path: Path, **overrides: Any) -> Settings:
         verifier_model="",
         text_model="stub-model",
         max_rounds=2,
-        **overrides,
+        # No gateway config: no companion or SearXNG instance is reached from a test.
+        **{"gateway_config": tmp_path / "no-gateway.json", **overrides},
     )
 
 
@@ -331,6 +332,7 @@ class CriticalModel(ScriptedModel):
 def online_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     from research_pipeline import pipeline as module
 
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
     lib = papers_library(tmp_path)
     monkeypatch.setattr(module, "PaperLibrary", lambda *_: FakeLibrary(lib))
     monkeypatch.setattr(
@@ -572,3 +574,61 @@ def test_open_access_candidates_are_fetched_before_closed_ones(tmp_path: Path) -
     assert library.fetched == ["10.1000/w1"]
     assert st.candidates["10.1000/w1"].outcome == "indexed"
     assert st.candidates["10.1000/closed"].outcome == "over_budget"
+
+
+class WebLibrary(FakeLibrary):
+    """Reads paper identifiers out of web results the way paper-fetch's `leads` does."""
+
+    async def leads(self, found: list[str]) -> dict[str, Any]:
+        out = []
+        for item in found:
+            if "10.1000/web1" in item:
+                out.append({"from": item[:300], "ids": {"doi": "10.1000/web1"}, "work": None})
+            elif "10.1000/w1" in item:
+                out.append({"from": item[:300], "ids": {"doi": "10.1000/w1"}, "work": None})
+        return {"leads": out, "no_identifier": []}
+
+
+def test_the_web_search_adds_linked_papers_as_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import pipeline as module
+    from research_pipeline.pipeline import State
+
+    asked: list[str] = []
+
+    async def search(
+        base: str, query: str, limit: int = 8, *, categories: str = "general", **_: Any
+    ) -> list[dict[str, str]]:
+        asked.append(f"{categories}: {query}")
+        return [
+            {"title": "A web-only paper", "url": "https://doi.org/10.1000/web1", "snippet": ""},
+            {"title": "Training (repost)", "url": "https://x.org/10.1000/w1", "snippet": ""},
+            {"title": "A blog post", "url": "https://blog.example/post", "snippet": "no id"},
+        ]
+
+    monkeypatch.setenv("SEARXNG_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(module.web, "search", search)
+    pipeline = Pipeline(settings_for(tmp_path, web_queries=2), offline=False)
+    st = State(QUESTION)
+    library = WebLibrary(papers_library(tmp_path))
+    asyncio.run(pipeline.discover(st, library, ["blood pressure"]))  # type: ignore[arg-type]
+    asyncio.run(
+        pipeline.web_discover(st, library, [QUESTION, "blood pressure", "third"])  # type: ignore[arg-type]
+    )
+    # Bounded by web_queries; each query is asked of the science engines and the general web.
+    assert sorted(asked) == sorted(
+        f"{c}: {q}" for c in ("science", "general") for q in (QUESTION, "blood pressure")
+    )
+    assert st.candidates["10.1000/web1"].providers == ["web"]
+    assert st.candidates["10.1000/web1"].title == "A web-only paper"
+    assert "web" in st.candidates["10.1000/w1"].providers  # already found, now also by the web
+    assert [w["new_candidates"] for w in st.web] == [1, 0]
+    assert st.web[0]["results"][2]["url"] == "https://blog.example/post"
+
+
+def test_a_run_without_searxng_says_the_web_was_not_searched(
+    online_log: dict[str, Any],
+) -> None:
+    assert online_log["web"] == [{"query": "", "error": "not configured"}]
+    assert "The web was not searched" in online_log["answer"]
