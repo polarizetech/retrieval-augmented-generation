@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import brief, mixer, sky
+from research_mcp import brief, mixer, polarize, sky
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -809,7 +809,14 @@ class Asker:
             progress.append(_sight_progress(results["sight"]))
         elif sky_term:
             results["sky"] = await self._sky(route.question, sky_term)
-            progress.append(_sky_progress(results["sky"]))
+            if results["sky"].get("missing") and "clock" in polarize.named(
+                route.question, rules.polarize
+            ):
+                # A question about polarize-clock itself, with no place: its repo answers it.
+                del results["sky"]
+                progress.append("Sky key: not run (a question about polarize-clock, no place)")
+            else:
+                progress.append(_sky_progress(results["sky"]))
         else:
             hint = sky.mentions_sky(route.question, rules.sky)
             if hint:
@@ -885,6 +892,7 @@ class Asker:
                 )
             progress.extend(turn.notes)
         await self._mixer_step(route, rules, progress, results)
+        await self._polarize_step(route, rules, progress, results)
         if route.mode == "code":
             note = (
                 "The gateway does not make code changes itself yet. The assistant makes the "
@@ -909,6 +917,43 @@ class Asker:
             if overlap:
                 results["coder"]["overlap"] = overlap
             progress.append("Coder: recruited (the assistant edits; the gateway gave context)")
+
+    async def _polarize_step(
+        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
+    ) -> None:
+        """The polarize tools step, on any route: each tool the request names is read from its
+        own repository at its newest tag; with polarize-holo named and audio asked for, one of
+        holo's renders runs and its WAV files come back (research_mcp/polarize.py)."""
+        tools = polarize.named(route.question, rules.polarize)
+        if not tools:
+            return
+        t = time.monotonic()
+        out: dict[str, Any] = {"read": []}
+        for tool in tools[:3]:
+            out["read"].append(
+                await polarize.read(
+                    tool, route.question, rules.polarize, self.call_tool, self.has_tool
+                )
+            )
+        if "holo" in tools and polarize.wants_audio(route.question, rules.polarize_audio):
+            listed = await asyncio.to_thread(polarize.renders)
+            row = polarize.choose(route.question, listed.get("renders", []))
+            if row is None:
+                out["renders"] = listed.get("renders", [])
+                if listed.get("error"):
+                    out["render_error"] = listed["error"]
+            else:
+                args: dict[str, Any] = {}
+                reading = (results.get("sky") or {}).get("reading")
+                if reading:  # polarize-clock's Sun azimuth for the place and time asked about
+                    args["SUN_AZ_DEG"] = reading["sun"]["az_deg"]
+                out["render"] = await asyncio.to_thread(polarize.render, row["slug"], "", args)
+        results["polarize"] = out
+        progress.append(
+            "Polarize tools: "
+            + "; ".join(polarize.summary(out))
+            + f" ({time.monotonic() - t:.1f} s)"
+        )
 
     async def _mixer_step(
         self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
@@ -1150,6 +1195,7 @@ def relay(
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
         fresh_block,
+        _polarize_block(results.get("polarize")),
         _sky_block(results.get("sky")),
         _sight_block(results.get("sight")),
         blocks["research"],
@@ -1158,6 +1204,54 @@ def relay(
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
+
+
+def _polarize_block(tools: dict[str, Any] | None) -> str:
+    """Each tool read (tag, commit, files) and any holo render, for the full relay."""
+    if not tools:
+        return ""
+    lines = ["**Polarize tools**"]
+    for row in tools.get("read", []):
+        at = f"{row['tag']} (commit {row['commit']})" if row.get("pinned") else "not pinned"
+        lines.append(
+            f"- {row['repository']} at {at}" + (f"; {row['note']}" if row.get("note") else "")
+        )
+        for name, f in row.get("files", {}).items():
+            lines.append(f"  - {name} via {f['via']}{' (truncated)' if f['truncated'] else ''}")
+        for hit in row.get("code", [])[:5]:
+            lines.append(f"  - code: {hit.get('path')} {hit.get('url') or ''}".rstrip())
+        for miss in row.get("not_read", []):
+            lines.append(f"  - not read: {miss}")
+    audio = tools.get("render")
+    if audio:
+        lines.append(
+            f"- holo render {audio.get('render')} ({audio.get('status')}): "
+            f"{audio.get('ref') or 'HEAD'}, commit {audio.get('commit')}, "
+            f"{audio.get('environment', '')}"
+        )
+        for w in audio.get("wavs", []):
+            fmt = ", ".join(
+                f"{w[k]}{u}"
+                for k, u in (
+                    ("sample_rate", " Hz"),
+                    ("bits", "-bit"),
+                    ("channels", " ch"),
+                    ("seconds", " s"),
+                )
+                if k in w
+            )
+            lines.append(f"  - {w['path']} ({fmt})")
+        if audio.get("pins"):
+            lines.append("  - pins: " + ", ".join(f"{k} {v}" for k, v in audio["pins"].items()))
+        if audio.get("note"):
+            lines.append(f"  - {audio['note']}")
+        if audio.get("error"):
+            lines.append(f"  - error: {str(audio['error'])[-300:]}")
+    elif tools.get("renders") is not None:
+        lines.append(
+            "- holo renders: " + (", ".join(r["slug"] for r in tools["renders"]) or "none")
+        )
+    return "\n".join(lines)
 
 
 def _fresh_block(fresh: dict[str, Any] | None) -> str:
@@ -1418,6 +1512,21 @@ def _short(
             "For polarize-clock's key or clock times instead, give the place as decimal latitude "
             'and longitude (for example 48.43, -123.37), or say "sky key".'
         )
+    tools = results.get("polarize")
+    if tools is not None:
+        got.extend(polarize.summary(tools))
+        nxt.append(
+            "The assistant answers from the tools' own files (`relay_full` has them) and names "
+            "the tag and commit each was read at."
+        )
+        audio = tools.get("render") or {}
+        if audio.get("status") == "needs arguments" and "SUN_AZ_DEG" in audio.get("missing", []):
+            you.append(
+                "Give a place in decimal coordinates (and a UTC time if not now) so polarize-clock "
+                "can supply the Sun's azimuth."
+            )
+        elif "renders" in tools:
+            you.append("Name one of holo's renders (for example spiral or guitar pluck).")
     if spec.get("name") and route.mode != "research":
         names = [one["name"] for one in spec.get("specialists") or []] or [spec["name"]]
         got.append(f"Specialist{'s' if len(names) > 1 else ''}: {', '.join(names)}.")

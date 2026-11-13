@@ -59,6 +59,21 @@ There are two ways to use it:
   UTC time into the places that see the Sun there, with local solar time and how many km each moves
   per 0.1° of measuring error. `ask` runs a sight by itself when a request gives one ("where am I? a
   1 m stick casts a 2.69 m shadow pointing 32°"), and says what is missing when it doesn't.
+- **The polarize tools** answer questions about polarize-holo, -mixer, -particle, -physics and
+  -clock from their own repositories, and render audio with polarize-holo. `polarize__read` returns a
+  tool's README.md and TOOL.toml at its newest release tag (found in its local checkout:
+  `POLARIZE_TOOLS_DIR`, default the folder beside this repository, or `POLARIZE_<TOOL>_DIR`), read
+  through `repos__read_file` or, without GitHub, with `git show`, plus a `repos__search_code` search.
+  A tool with no tag or no checkout is read at its default branch, and the answer says so.
+  `polarize__renders` lists holo's `renders/<slug>/render_*.py` scripts; `polarize__render` copies one
+  render out of holo's git history (at the tag when it is there, else HEAD) into a new folder under
+  `POLARIZE_RENDER_DIR` (default `data/polarize-renders`) and runs holo's own script there with `uv`.
+  It reports holo's version and commit, the render's tool pins, the command, the WAV files
+  written (rate, bits, channels, length) and any JSON settings. holo's checkout is never written
+  to, and no sound is made in the gateway. `ask` runs the step whenever a request names a tool
+  (`[polarize_tools]` in the routing config). It renders audio when holo is named with an audio word and
+  a render's name ("an audio file of the spiral with polarize-holo"), and with a place it passes
+  polarize-clock's Sun azimuth to the spiral.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.

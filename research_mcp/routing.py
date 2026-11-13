@@ -58,6 +58,9 @@ class Rules:
     mixer: tuple[str, ...] = ()
     sky: tuple[str, ...] = ()
     profiles_list: tuple[str, ...] = ()
+    # Tool key -> the words that name it (config [polarize_tools]); and the words asking for audio.
+    polarize: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    polarize_audio: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,12 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         mixer=tuple(words("mixer", "triggers")),
         sky=tuple(words("sky", "triggers")),
         profiles_list=tuple(words("profiles_list", "triggers")),
+        polarize={
+            str(tool): tuple(words("polarize_tools", tool))
+            for tool in {**data.get("polarize_tools", {}), **extra.get("polarize_tools", {})}
+            if tool != "audio"
+        },
+        polarize_audio=tuple(words("polarize_tools", "audio")),
     )
 
 
