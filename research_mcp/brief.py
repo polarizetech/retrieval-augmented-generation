@@ -21,10 +21,13 @@ COVERAGE_NOTES = {
     "strong": "The library has passages that bear directly on the question.",
     "partial": "The library has related passages; some may answer only part of the question.",
     "weak": (
-        "The library has only loosely related passages: none clearly answers the question. "
-        "Say so before anything else."
+        "Only loosely related passages; none clearly answers the question. "
+        "Note it in the footer as `Library: weak match`, not in the answer."
     ),
-    "none": "No passage in the library matched. Say so before answering any other way.",
+    "none": (
+        "No passage in the library matched. Note it in the footer as `Library: no match`, "
+        "not in the answer."
+    ),
     "unscored": "Passages were not reranked, so their relevance is unjudged.",
 }
 
@@ -41,28 +44,45 @@ RULES_FORMAT = (
 )
 
 ANSWER_FORMAT = (
-    "Write the reply yourself from `brief`; do not paste the brief. Keep it short, in this order: "
+    "Write the reply yourself from `brief`, as a conversation; do not paste the brief. "
     "(1) If `brief.for_you` has items, start with them: the person has to act. "
-    "(2) **Bottom line**: one or two sentences answering the question as far as the passages "
-    "allow; when coverage is weak or none, say first that the library doesn't cover it well. "
-    "(3) **Key points**: at most five bullets, each resting on a passage and ending with its "
-    "evidence id in backticks; quote only the few words that matter. "
-    "(4) **Gaps**: one line on what the passages leave open, and `brief.limits`. "
-    "(5) **Sources**: the papers you cited, as title (year), doi. "
-    "When coverage is partial, weak or none and `brief.fresh_search` has papers or web results, "
-    "add **Fresh leads** after the gaps: up to five that look closest to the question, each "
-    "with its link (https://doi.org/ for a DOI), labelled as found but not read; no claim may "
-    "rest on them, and suggest asking again with `research:` to fetch and read them. Name "
-    "anything in `brief.fresh_search.not_run` in one line. "
-    "When `brief.specialists` lists more than one, add **Specialist views** after the key "
-    "points: one short paragraph (1-3 sentences) per specialist, reading the same passages "
-    "through its guidance and citing evidence ids; a specialist the passages don't serve gets "
-    "one line saying so. When `brief.tool_results.profiles` is there, list each profile's name "
-    "and what it is for, and say a question recruits one by naming it. "
-    "Then the `links`. Use only the passages and tool results in `brief`, never facts from "
-    "memory; anything of your own goes after, under a heading saying it is yours. When the "
-    "person asks for more, open the record link: it holds the full reply."
+    "(2) Answer in 2 or 3 sentences when you can. When it needs more, use short lists that are "
+    "easy to glance over. Cite each claim that rests on a passage with its evidence id in "
+    "backticks, quoting only the few words that matter. "
+    "(3) Don't describe what didn't match, what was skipped, left out or not relevant, or what "
+    "the library lacks: that goes in the footer. "
+    "(4) When `brief.specialists` lists more than one, add **Specialist views**: a sentence or "
+    "two per specialist the passages serve, citing evidence ids. When "
+    "`brief.tool_results.profiles` is there, list each profile's name and what it is for, and "
+    "say a question recruits one by naming it. "
+    "(5) When coverage is partial, weak or none and `brief.fresh_search` has papers or web "
+    "results, add **Fresh leads**: up to five, each with its link (https://doi.org/ for a DOI), "
+    "labelled found but not read; no claim may rest on them; suggest asking again with "
+    "`research:` to read them. "
+    "(6) When the answer cites papers, list them under **Sources** as title (year), doi. "
+    "Use only the passages and tool results in `brief`, never facts from memory; anything of "
+    "your own goes after, under a heading saying it is yours. "
+    "End with a footer after a horizontal rule, at most three short lines: **Tools:** the steps "
+    "in `brief.used.tools`, each in two or three words; **Services:** `brief.used.services` "
+    "abbreviated (provider, model, balance), with `Library: no match` or `Library: weak match` "
+    "when coverage is none or weak, and `brief.limits` in a few words; then the `links`. When "
+    "the person asks for more, open the record link: it holds the full reply."
 )
+
+SKIPPED = ("skipped", "not run", "Left out")
+
+
+def _used(reply: dict[str, Any]) -> dict[str, Any]:
+    """What ran and what it used, for the reply's footer: the steps that ran (not the skipped
+    ones) and the services' usage line, with the research run's model when there is one."""
+    tools = [p for p in reply.get("progress") or [] if not any(s in p for s in SKIPPED)]
+    services = str(reply.get("usage") or "")
+    model = ((reply.get("results") or {}).get("research") or {}).get("model_backend")
+    if model:
+        services = (
+            f"{services} · research model: {model}" if services else f"research model: {model}"
+        )
+    return {"tools": tools, "services": services}
 
 
 def coverage(found: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -158,6 +178,7 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         }
     if results:
         brief["tool_results"] = results
+    brief["used"] = _used(reply)
     brief["found"] = summary.get("results", [])
     brief["next"] = summary.get("next", [])
     brief["for_you"] = summary.get("for_you", [])
