@@ -5,4 +5,4 @@ sub-tasks (decompose, extract, judge), and nothing it writes reaches the final a
 retrieved passage and a verification verdict behind it. See docs/research-pipeline.md.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

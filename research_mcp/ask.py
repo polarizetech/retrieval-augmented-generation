@@ -10,15 +10,17 @@ from memory, and any chat model can carry the work on.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import brief, mixer, polarize, project_rules, sky
+from research_mcp import brief, extensions, mixer, polarize, project_rules, sky
+from research_mcp.extensions import Context, Extension, StepInput, StepSpec
 from research_mcp.hub.contract import (
     CHOICES,
     COMPONENTS,
@@ -92,6 +94,7 @@ class Turn:
     problems: list[Problem] = field(default_factory=list)
     rid: str = ""
     notes: list[str] = field(default_factory=list)
+    ext_lines: list[tuple[list[str], list[str], list[str], str]] = field(default_factory=list)
 
 
 def _pipeline_full(error: str) -> bool:
@@ -132,6 +135,7 @@ class Asker:
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
         sign_mixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        steps: Sequence[tuple[Extension, StepSpec, Context]] = (),
     ):
         self.retrieve = retrieve
         self.call_tool = call_tool
@@ -145,6 +149,7 @@ class Asker:
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
         self.sign_mixer = sign_mixer
+        self.steps = tuple(steps)
         # Requests still working after their reply's deadline: held so they finish.
         self._tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
@@ -619,6 +624,7 @@ class Asker:
             spec=spec,
             rules=rules,
             repo=repo,
+            project=where,
             strictness=strictness,
             touches=touches,
             progress=progress,
@@ -742,6 +748,7 @@ class Asker:
         spec: dict[str, Any],
         rules: Rules,
         repo: str,
+        project: str,
         strictness: str,
         touches: list[str],
         progress: list[str],
@@ -756,6 +763,7 @@ class Asker:
                 spec=spec,
                 rules=rules,
                 repo=repo,
+                project=project,
                 strictness=strictness,
                 touches=touches,
                 progress=progress,
@@ -772,6 +780,7 @@ class Asker:
                 results=results,
                 seconds=seconds,
                 problems=problems,
+                ext_lines=turn.ext_lines,
             )
         seconds = round(time.monotonic() - started, 1)
         return self._reply(
@@ -782,6 +791,7 @@ class Asker:
             results=results,
             seconds=seconds,
             problems=turn.problems,
+            ext_lines=turn.ext_lines,
         )
 
     async def _run(
@@ -792,6 +802,7 @@ class Asker:
         spec: dict[str, Any],
         rules: Rules,
         repo: str,
+        project: str,
         strictness: str,
         touches: list[str],
         progress: list[str],
@@ -896,6 +907,15 @@ class Asker:
             progress.extend(turn.notes)
         await self._mixer_step(route, rules, progress, results)
         await self._polarize_step(route, rules, progress, results)
+        await self._extension_steps(
+            turn,
+            route,
+            rules=rules,
+            project=project,
+            repo=repo,
+            progress=progress,
+            results=results,
+        )
         if route.mode == "code":
             note = (
                 "The gateway does not make code changes itself yet. The assistant makes the "
@@ -957,6 +977,48 @@ class Asker:
             + "; ".join(polarize.summary(out))
             + f" ({time.monotonic() - t:.1f} s)"
         )
+
+    async def _extension_steps(
+        self,
+        turn: Turn,
+        route: Route,
+        *,
+        rules: Rules,
+        project: str,
+        repo: str,
+        progress: list[str],
+        results: dict[str, Any],
+    ) -> None:
+        """The extension steps, on any route: each step whose trigger words the request names runs
+        on a copy of the results so far. Its result goes under its own key and its lines join the
+        reply; a step that fails is named, and nothing else in the reply changes
+        (research_mcp/extensions.py)."""
+        for ext, step, ctx in self.steps:
+            words = rules.extensions.get(ext.name, {}).get(step.name, ())
+            if not extensions.matches(step, route.question, words):
+                continue
+            step_input = StepInput(
+                question=route.question,
+                mode=route.mode,
+                project=project,
+                repo=repo,
+                results=copy.deepcopy(results),
+                context=ctx,
+            )
+            try:
+                out = await step.run(step_input)
+            except Exception as exc:  # noqa: BLE001 - one step's failure must not fail the ask
+                failure = f"{type(exc).__name__}: {exc}"
+                results.setdefault("extensions", {}).setdefault(ext.name, {})[step.name] = {
+                    "error": failure
+                }
+                progress.append(f"{ext.prefix}/{step.name}: failed ({failure})")
+                continue
+            if out is None:
+                continue
+            results.setdefault("extensions", {}).setdefault(ext.name, {})[step.name] = out.result
+            progress.extend(out.progress or [f"{ext.prefix}: ran"])
+            turn.ext_lines.append((out.found, out.next, out.for_you, out.relay))
 
     async def _mixer_step(
         self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
@@ -1030,17 +1092,18 @@ class Asker:
         results: dict[str, Any],
         seconds: float,
         problems: list[Problem],
+        ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
     ) -> dict[str, Any]:
         worst = next((p for p in problems if p.status != "degraded"), None)
         status = worst.status if worst else ("degraded" if problems else "done")
         if status == "done" and "research" in results:
             status = "working"
         usage = self.hub.meters.line() if self.hub is not None else ""
-        got, nxt, you = _short(route, spec, results, problems, rid)
+        got, nxt, you = _short(route, spec, results, problems, rid, ext_lines=ext_lines)
         text, full = (
             relay(
                 route, spec, progress, results, seconds, problems=problems, usage=usage,
-                request_id=rid, full=f,
+                request_id=rid, full=f, ext_lines=ext_lines,
             )
             for f in (False, True)
         )  # fmt: skip
@@ -1113,12 +1176,15 @@ def relay(
     usage: str = "",
     request_id: str = "",
     full: bool = False,
+    ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
 ) -> str:
     """The block the chat model shows unchanged. Short (the default): three lists from
     `_short`. Full: problems first, then what ran, what came back, and its limits; last, the
     request id and usage."""
     if not full:
-        return replies.short(*_short(route, spec, results, problems, request_id))
+        return replies.short(
+            *_short(route, spec, results, problems, request_id, ext_lines=ext_lines)
+        )
     blocks: dict[str, str] = {
         "passages": "",
         "passages_none": "",
@@ -1202,6 +1268,7 @@ def relay(
         _polarize_block(results.get("polarize")),
         _sky_block(results.get("sky")),
         _sight_block(results.get("sight")),
+        *(row[3] for row in ext_lines if row[3]),
         blocks["research"],
         blocks["coder"],
         blocks["mixer"],
@@ -1359,6 +1426,8 @@ def _short(
     results: dict[str, Any],
     problems: list[Problem] | tuple[Problem, ...],
     request_id: str,
+    *,
+    ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
 ) -> tuple[list[str], list[str], list[str]]:
     """The short reply's three lists, one sentence per item: what came back, what the assistant
     does next, and what the person needs to do (often nothing)."""
@@ -1553,6 +1622,10 @@ def _short(
     sky_only = (
         (sky_result is not None or sight is not None) and found is None and route.mode == "quick"
     )
+    for found_lines, next_lines, for_you_lines, _relay in ext_lines:
+        got.extend(found_lines)
+        nxt.extend(next_lines)
+        you.extend(for_you_lines)
     got.append(
         "Nothing was concluded."
         if stopped
