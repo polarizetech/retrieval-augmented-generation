@@ -130,6 +130,10 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
     summary = reply["summary"]
     mode = (reply.get("route") or {}).get("mode", "quick")
     brief: dict[str, Any] = {}
+    notes = dict(reply.get("brief_notes") or {})
+    for key in notes:
+        if key in results:
+            brief[key] = results.pop(key)
     held = results.pop("project_rules", None)
     if held is not None:
         brief["project_rules"] = held
@@ -173,7 +177,9 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         "status": reply.get("status"),
         "mode": mode,
         "brief": brief,
-        "answer_format": (RULES_FORMAT if held is not None else "") + ANSWER_FORMAT,
+        "answer_format": "".join(notes.values())
+        + (RULES_FORMAT if held is not None else "")
+        + ANSWER_FORMAT,
     }
     for key in ("error", "links"):
         if key in reply:

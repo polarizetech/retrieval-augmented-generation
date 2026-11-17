@@ -63,7 +63,7 @@ EXTENSION = declare(
     name="rag-ext-example",
     module=__name__,
     version="0.1.0",
-    core_requires=">=0.3.0,<0.4",
+    core_requires=">=0.3.0,<0.5",
     job="Shows the extension API: one tool and one ask step.",
     prefix="example",
     tools=(HELLO,),
@@ -85,7 +85,7 @@ module-level names are the convention: `say_hello` is the tool's handler, `HELLO
 | `name` | Distribution-style, starting `rag-ext-`. |
 | `module` | The importable package name, `__name__` in its `__init__.py`. |
 | `version` | Dotted integers, the extension's own version. |
-| `core_requires` | The research-rag version range it was written for, e.g. `>=0.3.0,<0.4`. |
+| `core_requires` | The research-rag version range it was written for, e.g. `>=0.3.0,<0.5`. |
 | `job` | One line: the one thing this adds. It may not be blank. |
 | `prefix` | Lowercase letters, digits and underscores, starting with a letter. Its tools are named `<prefix>__<tool>`. It may not be one of the reserved core prefixes. |
 | `tools` | The `ToolSpec`s this adds. |
@@ -110,7 +110,8 @@ A `ToolSpec` has the MCP `Tool`, a `handler`, a `label` and a `component`:
 - `Context` gives the handler `call_tool` (an async call to a tool the gateway already has, by
   name and arguments), `has_tool` (whether one is available), `data_dir` (a folder the gateway
   creates for this extension), and `config` (the extension's section of `mcp-gateway.json`, or an
-  empty dict).
+  empty dict), and `config_path` (the path of that `mcp-gateway.json`, for an extension that reads
+  another section of it).
 - If the handler raises, the client gets a tool error that names the label. The gateway keeps
   running.
 
@@ -137,6 +138,35 @@ A `StepSpec` is an ask step. It has a `name`, an async `run`, its `triggers` and
   `{"error": "<ExceptionType>: <message>"}` and the progress list names the failure.
 
 The steps run after the mixer and polarize steps, in the order their extensions were loaded.
+
+## Stages, shared prefixes and brief keys
+
+A step's `stage` says when it runs. There are three values:
+
+- `early` runs once the request is routed, before any retrieval. Its result also goes into a
+  pending reply, when the request outlasts its deadline.
+- `before_retrieval` runs just before retrieval, and may ask for retrieval to be skipped.
+- `after` runs where steps ran before this version, after retrieval. It is the default.
+
+A `before_retrieval` step sets `skip_retrieval` on its `StepOutput` to a reason. That skips
+passage retrieval only in quick mode, and only when no specialist and no research words call for
+passages. The reason shows in the progress list as `Retrieval: skipped (<reason>)`. Its `limits`
+field replaces the closing line of the reply's summary when nothing was retrieved in quick mode.
+Any step's `limits` may be used, but the first one set in a request wins.
+
+Some core prefixes are shared, so an extension may add tools under them. `SHARED_PREFIXES` holds
+`math` for now, and a tool there is named `math__<tool>`. A core tool's name can't be taken: a name
+the core already uses under a shared prefix is refused at declaration.
+
+A step's `StepOutput` may also set `brief`, and its extension may declare a `brief_key` and a
+`brief_note`. The step's `brief` value then goes into the reply's `brief` under that key, and the
+`brief_note` text is put at the start of the reply's `answer_format`. A brief key is the one
+exception to the rule above: the value is not under `results["extensions"]`. A brief key must be
+lowercase letters, digits and underscores, may not be a key the core's brief already uses, and only
+one extension may hold it.
+
+Version 0.4.0 is the first core version with stages, shared prefixes and brief keys. An extension
+that uses any of them declares `core_requires=">=0.4.0"`.
 
 ## Routing words
 

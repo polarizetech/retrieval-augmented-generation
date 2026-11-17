@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from mcp.types import Tool
 
-from research_mcp import extensions
+from research_mcp import brief, extensions
 from research_mcp.ask import Asker
 from research_mcp.extensions import Context, StepInput, StepOutput, StepSpec, ToolSpec
 
@@ -99,6 +99,22 @@ async def broken(step_input: StepInput) -> StepOutput:
 async def clearing(step_input: StepInput) -> StepOutput:
     step_input.results.clear()
     return StepOutput(result={})
+
+
+async def _probe(step_input: StepInput) -> StepOutput:
+    return StepOutput(result={"saw_evidence": "evidence" in step_input.results})
+
+
+async def _skipping(step_input: StepInput) -> StepOutput:
+    return StepOutput(
+        result={},
+        skip_retrieval="a demo request",
+        limits="Demo numbers are data, not a finding.",
+    )
+
+
+async def _ruling(step_input: StepInput) -> StepOutput:
+    return StepOutput(result={}, brief={"rules": ["be kind"]})
 
 
 def _hello_step(
@@ -209,3 +225,80 @@ def test_the_template_declares() -> None:
     ext = extensions.get("rag-ext-example")
     assert ext.prefix == "example"
     assert [t.tool.name for t in ext.tools] == ["example__hello"]
+
+
+def test_declare_rejects_an_unknown_stage() -> None:
+    step = StepSpec(name="hello", run=_world, triggers=("demo word",), stage="later")
+    with pytest.raises(ValueError, match="unknown stage"):
+        _declare(steps=(step,))
+
+
+def test_a_shared_prefix_tool_is_allowed() -> None:
+    tool = ToolSpec(
+        tool=Tool(name="math__demo", inputSchema={"type": "object"}),
+        handler=lambda arguments, context: {},
+        label="math demo",
+    )
+    ext = _declare(tools=(tool,))
+    assert ext.tools[0].tool.name == "math__demo"
+
+
+def test_a_shared_prefix_tool_cannot_take_a_core_name() -> None:
+    tool = ToolSpec(
+        tool=Tool(name="math__lookup", inputSchema={"type": "object"}),
+        handler=lambda arguments, context: {},
+        label="math lookup",
+    )
+    with pytest.raises(ValueError, match="core tool"):
+        _declare(tools=(tool,))
+
+
+def test_declare_rejects_a_core_brief_key() -> None:
+    with pytest.raises(ValueError, match="core brief key"):
+        _declare(brief_key="passages")
+
+
+def test_two_extensions_cannot_share_a_brief_key() -> None:
+    _declare(brief_key="demo_rules")
+    with pytest.raises(ValueError, match="both claim the brief key"):
+        _declare(name="rag-ext-other", prefix="other", brief_key="demo_rules")
+
+
+def test_an_early_step_runs_before_retrieval(tmp_path: Path) -> None:
+    step = StepSpec(name="hello", run=_probe, triggers=("demo word",), stage="early")
+    ext = _declare(steps=(step,))
+    steps = ((ext, ext.steps[0], _context()),)
+    out = asyncio.run(_asker(tmp_path, steps).ask("What is a demo word?"))
+    assert out["results"]["extensions"]["rag-ext-demo"]["hello"] == {"saw_evidence": False}
+
+
+def test_an_after_step_sees_the_evidence(tmp_path: Path) -> None:
+    ext = _declare(steps=(_hello_step(_probe),))
+    steps = ((ext, ext.steps[0], _context()),)
+    out = asyncio.run(_asker(tmp_path, steps).ask("What is a demo word?"))
+    assert out["results"]["extensions"]["rag-ext-demo"]["hello"] == {"saw_evidence": True}
+
+
+def test_a_before_retrieval_step_can_skip_retrieval(tmp_path: Path) -> None:
+    step = StepSpec(name="hello", run=_skipping, triggers=("demo word",), stage="before_retrieval")
+    ext = _declare(steps=(step,))
+    steps = ((ext, ext.steps[0], _context()),)
+    out = asyncio.run(_asker(tmp_path, steps).ask("What is a demo word?"))
+    assert "evidence" not in out["results"]
+    assert "Retrieval: skipped (a demo request)" in out["progress"]
+    assert out["summary"]["results"][-1] == "Demo numbers are data, not a finding."
+
+
+def test_a_brief_key_puts_the_result_in_the_brief(tmp_path: Path) -> None:
+    step = StepSpec(name="hello", run=_ruling, triggers=("demo word",), stage="early")
+    ext = _declare(
+        brief_key="demo_rules",
+        brief_note="Follow `brief.demo_rules`. ",
+        steps=(step,),
+    )
+    steps = ((ext, ext.steps[0], _context()),)
+    out = asyncio.run(_asker(tmp_path, steps).ask("What is a demo word?"))
+    short = brief.compact(out)
+    assert short["brief"]["demo_rules"] == {"rules": ["be kind"]}
+    assert short["answer_format"].startswith("Follow `brief.demo_rules`. ")
+    assert "demo_rules" not in short["brief"].get("tool_results", {})
