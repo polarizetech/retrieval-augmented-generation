@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "scientific-research-rag",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Evidence-first scientific literature research using the hosted retrieval-augmented-generation MCP gateway.",
   "homepage": "https://github.com/polarizetech/retrieval-augmented-generation",
   "repository": "https://github.com/polarizetech/retrieval-augmented-generation",
