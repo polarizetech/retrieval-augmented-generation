@@ -9,6 +9,7 @@ success of retrieval, and a component that keeps failing is skipped for a cool-d
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -68,6 +69,8 @@ class Hub:
         self.meters = meters or Meters(config, settings, fetch=fetch)
         self.breakers = breakers or Breakers(config, clock=clock)
         self.lanes = Lanes(config, memory=memory, clock=clock)
+        if post is http_post:
+            post = functools.partial(http_post, headers=settings.ollama_headers)
         self.overlap = Overlap(config, settings.ollama_url, post=post)
         deadlines = config.get("deadlines", {})
         self.deadline = float(deadlines.get("reply_seconds", 45))
@@ -87,7 +90,9 @@ class Hub:
         if self._ollama and self.clock() - self._ollama[0] < OLLAMA_TTL:
             return self._ollama[1]
         try:
-            tags = await asyncio.to_thread(self.fetch, f"{self.settings.ollama_url}/api/tags", {})
+            tags = await asyncio.to_thread(
+                self.fetch, f"{self.settings.ollama_url}/api/tags", self.settings.ollama_headers
+            )
             models: set[str] | None = {str(m.get("name", "")) for m in tags.get("models", [])}
         except (OSError, ValueError):
             models = None
