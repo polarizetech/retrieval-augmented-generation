@@ -62,6 +62,10 @@
     "_comment": "Optional SearXNG base URL for web__search. SEARXNG_URL in the environment overrides it.",
     "searxng_url": ""
   },
+  "extensions": {
+    "_comment": "Installed extensions (entry point rag.extensions) load by themselves; list names in disabled to switch one off. A section named after an extension is passed to its tools and steps as context.config. See docs/EXTENSIONS.md.",
+    "disabled": []
+  },
   "network": {
     "_comment": "Host headers accepted in addition to loopback, for a front end that presents a different Host (e.g. a Docker bridge). The bind itself stays on 127.0.0.1.",
     "allowed_hosts": [],

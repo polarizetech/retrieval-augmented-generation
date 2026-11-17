@@ -129,3 +129,8 @@ triggers = [
 [profiles]
 # Your own words for a specialist, added to its routing brief, e.g.
 # noise-engineering = ["hiss", "rumble", "entropy source"]
+
+# Trigger words for an extension's ask steps (docs/EXTENSIONS.md). A local config/routing.toml
+# adds words to an extension's steps the same way.
+# [extensions."rag-ext-example"]
+# hello = ["extra words"]

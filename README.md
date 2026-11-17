@@ -296,6 +296,10 @@ uv run research-pipeline ask --domain cardiovascular "Does higher baroreflex sen
 
 Writing your own: [domains](docs/DOMAINS.md).
 
+## Extensions
+
+An extension is a separately installed package that adds MCP tools and `ask` steps to the gateway, so you can build your own research-rag without editing this repository. Its one rule: it never changes evidence, retrieval, verification, grading or another step's results, and its output lives under its own key. Writing one: [extensions](docs/EXTENSIONS.md).
+
 ## Evaluation
 
 ```bash

@@ -63,6 +63,8 @@ class Rules:
     polarize_audio: tuple[str, ...] = ()
     # Config [project_rules]: whose rules every reply carries (research_mcp/project_rules.py).
     project_rules: dict[str, Any] = field(default_factory=dict)
+    # Config [extensions."<extension name>"]: extra trigger words for each extension's steps.
+    extensions: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,23 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         },
         polarize_audio=tuple(words("polarize_tools", "audio")),
         project_rules=_project_rules(data.get("project_rules", {}), extra.get("project_rules", {})),
+        extensions=_extension_words(data.get("extensions", {}), extra.get("extensions", {})),
     )
+
+
+def _extension_words(
+    default: dict[str, Any], local: dict[str, Any]
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Each extension step's trigger words: the default file's, then the local file's, in order
+    and without repeats. Words are added to, never removed."""
+    out: dict[str, dict[str, tuple[str, ...]]] = {}
+    for source in (default, local):
+        for ext, steps in source.items():
+            row = out.setdefault(str(ext), {})
+            for step, words_ in steps.items():
+                merged = [*row.get(str(step), ()), *(str(w).lower() for w in words_)]
+                row[str(step)] = tuple(dict.fromkeys(merged))
+    return out
 
 
 def _project_rules(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
