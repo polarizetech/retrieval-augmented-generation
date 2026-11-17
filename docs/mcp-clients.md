@@ -145,7 +145,7 @@ with the restart command; restarting it with backoff is phase 3.
 
 **Usage.** `hub__usage` reads OpenRouter (`/api/v1/key` and `/api/v1/credits`: balance, spend
 today, this week and this month, burn per day and projected run-out), NEAR AI (needs the
-organisation id and a reporting token in `~/.config/polarize/nearai-reporting.env`; the API key is
+organisation id and a reporting token in `~/.config/research-rag/nearai-reporting.env`; the API key is
 refused), local Ollama (up, installed, loaded), and says which plans it cannot read (Claude,
 ChatGPT). Readings are cached for five minutes, and each relay ends with a one-line readout from
 the cache, so a reply never waits on a provider (in the full reply, `relay_full`).
@@ -186,8 +186,7 @@ nor held; each works in its own git worktree, and `ask` mentions the other sessi
 work. Fallbacks ask once per session per component. Sessions pass their name or the gateway
 infers it. The ladders and thresholds are as above.
 
-The full plan, with its later phases, is in [hub-plan.md](hub-plan.md); where things can run is
-in [hosting-options.md](hosting-options.md).
+The full plan, with its later phases, is in [hub-plan.md](hub-plan.md).
 
 ## Claude Desktop and Claude Code
 

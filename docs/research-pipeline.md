@@ -240,7 +240,7 @@ hosted open-weight model with zero data retention, or a GPU server of your own.
 # config/rag.env (gitignored)
 PIPELINE_ENDPOINT_URL=https://openrouter.ai/api/v1
 PIPELINE_ENDPOINT_MODEL=qwen/qwen3.8-27b   # default; moonshotai/kimi-k3 for important questions
-PIPELINE_ENDPOINT_KEY_FILE=~/.config/polarize/openrouter.key   # or PIPELINE_ENDPOINT_KEY=...
+PIPELINE_ENDPOINT_KEY_FILE=~/.config/research-rag/openrouter.key   # or PIPELINE_ENDPOINT_KEY=...
 # PIPELINE_LLM and PIPELINE_MCP_LLM default to auto: this endpoint, on the CLI and behind MCP.
 ```
 
@@ -288,7 +288,7 @@ PIPELINE_PANEL=openai,gemini
 
 `config/hub.default.toml` defines both members:
 
-- **`openai`** is OpenAI's own API (`gpt-6.1-sol`), key in `~/.config/polarize/openai.key`.
+- **`openai`** is OpenAI's own API (`gpt-6.1-sol`), key in `~/.config/research-rag/openai.key`.
   OpenAI may keep API requests for up to 30 days for abuse monitoring unless the account has a
   zero-retention agreement, and every answer it took part in says so in its limits.
 - **`gemini`** is Gemini 4 Carbon through OpenRouter, on the OpenRouter key, with zero retention.
