@@ -11,11 +11,11 @@ from typing import Any
 import pytest
 from mcp import ClientSession
 from mcp.shared.memory import create_connected_server_and_client_session
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, TextContent, Tool
 from paper_fetch import Library, LocalStore, OpenAlex
 from paper_fetch.passages import PassageIndex
 
-from research_mcp import gateway
+from research_mcp import extensions, gateway
 from research_pipeline.papers import PaperLibrary, PapersError
 from tests.conftest import OfflineHttp, hold, hold_w1
 
@@ -319,3 +319,63 @@ async def test_web_search_is_offered_once_searxng_is_configured(
         assert status["total_tools"] == len(names)
 
     await with_session(config, tmp_path, body)
+
+
+@pytest.mark.anyio
+async def test_extension_tools_are_listed_and_dispatched(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(extensions, "_REGISTRY", {})
+
+    def echo(arguments: dict[str, Any], context: extensions.Context) -> dict[str, Any]:
+        return {"echo": arguments}
+
+    def fail(arguments: dict[str, Any], context: extensions.Context) -> dict[str, Any]:
+        raise ValueError("bad")
+
+    no_args = {"type": "object", "properties": {}}
+    extensions.declare(
+        name="rag-ext-demo",
+        module="rag_ext_demo",
+        version="0.1.0",
+        core_requires=">=0.3.0",
+        job="demo",
+        prefix="demo",
+        tools=(
+            extensions.ToolSpec(
+                tool=Tool(name="demo__echo", inputSchema=no_args), handler=echo, label="demo echo"
+            ),
+            extensions.ToolSpec(
+                tool=Tool(name="demo__fail", inputSchema=no_args), handler=fail, label="demo fail"
+            ),
+        ),
+    )
+
+    async def body(session: ClientSession) -> None:
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert "demo__echo" in names
+        echoed = payload(await session.call_tool("demo__echo", {"x": 1}))
+        assert echoed["echo"] == {"x": 1}
+        status = payload(await session.call_tool("gateway_status", {}))
+        assert len(status["extensions"]) == 1
+        assert status["extensions"][0]["status"] == "ok"
+        failed = await session.call_tool("demo__fail", {})
+        assert failed.isError
+        first = failed.content[0]
+        assert isinstance(first, TextContent)
+        assert "demo fail failed" in first.text
+
+    await with_session(config, tmp_path, body)
+
+    cfg = json.loads(config.read_text())
+    cfg["server"] = {"builtin_tools": False}
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps(cfg))
+
+    async def plain_body(session: ClientSession) -> None:
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert "demo__echo" not in names
+        refused = await session.call_tool("demo__echo", {"x": 1})
+        assert refused.isError
+
+    await with_session(plain, tmp_path, plain_body)
