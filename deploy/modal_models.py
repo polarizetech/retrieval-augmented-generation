@@ -88,6 +88,8 @@ def pull() -> None:
 class Models:
     @modal.enter()
     def start(self) -> None:
+        import threading
+
         import httpx
         import onnxruntime as ort
         from paper_fetch.rerank import OnnxReranker
@@ -99,11 +101,17 @@ class Models:
             json={"model": "bge-m3:latest", "input": "warm"},
             timeout=None,  # noqa: S113
         )
-        httpx.post(
-            f"{OLLAMA}/api/generate",
-            json={"model": "bespoke-minicheck:latest", "prompt": "", "stream": False},
-            timeout=None,  # noqa: S113
-        )
+        # minicheck (claim checks) loads in the background, so embeddings and reranking are
+        # served as soon as bge-m3 and the reranker are ready
+        threading.Thread(
+            target=httpx.post,
+            args=(f"{OLLAMA}/api/generate",),
+            kwargs={
+                "json": {"model": "bespoke-minicheck:latest", "prompt": "", "stream": False},
+                "timeout": None,
+            },
+            daemon=True,
+        ).start()
         # paper-fetch's tokenizer and score(); the session below replaces its CPU one
         self.reranker = OnnxReranker(RERANK_REPO, "onnx/model_int8.onnx")
         # paper-fetch builds its session on the CPU; the same model file, on the GPU here.
