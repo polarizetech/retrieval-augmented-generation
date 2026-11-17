@@ -6,7 +6,6 @@ import io
 import json
 import threading
 import urllib.request
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -70,11 +69,7 @@ def test_gateway_wakes_hosted_models_once_a_minute(monkeypatch):
         sent.set()
         return io.BytesIO(b"")
 
-    hosted = SimpleNamespace(
-        ollama_key="k",
-        ollama_url="https://models.example",
-        ollama_headers={"Authorization": "Bearer k"},
-    )
+    hosted = Settings(ollama_url="https://models.example", ollama_key="k")
     monkeypatch.setattr(gateway, "_last_wake", [float("-inf")])
     now = [1000.0]
     assert gateway.wake_hosted_models(hosted, opener, lambda: now[0])
@@ -84,6 +79,6 @@ def test_gateway_wakes_hosted_models_once_a_minute(monkeypatch):
     assert not gateway.wake_hosted_models(hosted, opener, lambda: now[0])
     now[0] += 31
     assert gateway.wake_hosted_models(hosted, opener, lambda: now[0])
-    local = SimpleNamespace(ollama_key="", ollama_url="http://127.0.0.1:11434", ollama_headers={})
+    local = Settings(ollama_url="http://127.0.0.1:11434", ollama_key="")
     monkeypatch.setattr(gateway, "_last_wake", [float("-inf")])
     assert not gateway.wake_hosted_models(local, opener, lambda: now[0])
