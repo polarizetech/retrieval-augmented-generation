@@ -7,13 +7,82 @@ import pytest
 from research_pipeline.agent_profiles import catalogue, route
 from research_pipeline.prompts import Prompts
 
+# The frontmatter lines the polarize-agents briefs now carry for their keywords, by specialist.
+ANCHOR_LINES = {
+    "auditory-evoked-potentials": (
+        "anchors: abr, assr, auditory, binaural, cochlear, ffr, neurophonic, tinnitus\n"
+        "domain: neuroscience\n"
+    ),
+    "visual-evoked-potentials": (
+        "anchors: erg, ocular, photic, retinal, ssvep, vep, visual\ndomain: neuroscience\n"
+    ),
+    "bone-conduction-auditory": (
+        "anchors: mastoid\nanchor_combos: bone + conduction\ndomain: neuroscience\n"
+    ),
+    "honeybee-communications-analyst": (
+        "anchors: bee, bees, colony, electroreception, foraging, honeybee, honeybees, waggle\n"
+    ),
+    "signal-processing": (
+        "anchors: fft, fourier, frequency, harmonics, intermodulation, mixing, psychoacoustic, "
+        "rf, signal-processing, spectral\n"
+    ),
+    "aramaic-translator": "anchors: aramaic, syriac, targum, targums\n",
+    "nonlinear-signal-mixing": (
+        "anchors: adler, arnold, hard-limiter, nonlinearity, polarity, polarity-only, righetti, "
+        "teetering\n"
+    ),
+    "plasma-toroids": (
+        "anchors: co-helicity, compact-toroid, counter-helicity, field-reversed, frc, frcs, "
+        "plasmoid, plasmoids, spheromak, spheromaks, theta-pinch, toroid, toroids\n"
+    ),
+    "macgyver": (
+        "anchors: arduino, breadboard, contact-mic, diy, esp32, homemade, household, macgyver, "
+        "makeshift, photodiode, plasma-ball, plasma-globe\n"
+        "anchor_combos: plasma + ball; plasma + globe\n"
+    ),
+    "classical-mechanics": (
+        "anchors: coefficient-of-friction, drag, free-body, friction, frictional, incline, "
+        "inclined, kinematics, projectile, projectiles, restitution, stick-slip, tribology\n"
+        "anchor_combos: terminal + velocity; "
+        "ramp + ball/block/cart/cylinder/roll/rolling/rolls/slide/slides/sliding\n"
+        "anchor_unless: drag=drop\n"
+    ),
+    "musical-acoustics": (
+        "anchors: banjo, cello, flageolet, fretboard, frets, fretted, guitar, guitars, harp, "
+        "musical-acoustics, overtone, overtones, pluck, plucked, plucking, soundboard, strum, "
+        "strummed, strumming, timbre, violin, violins\n"
+        "anchor_combos: musical + instrument/instruments; "
+        "string/strings + bowed/instrument/tension/tuning/vibrating/vibration\n"
+    ),
+    "relative-mapping": (
+        "anchors: azimuth, bearing, bearings, relative-mapping, triangulation, trilateration\n"
+        "anchor_combos: relative + mapping; relative + map; "
+        "landmark/landmarks/layout/map/mapping/sketch/sketches + "
+        "angle/angles/baseline/bearing/bearings/compass/coordinates/geometry/reference/ruler/scale/"
+        "straightedge; compass + ruler; compass + straightedge\n"
+    ),
+}
+
+
+def _anchored(text: str) -> str:
+    """A brief's text with its specialist's keyword lines (ANCHOR_LINES) added before the
+    frontmatter closes, as the real briefs carry them."""
+    names = [line[len("name: ") :] for line in text.splitlines() if line.startswith("name: ")]
+    head = ANCHOR_LINES.get(names[0] if names else "")
+    if head is None:
+        return text
+    end = text.index("---\n", len("---\n"))
+    return text[:end] + head + text[end:]
+
 
 def _brief(root: Path, name: str, description: str, example: str = "") -> None:
     agents = root / "agents"
     agents.mkdir(parents=True, exist_ok=True)
     (agents / f"{name}.md").write_text(
-        f'---\nname: {name}\ndescription: "{description}"\n---\n'
-        f"Positive routing examples:\n\n- {example}\n"
+        _anchored(
+            f'---\nname: {name}\ndescription: "{description}"\n---\n'
+            f"Positive routing examples:\n\n- {example}\n"
+        )
     )
 
 
@@ -48,11 +117,13 @@ def test_private_specialists_are_routed_and_guide_prompts(tmp_path: Path) -> Non
     agents = private / "agents"
     agents.mkdir(parents=True)
     (agents / "signal-processing.md").write_text(
-        "---\nname: signal-processing\n"
-        "description: Use first for Fourier and RF intermodulation questions.\n"
-        "extends: researcher\n---\n"
-        "Positive routing examples:\n\n- Explain RF intermodulation from an amplifier.\n\n"
-        "## Pipeline guidance\n\nSeparate predicted products from measured peaks.\n"
+        _anchored(
+            "---\nname: signal-processing\n"
+            "description: Use first for Fourier and RF intermodulation questions.\n"
+            "extends: researcher\n---\n"
+            "Positive routing examples:\n\n- Explain RF intermodulation from an amplifier.\n\n"
+            "## Pipeline guidance\n\nSeparate predicted products from measured peaks.\n"
+        )
     )
     selected = route(
         "Explain RF intermodulation from an amplifier", public, extensions_root=private
@@ -71,10 +142,12 @@ def test_private_specialists_are_routed_and_guide_prompts(tmp_path: Path) -> Non
     assert general["guidance"] == ""
 
     (agents / "bone-conduction-auditory.md").write_text(
-        "---\nname: bone-conduction-auditory\n"
-        "description: Use first for bone-conduction hearing and cross-talk.\n"
-        "extends: researcher\n---\n"
-        "## Pipeline guidance\n\nCheck both cochlear pathways.\n"
+        _anchored(
+            "---\nname: bone-conduction-auditory\n"
+            "description: Use first for bone-conduction hearing and cross-talk.\n"
+            "extends: researcher\n---\n"
+            "## Pipeline guidance\n\nCheck both cochlear pathways.\n"
+        )
     )
     bone = route(
         "How does bone conduction cross talk affect hearing?", public, extensions_root=private
@@ -104,16 +177,18 @@ def test_relative_mapping_routes_geometric_layouts_not_compass_widgets(tmp_path:
     agents = private / "agents"
     agents.mkdir(parents=True)
     (agents / "relative-mapping.md").write_text(
-        "---\nname: relative-mapping\n"
-        "description: Use first for relative spatial mapping with compass bearings, "
-        "ruler measurements, scale drawings, and coordinate geometry.\n"
-        "extends: researcher\n---\n"
-        "Positive routing examples:\n\n"
-        "- Map these landmarks from two bearings and a baseline.\n"
-        "- Use a straightedge and drawing compass to place the vertices.\n\n"
-        "Negative routing examples:\n\n"
-        "- Build a compass widget for a web app.\n\n"
-        "## Pipeline guidance\n\nDefine the frame and check closure.\n"
+        _anchored(
+            "---\nname: relative-mapping\n"
+            "description: Use first for relative spatial mapping with compass bearings, "
+            "ruler measurements, scale drawings, and coordinate geometry.\n"
+            "extends: researcher\n---\n"
+            "Positive routing examples:\n\n"
+            "- Map these landmarks from two bearings and a baseline.\n"
+            "- Use a straightedge and drawing compass to place the vertices.\n\n"
+            "Negative routing examples:\n\n"
+            "- Build a compass widget for a web app.\n\n"
+            "## Pipeline guidance\n\nDefine the frame and check closure.\n"
+        )
     )
     for question in (
         "I need an expert in relative mapping using a compass, ruler, and geometry",
@@ -138,15 +213,17 @@ def test_plasma_toroids_routes_spheromaks_and_frcs_not_grid_cell_tori(tmp_path: 
     agents = private / "agents"
     agents.mkdir(parents=True)
     (agents / "plasma-toroids.md").write_text(
-        "---\nname: plasma-toroids\n"
-        "description: Use first for compact toroids: spheromaks, field-reversed configurations "
-        "(FRCs), and co- and counter-helicity spheromak merging.\n"
-        "extends: researcher\n---\n"
-        "Positive routing examples:\n\n"
-        "- What decides whether two merging spheromaks become an FRC?\n\n"
-        "Negative routing examples:\n\n"
-        "- Design a tokamak divertor.\n\n"
-        "## Pipeline guidance\n\nName the configuration first.\n"
+        _anchored(
+            "---\nname: plasma-toroids\n"
+            "description: Use first for compact toroids: spheromaks, field-reversed configurations "
+            "(FRCs), and co- and counter-helicity spheromak merging.\n"
+            "extends: researcher\n---\n"
+            "Positive routing examples:\n\n"
+            "- What decides whether two merging spheromaks become an FRC?\n\n"
+            "Negative routing examples:\n\n"
+            "- Design a tokamak divertor.\n\n"
+            "## Pipeline guidance\n\nName the configuration first.\n"
+        )
     )
     for question in (
         "What decides whether two counter-helicity spheromaks merge into an FRC?",
@@ -170,25 +247,33 @@ def test_macgyver_routes_diy_rigs_not_plasma_physics_or_mixing_maths(tmp_path: P
     agents = private / "agents"
     agents.mkdir(parents=True)
     (agents / "macgyver.md").write_text(
-        "---\nname: macgyver\n"
-        "description: Use first for DIY and home-built experiment rigs: household parts, Arduino "
-        "boards, sound cards, coils and a plasma ball as instruments, signal mixers and sensors.\n"
-        "extends: researcher\n---\n"
-        "Positive routing examples:\n\n"
-        "- How can I turn a battery plasma ball into a signal mixer with a stereo input?\n\n"
-        "Negative routing examples:\n\n"
-        "- Derive the intermodulation products of a cubic nonlinearity.\n\n"
-        "## Pipeline guidance\n\nStart from the question the rig must answer.\n"
+        _anchored(
+            "---\nname: macgyver\n"
+            "description: Use first for DIY and home-built experiment rigs: household parts, "
+            "Arduino boards, sound cards, coils and a plasma ball as instruments, "
+            "signal mixers and sensors.\n"
+            "extends: researcher\n---\n"
+            "Positive routing examples:\n\n"
+            "- How can I turn a battery plasma ball into a signal mixer with a stereo input?\n\n"
+            "Negative routing examples:\n\n"
+            "- Derive the intermodulation products of a cubic nonlinearity.\n\n"
+            "## Pipeline guidance\n\nStart from the question the rig must answer.\n"
+        )
     )
     (agents / "plasma-toroids.md").write_text(
-        "---\nname: plasma-toroids\n"
-        "description: Compact toroids: spheromaks and field-reversed configurations.\n"
-        "extends: researcher\n---\n"
+        _anchored(
+            "---\nname: plasma-toroids\n"
+            "description: Compact toroids: spheromaks and field-reversed configurations.\n"
+            "extends: researcher\n---\n"
+        )
     )
     (agents / "signal-processing.md").write_text(
-        "---\nname: signal-processing\n"
-        "description: Fourier analysis, nonlinear frequency mixing and intermodulation products.\n"
-        "extends: researcher\n---\n"
+        _anchored(
+            "---\nname: signal-processing\n"
+            "description: Fourier analysis, nonlinear frequency mixing "
+            "and intermodulation products.\n"
+            "extends: researcher\n---\n"
+        )
     )
     for question in (
         "How do I make a DIY signal mixer from a battery plasma ball?",
@@ -222,20 +307,25 @@ def test_musical_acoustics_routes_instruments_not_code_strings_or_spectra(tmp_pa
     agents = private / "agents"
     agents.mkdir(parents=True)
     (agents / "musical-acoustics.md").write_text(
-        "---\nname: musical-acoustics\n"
-        "description: Use first for how instruments make sound: vibrating strings, standing "
-        "waves and harmonics, plucking point, fretting, natural harmonics, decay, pitch glide.\n"
-        "extends: researcher\n---\n"
-        "Positive routing examples:\n\n"
-        "- Why does a guitar string ring out, and what sets how long it sustains?\n\n"
-        "Negative routing examples:\n\n"
-        "- Is this FFT peak leakage or a real partial?\n\n"
-        "## Pipeline guidance\n\nName the resonator, excitation, constraints and loss paths.\n"
+        _anchored(
+            "---\nname: musical-acoustics\n"
+            "description: Use first for how instruments make sound: vibrating strings, standing "
+            "waves and harmonics, plucking point, fretting, natural harmonics, "
+            "decay, pitch glide.\n"
+            "extends: researcher\n---\n"
+            "Positive routing examples:\n\n"
+            "- Why does a guitar string ring out, and what sets how long it sustains?\n\n"
+            "Negative routing examples:\n\n"
+            "- Is this FFT peak leakage or a real partial?\n\n"
+            "## Pipeline guidance\n\nName the resonator, excitation, constraints and loss paths.\n"
+        )
     )
     (agents / "signal-processing.md").write_text(
-        "---\nname: signal-processing\n"
-        "description: Fourier analysis, spectral leakage, harmonics, FFT.\n"
-        "extends: researcher\n---\n"
+        _anchored(
+            "---\nname: signal-processing\n"
+            "description: Fourier analysis, spectral leakage, harmonics, FFT.\n"
+            "extends: researcher\n---\n"
+        )
     )
     for question in (
         "Why does a guitar string ring out, and what sets how long it sustains?",
@@ -266,26 +356,32 @@ def test_classical_mechanics_routes_motion_not_ui_signals_or_optimisers(tmp_path
     agents = private / "agents"
     agents.mkdir(parents=True)
     (agents / "classical-mechanics.md").write_text(
-        "---\nname: classical-mechanics\n"
-        "description: Use first for motion, forces and energy: work and energy (conservation, "
-        "transfer and dissipation), ramps and inclined planes (sliding, rolling), friction "
-        "(static, kinetic, stick-slip), drag (linear and quadratic, terminal velocity).\n"
-        "extends: researcher\n---\n"
-        "Positive routing examples:\n\n"
-        "- How much energy does a ball lose to air drag on the way up and down?\n\n"
-        "Negative routing examples:\n\n"
-        "- Implement a symplectic integrator in JAX.\n\n"
-        "## Pipeline guidance\n\nDraw the free-body diagram first.\n"
+        _anchored(
+            "---\nname: classical-mechanics\n"
+            "description: Use first for motion, forces and energy: work and energy (conservation, "
+            "transfer and dissipation), ramps and inclined planes (sliding, rolling), friction "
+            "(static, kinetic, stick-slip), drag (linear and quadratic, terminal velocity).\n"
+            "extends: researcher\n---\n"
+            "Positive routing examples:\n\n"
+            "- How much energy does a ball lose to air drag on the way up and down?\n\n"
+            "Negative routing examples:\n\n"
+            "- Implement a symplectic integrator in JAX.\n\n"
+            "## Pipeline guidance\n\nDraw the free-body diagram first.\n"
+        )
     )
     (agents / "signal-processing.md").write_text(
-        "---\nname: signal-processing\n"
-        "description: Fourier analysis, spectral leakage, ramp and sawtooth signals, FFT.\n"
-        "extends: researcher\n---\n"
+        _anchored(
+            "---\nname: signal-processing\n"
+            "description: Fourier analysis, spectral leakage, ramp and sawtooth signals, FFT.\n"
+            "extends: researcher\n---\n"
+        )
     )
     (agents / "plasma-toroids.md").write_text(
-        "---\nname: plasma-toroids\n"
-        "description: Compact toroids: spheromaks and field-reversed configurations.\n"
-        "extends: researcher\n---\n"
+        _anchored(
+            "---\nname: plasma-toroids\n"
+            "description: Compact toroids: spheromaks and field-reversed configurations.\n"
+            "extends: researcher\n---\n"
+        )
     )
     for question in (
         "How much energy does a ball lose to air drag on the way up and down?",
@@ -366,8 +462,10 @@ def test_a_reference_brief_is_read_from_its_source_repository(tmp_path: Path) ->
     )
     (private / "agents").mkdir(parents=True)
     (private / "agents" / "aramaic-translator.md").write_text(
-        "---\nname: aramaic-translator\nextends: researcher\n"
-        "source: ../study/agents/aramaic-translator.md\n---\nMaintained in the study.\n"
+        _anchored(
+            "---\nname: aramaic-translator\nextends: researcher\n"
+            "source: ../study/agents/aramaic-translator.md\n---\nMaintained in the study.\n"
+        )
     )
     result = route("Translate this Aramaic phrase into English", public, extensions_root=private)
     assert result["specialist"] == "aramaic-translator"
@@ -381,7 +479,9 @@ def test_a_reference_with_a_missing_source_is_skipped(tmp_path: Path) -> None:
     _brief(public, "researcher", "literature evidence researcher")
     (private / "agents").mkdir(parents=True)
     (private / "agents" / "aramaic-translator.md").write_text(
-        "---\nname: aramaic-translator\nextends: researcher\nsource: ../absent/a.md\n---\n"
+        _anchored(
+            "---\nname: aramaic-translator\nextends: researcher\nsource: ../absent/a.md\n---\n"
+        )
     )
     result = route("Translate this Aramaic phrase", public, extensions_root=private)
     assert result["specialist"] is None
@@ -419,8 +519,10 @@ def test_a_reference_brief_is_anchored_by_its_curated_terms(tmp_path: Path) -> N
     )
     (private / "agents").mkdir(parents=True)
     (private / "agents" / "nonlinear-signal-mixing.md").write_text(
-        "---\nname: nonlinear-signal-mixing\nextends: researcher\n"
-        "source: ../study/agents/nonlinear-signal-mixing.md\n---\n"
+        _anchored(
+            "---\nname: nonlinear-signal-mixing\nextends: researcher\n"
+            "source: ../study/agents/nonlinear-signal-mixing.md\n---\n"
+        )
     )
     question = "Derive the Adler lock range for a Righetti loop driven by the keyed polarity stream"
     result = route(question, public, extensions_root=private)
@@ -431,9 +533,11 @@ def _specialist(root: Path, name: str, description: str, example: str, guidance:
     agents = root / "agents"
     agents.mkdir(parents=True, exist_ok=True)
     (agents / f"{name}.md").write_text(
-        f"---\nname: {name}\ndescription: Use first for {description} in {{{{name}}}}. More.\n"
-        f"extends: researcher\n---\n\nPositive routing examples:\n\n1. {example}\n\n"
-        f"## Pipeline guidance\n\n{guidance}\n"
+        _anchored(
+            f"---\nname: {name}\ndescription: Use first for {description} in {{{{name}}}}. More.\n"
+            f"extends: researcher\n---\n\nPositive routing examples:\n\n1. {example}\n\n"
+            f"## Pipeline guidance\n\n{guidance}\n"
+        )
     )
 
 
@@ -533,3 +637,51 @@ def test_the_catalogue_lists_specialists_with_what_they_are_for(
         "source": "private",
         "for": "Friction, drag and energy of moving objects",
     }
+
+
+def test_frontmatter_anchors_anchor_a_specialist(tmp_path: Path) -> None:
+    _brief(tmp_path, "researcher", "literature evidence researcher")
+    (tmp_path / "agents" / "widget-science.md").write_text(
+        "---\nname: widget-science\n"
+        "description: Use first for gizmo flux coils.\n"
+        "extends: researcher\nanchors: gizmo\n---\n"
+        "Positive routing examples:\n\n- How does gizmo flux pass through coils?\n"
+    )
+    result = route("How does gizmo flux pass through coils?", tmp_path)
+    assert result["specialist"] == "widget-science"
+
+
+def test_an_anchor_combo_needs_a_word_from_each_group(tmp_path: Path) -> None:
+    _brief(tmp_path, "researcher", "literature evidence researcher")
+    (tmp_path / "agents" / "pairs-lab.md").write_text(
+        "---\nname: pairs-lab\n"
+        "description: Use first for alpha beta gamma delta epsilon zeta.\n"
+        "extends: researcher\nanchor_combos: alpha + beta/gamma\n---\n"
+        "Positive routing examples:\n\n- alpha beta gamma delta epsilon zeta\n"
+    )
+    assert route("alpha delta epsilon gamma", tmp_path)["specialist"] == "pairs-lab"
+    assert route("alpha delta epsilon zeta", tmp_path)["specialist"] is None
+
+
+def test_anchor_unless_drops_a_word_beside_its_blocker(tmp_path: Path) -> None:
+    _brief(tmp_path, "researcher", "literature evidence researcher")
+    (tmp_path / "agents" / "list-motion.md").write_text(
+        "---\nname: list-motion\n"
+        "description: Use first for drag list files.\n"
+        "extends: researcher\nanchors: drag\nanchor_unless: drag=drop\n---\n"
+        "Positive routing examples:\n\n- drag the list files\n"
+    )
+    assert route("drag the list files", tmp_path)["specialist"] == "list-motion"
+    assert route("drag and drop the list files", tmp_path)["specialist"] is None
+
+
+def test_a_specialist_brief_sets_the_domain(tmp_path: Path) -> None:
+    _brief(tmp_path, "researcher", "literature evidence researcher")
+    (tmp_path / "agents" / "widget-science.md").write_text(
+        "---\nname: widget-science\n"
+        "description: Use first for gizmo flux coils.\n"
+        "extends: researcher\nanchors: gizmo\ndomain: acoustics\n---\n"
+        "Positive routing examples:\n\n- How does gizmo flux pass through coils?\n"
+    )
+    result = route("How does gizmo flux pass through coils?", tmp_path)
+    assert result["domain"] == "acoustics"
