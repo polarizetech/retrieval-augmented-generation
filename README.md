@@ -31,62 +31,7 @@ There are two ways to use it:
   instead of recall: `math__lookup` searches the research corpus's calculator records
   (`projects/*/calculators/*.md`, found through `$RESEARCH_CORPUS` or a sibling `research/` checkout)
   and returns their sections verbatim with the corpus commit; `math__bionumber` returns a BioNumbers
-  entry by BNID, verbatim, fetched once and cached. `math__sign_mix` derives what a sign
-  (hard-limiter) mixer makes from two tones: only odd-order lines `m·f1 + n·f2`, their exact
-  amplitudes and the strong tone's capture of the weak one. When `calculators.sign_mixer` is
-  configured, it also runs the calculator from
-  [polarity-calculator](https://github.com/polarizetech/polarity-calculator) (`calculators/nonlinear-mixer`).
-  That run is a keyed mix with an edge-of-chaos gain (on by default), and its key and added noise come
-  from a fresh physical [entropy-fetch](https://github.com/polarizetech/entropy-fetch) draw.
-  `math__audio_mix` runs an audio file (a local file, or one in the Spaces snapshots that
-  dataset-fetch reads) through that calculator's sign or voltage mixer. It can also list the audio in
-  Spaces, and read the calculator's run ledger, which records every run's settings and results. No
-  model is involved in any of these.
-  `math__physical_mix` runs [physical-nonlinear-mixing](https://github.com/polarizetech/physical-nonlinear-mixing)
-  (`pnm`, configured as `calculators.physical_mixing`). It sends tones, or an equation in t, through
-  a digital model (exact) or through real hardware in the audio interface's loop (measured,
-  exploratory), and lists every line m·f1 + n·f2 with its level. It also reads the tool's recorded
-  runs (`action=runs`) and its interface and device records (`action=setup`).
-- **The sky tool** (`sky__key`) gives the sky key and clock times at a place and time from a running
-  [polarize-clock](https://github.com/polarizetech/polarize-clock) data server (`POLARIZE_CLOCK_URL`, default
-  `http://127.0.0.1:8803`): the key/1 hash of the Sun's direction and gravity, the Sun split against
-  gravity as unit triangles (and, with a heading, the dance angle), solar, mean solar and lunar time,
-  the equation of time, the Moon's position and phase, rise, set and transit times, and tidal gravity.
-  `ask` runs it by itself when a request asks for a sky key or a clock time and gives decimal
-  coordinates ("lunar time at 48.43, -123.37"); words for it go in `[sky]` in the routing config.
-  Two more come from polarize-clock's sun sights: `sky__measure` turns a plumbed stick and its shadow
-  into the Sun's altitude and azimuth, and `sky__locate` turns those (or the stick and shadow) and a
-  UTC time into the places that see the Sun there, with local solar time and how many km each moves
-  per 0.1° of measuring error. `ask` runs a sight by itself when a request gives one ("where am I? a
-  1 m stick casts a 2.69 m shadow pointing 32°"), and says what is missing when it doesn't.
-- **The polarize tools** answer questions about polarize-holo, -mixer, -particle, -physics and
-  -clock from their own repositories, and render audio with polarize-holo. `polarize__read` returns a
-  tool's README.md and TOOL.toml at its newest release tag (found in its local checkout:
-  `POLARIZE_TOOLS_DIR`, default the folder beside this repository, or `POLARIZE_<TOOL>_DIR`), read
-  through `repos__read_file` or, without GitHub, with `git show`, plus a `repos__search_code` search.
-  A tool with no tag or no checkout is read at its default branch, and the answer says so.
-  `polarize__renders` lists holo's `renders/<slug>/render_*.py` scripts; `polarize__render` copies one
-  render out of holo's git history (at the tag when it is there, else HEAD) into a new folder under
-  `POLARIZE_RENDER_DIR` (default `data/polarize-renders`) and runs holo's own script there with `uv`.
-  It reports holo's version and commit, the render's tool pins, the command, the WAV files
-  written (rate, bits, channels, length) and any JSON settings. holo's checkout is never written
-  to, and no sound is made in the gateway. `ask` runs the step whenever a request names a tool
-  (`[polarize_tools]` in the routing config). It renders audio when holo is named with an audio word and
-  a render's name ("an audio file of the spiral with polarize-holo"), and with a place it passes
-  polarize-clock's Sun azimuth to the spiral.
-- **Project rules** go with every reply from a polarize-* project. `ask` reads the project's own
-  rules (the bold-led rules in its `AGENTS.md` and `CLAUDE.md`, the owner's marked "(owner, date)")
-  and the owner's shared profile for the polarize tools (polarize-thesis
-  `.claude/agents/polarize-integrator.md`, its rule sections) from the local checkout on every call,
-  and puts them first in `brief.project_rules` as binding: the rules nearest the request in full,
-  the rest as one line with their source. `answer_format` then tells the assistant to check what it
-  is about to do against them, to stop and name the rule when the request conflicts with one, and to
-  end with a **Rules checked:** line. A rule is set aside only when the request itself says so in
-  explicit words and names it ("make an exception to the departures, never averages rule"), for
-  that request; wording that names no rule sets nothing aside and asks which. The project is
-  `ask`'s `project`, else its repo's name, else the client's folder; `rules__project` returns the
-  same for any project. Which projects, files and exception words: `[project_rules]` in the routing
-  config; checkouts are found in `PROJECT_RULES_DIRS`, else `POLARIZE_TOOLS_DIR`.
+  entry by BNID, verbatim, fetched once and cached.
 - **The shared workbench** makes the same gateway available to ChatGPT, Claude, Codex, OpenWebUI
   and other MCP clients. Completed pipeline runs write a compact, review-required session capsule;
   research results and code changes cross into repositories only as pull-request proposals.

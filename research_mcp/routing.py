@@ -55,14 +55,7 @@ class Rules:
     request_leads: tuple[str, ...]
     research: tuple[str, ...]
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    mixer: tuple[str, ...] = ()
-    sky: tuple[str, ...] = ()
     profiles_list: tuple[str, ...] = ()
-    # Tool key -> the words that name it (config [polarize_tools]); and the words asking for audio.
-    polarize: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    polarize_audio: tuple[str, ...] = ()
-    # Config [project_rules]: whose rules every reply carries (research_mcp/project_rules.py).
-    project_rules: dict[str, Any] = field(default_factory=dict)
     # Config [extensions."<extension name>"]: extra trigger words for each extension's steps.
     extensions: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
 
@@ -106,16 +99,7 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         request_leads=tuple(words("code", "request_leads")),
         research=tuple(words("research", "triggers")),
         profiles=profiles,
-        mixer=tuple(words("mixer", "triggers")),
-        sky=tuple(words("sky", "triggers")),
         profiles_list=tuple(words("profiles_list", "triggers")),
-        polarize={
-            str(tool): tuple(words("polarize_tools", tool))
-            for tool in {**data.get("polarize_tools", {}), **extra.get("polarize_tools", {})}
-            if tool != "audio"
-        },
-        polarize_audio=tuple(words("polarize_tools", "audio")),
-        project_rules=_project_rules(data.get("project_rules", {}), extra.get("project_rules", {})),
         extensions=_extension_words(data.get("extensions", {}), extra.get("extensions", {})),
     )
 
@@ -132,18 +116,6 @@ def _extension_words(
             for step, words_ in steps.items():
                 merged = [*row.get(str(step), ()), *(str(w).lower() for w in words_)]
                 row[str(step)] = tuple(dict.fromkeys(merged))
-    return out
-
-
-def _project_rules(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
-    """Lists are added to (projects, files, exception words, shared profiles); nothing removed."""
-    out: dict[str, Any] = {}
-    for key in ("projects", "files", "exception_words"):
-        merged = [*base.get(key, []), *local.get(key, [])]
-        out[key] = list(
-            dict.fromkeys(str(v) if key != "exception_words" else str(v).lower() for v in merged)
-        )
-    out["shared"] = [*base.get("shared", []), *local.get("shared", [])]
     return out
 
 
