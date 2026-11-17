@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import threading
@@ -82,3 +83,25 @@ def test_gateway_wakes_hosted_models_once_a_minute(monkeypatch):
     local = Settings(ollama_url="http://127.0.0.1:11434", ollama_key="")
     monkeypatch.setattr(gateway, "_last_wake", [float("-inf")])
     assert not gateway.wake_hosted_models(local, opener, lambda: now[0])
+
+
+def test_ask_waits_for_a_wake_up_in_flight(monkeypatch):
+    from research_mcp import gateway
+
+    release = threading.Event()
+
+    def opener(request, timeout):
+        release.wait(5)
+        return io.BytesIO(b"")
+
+    hosted = Settings(ollama_url="https://models.example", ollama_key="k")
+    monkeypatch.setattr(gateway, "_last_wake", [float("-inf")])
+    idle = threading.Event()
+    idle.set()
+    monkeypatch.setattr(gateway, "_wake_done", [idle])
+    asyncio.run(asyncio.wait_for(gateway.models_ready(), 5))  # nothing in flight: no wait
+    assert gateway.wake_hosted_models(hosted, opener)
+    assert not gateway._wake_done[0].is_set()
+    release.set()
+    asyncio.run(asyncio.wait_for(gateway.models_ready(), 5))
+    assert gateway._wake_done[0].is_set()
