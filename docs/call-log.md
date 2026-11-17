@@ -103,7 +103,7 @@ Neon's free plan is enough for this: 1 GB per project as of November 2026. Check
 
    ```bash
    export CALL_LOG_DATABASE_URL="$(security find-generic-password -a "$USER" -s com.polarizetech.research-rag.calllog -w)"
-   export RECORDS_URL="https://joshuas-macbook-pro.tailc463ae.ts.net:8892"
+   export RECORDS_URL="https://<your-mac>.<your-tailnet>.ts.net:8892"
    ```
 
 6. **Make the record pages reachable from your other devices, on the tailnet only.** Run this on
@@ -121,7 +121,7 @@ Neon's free plan is enough for this: 1 GB per project as of November 2026. Check
 
 8. **Check it.** `gateway_status` should show `"database": "configured"` and `"unsynced": 0`
    after a call or two. Then open
-   `https://joshuas-macbook-pro.tailc463ae.ts.net:8892/records` from your phone.
+   `https://<your-mac>.<your-tailnet>.ts.net:8892/records` from your phone.
 
 The record pages, and their links, only open while the Mac is awake and on the tailnet. The
 records themselves are always in Neon.

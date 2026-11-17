@@ -1,6 +1,6 @@
 # The hub's providers, ladders, thresholds and breakers (docs/hub-plan.md, phase 1).
 # Put your own values in the gitignored config/hub.toml in the same shape: its tables are merged
-# over these, key by key. No secrets here: key files live in ~/.config/polarize/ (chmod 600).
+# over these, key by key. No secrets here: key files live in ~/.config/research-rag/ (chmod 600).
 
 [breaker]
 # A component is skipped after this many failures in a row, for the cool-down, then probed again.
@@ -48,7 +48,7 @@ kind = "openai"
 label = "OpenRouter Qwen3.8 27B (zero retention)"
 url = "https://openrouter.ai/api/v1"
 model = "qwen/qwen3.8-27b"
-key_file = "~/.config/polarize/openrouter.key"
+key_file = "~/.config/research-rag/openrouter.key"
 # Low when this many USD or less are left, or this fraction of a key limit is used.
 min_usd = 1.0
 max_used_fraction = 0.95
@@ -58,10 +58,10 @@ kind = "openai"
 label = "NEAR AI direct, Qwen3.8 27B"
 url = "https://cloud-api.near.ai/v1"
 model = "Qwen/Qwen3.8-27B"
-key_file = "~/.config/polarize/nearai.key"
+key_file = "~/.config/research-rag/nearai.key"
 # The API key cannot read the balance (401). The balance needs the organisation id and a
 # reporting token from the dashboard, as NEARAI_ORG_ID=... and NEARAI_REPORTING_TOKEN=... lines.
-reporting_file = "~/.config/polarize/nearai-reporting.env"
+reporting_file = "~/.config/research-rag/nearai-reporting.env"
 min_usd = 1.0
 max_used_fraction = 0.95
 
@@ -73,7 +73,7 @@ kind = "openai"
 label = "OpenAI GPT-6.1 Sol"
 url = "https://api.openai.com/v1"
 model = "gpt-6.1-sol"
-key_file = "~/.config/polarize/openai.key"
+key_file = "~/.config/research-rag/openai.key"
 retention = "OpenAI may keep API requests for up to 30 days for abuse monitoring (no zero-retention agreement)."
 
 [providers.gemini]
@@ -81,7 +81,7 @@ kind = "openai"
 label = "Gemini 4 Carbon via OpenRouter"
 url = "https://openrouter.ai/api/v1"
 model = "google/gemini-4-carbon"
-key_file = "~/.config/polarize/openrouter.key"
+key_file = "~/.config/research-rag/openrouter.key"
 # OpenRouter routes it only to Google endpoints with zero data retention.
 zdr = true
 

@@ -45,7 +45,7 @@ EXTENSION = declare(
     name="rag-ext-example",
     module=__name__,
     version="0.1.0",
-    core_requires=">=0.3.0,<0.4",
+    core_requires=">=0.3.0,<0.5",
     job="Shows the extension API: one tool and one ask step.",
     prefix="example",
     tools=(HELLO,),
