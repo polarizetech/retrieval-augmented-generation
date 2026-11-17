@@ -2,7 +2,8 @@
 
 The one rule: an extension ADDS tools and steps. It never changes evidence, retrieval,
 verification, grading, coverage or another step's results. Its output lives only under its own
-key, `results["extensions"][<extension name>]`. This is the same plugin pattern as domains
+key, `results["extensions"][<extension name>]`, and, for an extension that declares a brief key,
+under that one key of the brief. This is the same plugin pattern as domains
 (research_pipeline/domains.py): a distribution-name prefix, import-time declaration, a version
 gate, entry-point discovery, and no core-side list of extensions. Scientific software "may require
 scripting or plugin support for extensions" (Gewaltig and Cannon 2014, DOI
@@ -45,6 +46,39 @@ RESERVED_PREFIXES = frozenset(
         "research",
     }
 )
+STAGES = ("early", "before_retrieval", "after")
+SHARED_PREFIXES = frozenset({"math"})
+CORE_SHARED_TOOLS = frozenset(
+    {"math__lookup", "math__bionumber", "math__sign_mix", "math__audio_mix", "math__physical_mix"}
+)
+CORE_BRIEF_KEYS = frozenset(
+    {
+        "coverage",
+        "passages",
+        "specialist",
+        "specialists",
+        "titles_only",
+        "fresh_search",
+        "tool_results",
+        "found",
+        "next",
+        "for_you",
+        "limits",
+        "project_rules",
+        "evidence",
+        "search",
+        "fresh",
+        "profiles",
+        "coder",
+        "research",
+        "sky",
+        "sight",
+        "sky_hint",
+        "polarize",
+        "mixer",
+        "extensions",
+    }
+)
 
 
 class ExtensionError(Exception):
@@ -61,12 +95,14 @@ class UnknownExtension(ExtensionError):
 
 @dataclass(frozen=True)
 class Context:
-    """What a tool or step may use: the gateway's tools, its data folder, its config section."""
+    """What a tool or step may use: the gateway's tools, its data folder, its config section and its
+    config file."""
 
     call_tool: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
     has_tool: Callable[[str], bool]
     data_dir: Path
     config: dict[str, Any]
+    config_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +138,9 @@ class StepOutput:
     next: list[str] = field(default_factory=list)
     for_you: list[str] = field(default_factory=list)
     relay: str = ""
+    skip_retrieval: str = ""  # a reason; only before_retrieval steps' reasons are used
+    limits: str = ""  # replaces the closing line of the reply's summary when nothing was retrieved
+    brief: dict[str, Any] | None = None  # the value for the extension's brief key, if it has one
 
 
 @dataclass(frozen=True)
@@ -112,6 +151,7 @@ class StepSpec:
     run: Callable[[StepInput], Awaitable[StepOutput | None]]
     triggers: tuple[str, ...] = ()
     always: bool = False
+    stage: str = "after"
 
 
 @dataclass(frozen=True)
@@ -127,6 +167,8 @@ class Extension:
     tools: tuple[ToolSpec, ...]
     steps: tuple[StepSpec, ...]
     instructions: str
+    brief_key: str
+    brief_note: str
     core_version: str
 
 
@@ -144,6 +186,8 @@ def declare(
     tools: Iterable[ToolSpec] = (),
     steps: Iterable[StepSpec] = (),
     instructions: str = "",
+    brief_key: str = "",
+    brief_note: str = "",
 ) -> Extension:
     """Declare an extension, check it against the engine and its own names, and register it."""
     if not name.startswith(NAME_PREFIX):
@@ -167,13 +211,29 @@ def declare(
 
     tool_specs = tuple(tools)
     for spec in tool_specs:
-        if not spec.tool.name.startswith(f"{prefix}__"):
-            raise ValueError(f"{name}: tool {spec.tool.name!r} must start with '{prefix}__'")
+        if not (
+            spec.tool.name.startswith(f"{prefix}__")
+            or ("__" in spec.tool.name and spec.tool.name.partition("__")[0] in SHARED_PREFIXES)
+        ):
+            raise ValueError(
+                f"{name}: tool {spec.tool.name!r} must start with '{prefix}__' or a shared "
+                f"prefix ({', '.join(sorted(SHARED_PREFIXES))})"
+            )
+        if spec.tool.name.partition("__")[0] in SHARED_PREFIXES and (
+            spec.tool.name in CORE_SHARED_TOOLS
+        ):
+            raise ValueError(f"{name}: tool {spec.tool.name!r} is a core tool")
 
     step_specs = tuple(steps)
     step_names = [s.name for s in step_specs]
     if len(set(step_names)) != len(step_names):
         raise ValueError(f"{name}: step names must be unique")
+    for step in step_specs:
+        if step.stage not in STAGES:
+            raise ValueError(
+                f"{name}: step {step.name!r} has an unknown stage {step.stage!r}; "
+                f"use one of {', '.join(STAGES)}"
+            )
 
     prior = _REGISTRY.get(name)
     if prior is not None and prior.module != module:
@@ -181,6 +241,17 @@ def declare(
     clash = next((e for e in _REGISTRY.values() if e.prefix == prefix and e.name != name), None)
     if clash is not None:
         raise ValueError(f"{name} and {clash.name} both claim the prefix {prefix!r}")
+    if brief_key:
+        if not _PREFIX.fullmatch(brief_key):
+            raise ValueError(
+                f"{name}: brief key {brief_key!r} must be lowercase letters, digits and "
+                "underscores, starting with a letter"
+            )
+        if brief_key in CORE_BRIEF_KEYS:
+            raise ValueError(f"{name}: brief key {brief_key!r} is a core brief key")
+        clash = next((e for e in _REGISTRY.values() if e.brief_key == brief_key), None)
+        if clash is not None and clash.name != name:
+            raise ValueError(f"{name} and {clash.name} both claim the brief key {brief_key!r}")
 
     extension = Extension(
         name=name,
@@ -192,6 +263,8 @@ def declare(
         tools=tool_specs,
         steps=step_specs,
         instructions=instructions,
+        brief_key=brief_key,
+        brief_note=brief_note,
         core_version=found,
     )
     _REGISTRY[name] = extension
@@ -244,6 +317,7 @@ def discover() -> list[dict[str, Any]]:
                     version=ext.version,
                     prefix=ext.prefix,
                     job=ext.job,
+                    brief_key=ext.brief_key,
                     tools=[t.tool.name for t in ext.tools],
                     steps=[s.name for s in ext.steps],
                 )

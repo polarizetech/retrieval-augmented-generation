@@ -95,6 +95,8 @@ class Turn:
     rid: str = ""
     notes: list[str] = field(default_factory=list)
     ext_lines: list[tuple[list[str], list[str], list[str], str]] = field(default_factory=list)
+    ext_limits: str = ""
+    brief_notes: dict[str, str] = field(default_factory=dict)
 
 
 def _pipeline_full(error: str) -> bool:
@@ -617,6 +619,17 @@ class Asker:
         if held is not None:
             results["project_rules"] = held
             progress.append(project_rules.summary(held))
+        await self._extension_steps(
+            turn,
+            route,
+            rules=rules,
+            project=where,
+            repo=repo,
+            progress=progress,
+            results=results,
+            stage="early",
+        )
+        early = copy.deepcopy(results)
         turn.rid = rid
         work = self._work(
             turn,
@@ -642,8 +655,10 @@ class Asker:
         if task in done:
             return task.result()
         pending = self._pending(rid, route, spec=spec, progress=progress, started=started)
-        if held is not None:
-            pending["results"] = {"project_rules": held}
+        if early:
+            pending["results"] = early
+        if turn.brief_notes:
+            pending["brief_notes"] = dict(turn.brief_notes)
         return pending
 
     def _settled(self, rid: str) -> Callable[[asyncio.Task[dict[str, Any]]], None]:
@@ -781,6 +796,8 @@ class Asker:
                 seconds=seconds,
                 problems=problems,
                 ext_lines=turn.ext_lines,
+                ext_limits=turn.ext_limits,
+                brief_notes=turn.brief_notes,
             )
         seconds = round(time.monotonic() - started, 1)
         return self._reply(
@@ -792,6 +809,8 @@ class Asker:
             seconds=seconds,
             problems=turn.problems,
             ext_lines=turn.ext_lines,
+            ext_limits=turn.ext_limits,
+            brief_notes=turn.brief_notes,
         )
 
     async def _run(
@@ -838,12 +857,26 @@ class Asker:
                 progress.append(
                     f"Sky key: not run ('{hint}' with no place or time; papers instead)"
                 )
+        skip = await self._extension_steps(
+            turn,
+            route,
+            rules=rules,
+            project=project,
+            repo=repo,
+            progress=progress,
+            results=results,
+            stage="before_retrieval",
+        )
         # A sky request in quick mode is answered by polarize-clock; papers don't hold clock times.
-        context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
+        context = (route.mode == "quick" and not sky_term and not skip) or bool(
+            spec["name"] or research_words
+        )
         if route.mode == "quick" and sky_term and not context:
             progress.append(
                 f"Retrieval: skipped (a {sky_term} request, answered by polarize-clock)"
             )
+        if route.mode == "quick" and skip and not sky_term and not context:
+            progress.append(f"Retrieval: skipped ({skip[0]})")
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
         if route.mode in ("quick", "code") and context:
@@ -915,6 +948,7 @@ class Asker:
             repo=repo,
             progress=progress,
             results=results,
+            stage="after",
         )
         if route.mode == "code":
             note = (
@@ -988,12 +1022,17 @@ class Asker:
         repo: str,
         progress: list[str],
         results: dict[str, Any],
-    ) -> None:
+        stage: str,
+    ) -> list[str]:
         """The extension steps, on any route: each step whose trigger words the request names runs
         on a copy of the results so far. Its result goes under its own key and its lines join the
         reply; a step that fails is named, and nothing else in the reply changes
-        (research_mcp/extensions.py)."""
+        (research_mcp/extensions.py). Only steps of the given stage run; the reasons the
+        before_retrieval steps give for skipping retrieval are returned."""
+        skip: list[str] = []
         for ext, step, ctx in self.steps:
+            if step.stage != stage:
+                continue
             words = rules.extensions.get(ext.name, {}).get(step.name, ())
             if not extensions.matches(step, route.question, words):
                 continue
@@ -1017,8 +1056,16 @@ class Asker:
             if out is None:
                 continue
             results.setdefault("extensions", {}).setdefault(ext.name, {})[step.name] = out.result
+            if ext.brief_key and out.brief is not None:
+                results[ext.brief_key] = out.brief
+                turn.brief_notes[ext.brief_key] = ext.brief_note
+            if out.limits and not turn.ext_limits:
+                turn.ext_limits = out.limits
+            if out.skip_retrieval:
+                skip.append(out.skip_retrieval)
             progress.extend(out.progress or [f"{ext.prefix}: ran"])
             turn.ext_lines.append((out.found, out.next, out.for_you, out.relay))
+        return skip
 
     async def _mixer_step(
         self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
@@ -1093,17 +1140,21 @@ class Asker:
         seconds: float,
         problems: list[Problem],
         ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
+        ext_limits: str = "",
+        brief_notes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         worst = next((p for p in problems if p.status != "degraded"), None)
         status = worst.status if worst else ("degraded" if problems else "done")
         if status == "done" and "research" in results:
             status = "working"
         usage = self.hub.meters.line() if self.hub is not None else ""
-        got, nxt, you = _short(route, spec, results, problems, rid, ext_lines=ext_lines)
+        got, nxt, you = _short(
+            route, spec, results, problems, rid, ext_lines=ext_lines, ext_limits=ext_limits
+        )
         text, full = (
             relay(
                 route, spec, progress, results, seconds, problems=problems, usage=usage,
-                request_id=rid, full=f, ext_lines=ext_lines,
+                request_id=rid, full=f, ext_lines=ext_lines, ext_limits=ext_limits,
             )
             for f in (False, True)
         )  # fmt: skip
@@ -1126,6 +1177,8 @@ class Asker:
                 "from memory."
             ),
         }
+        if brief_notes:
+            out["brief_notes"] = dict(brief_notes)
         if worst is not None:
             out["error"] = worst.as_dict()
         if problems:
@@ -1177,14 +1230,18 @@ def relay(
     request_id: str = "",
     full: bool = False,
     ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
+    ext_limits: str = "",
 ) -> str:
     """The block the chat model shows unchanged. Short (the default): three lists from
     `_short`. Full: problems first, then what ran, what came back, and its limits; last, the
     request id and usage."""
     if not full:
         return replies.short(
-            *_short(route, spec, results, problems, request_id, ext_lines=ext_lines)
-        )
+            *_short(
+                route, spec, results, problems, request_id,
+                ext_lines=ext_lines, ext_limits=ext_limits,
+            )
+        )  # fmt: skip
     blocks: dict[str, str] = {
         "passages": "",
         "passages_none": "",
@@ -1428,6 +1485,7 @@ def _short(
     request_id: str,
     *,
     ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
+    ext_limits: str = "",
 ) -> tuple[list[str], list[str], list[str]]:
     """The short reply's three lists, one sentence per item: what came back, what the assistant
     does next, and what the person needs to do (often nothing)."""
@@ -1631,6 +1689,8 @@ def _short(
         if stopped
         else "polarize-clock's numbers are data from an exploratory tool, not a finding."
         if sky_only
+        else ext_limits
+        if ext_limits and results.get("evidence") is None and route.mode == "quick"
         else "Nothing was retrieved."
         if results.get("profiles") is not None
         else {

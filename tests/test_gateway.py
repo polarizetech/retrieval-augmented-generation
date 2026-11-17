@@ -379,3 +379,35 @@ async def test_extension_tools_are_listed_and_dispatched(
         assert refused.isError
 
     await with_session(plain, tmp_path, plain_body)
+
+
+@pytest.mark.anyio
+async def test_extension_context_carries_the_gateway_config(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(extensions, "_REGISTRY", {})
+
+    def where(arguments: dict[str, Any], context: extensions.Context) -> dict[str, Any]:
+        return {"config_path": str(context.config_path)}
+
+    no_args = {"type": "object", "properties": {}}
+    extensions.declare(
+        name="rag-ext-demo",
+        module="rag_ext_demo",
+        version="0.1.0",
+        core_requires=">=0.3.0",
+        job="demo",
+        prefix="demo",
+        tools=(
+            extensions.ToolSpec(
+                tool=Tool(name="demo__where", inputSchema=no_args),
+                handler=where,
+                label="demo where",
+            ),
+        ),
+    )
+
+    async def look(session: ClientSession) -> None:
+        assert payload(await session.call_tool("demo__where", {}))["config_path"] == str(config)
+
+    await with_session(config, tmp_path, look)

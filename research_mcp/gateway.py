@@ -301,6 +301,7 @@ def build_server(
             has_tool=lambda n: n in federation.tools,
             data_dir=data_dir,
             config=ext_config.get(ext.name, {}),
+            config_path=config_path,
         )
         for spec in ext.tools:
             ext_tools[spec.tool.name] = (ext, spec, ctx)
