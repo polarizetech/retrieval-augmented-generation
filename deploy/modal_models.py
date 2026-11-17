@@ -40,7 +40,7 @@ image = (
         "paper-fetch[rerank] @ git+https://github.com/polarizetech/paper-fetch@d733c25",
     )
     .run_commands("pip uninstall -y onnxruntime", "pip install 'onnxruntime-gpu[cuda,cudnn]'")
-    .env({"OLLAMA_MODELS": "/models/ollama", "HF_HOME": "/models/hf"})
+    .env({"OLLAMA_MODELS": "/models/ollama", "HF_HOME": "/models/hf", "OLLAMA_KEEP_ALIVE": "-1"})
 )
 app = modal.App("research-rag-models", image=image)
 
@@ -88,10 +88,22 @@ def pull() -> None:
 class Models:
     @modal.enter()
     def start(self) -> None:
+        import httpx
         import onnxruntime as ort
         from paper_fetch.rerank import OnnxReranker
 
         self.ollama = _start_ollama()
+        # load the models now, so a request never waits on a load from the volume
+        httpx.post(
+            f"{OLLAMA}/api/embed",
+            json={"model": "bge-m3:latest", "input": "warm"},
+            timeout=None,  # noqa: S113
+        )
+        httpx.post(
+            f"{OLLAMA}/api/generate",
+            json={"model": "bespoke-minicheck:latest", "prompt": "", "stream": False},
+            timeout=None,  # noqa: S113
+        )
         # paper-fetch's tokenizer and score(); the session below replaces its CPU one
         self.reranker = OnnxReranker(RERANK_REPO, "onnx/model_int8.onnx")
         # paper-fetch builds its session on the CPU; the same model file, on the GPU here.

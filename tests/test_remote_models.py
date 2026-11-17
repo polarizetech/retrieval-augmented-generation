@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import urllib.request
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -55,3 +57,33 @@ def test_hub_post_sends_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     overlap.http_post("http://x/api/embed", {}, headers={"Authorization": "Bearer abc"})
     assert seen[0].get_header("Authorization") == "Bearer abc"
+
+
+def test_gateway_wakes_hosted_models_once_a_minute(monkeypatch):
+    from research_mcp import gateway
+
+    calls = []
+    sent = threading.Event()
+
+    def opener(request, timeout):
+        calls.append((request.full_url, request.get_header("Authorization"), timeout))
+        sent.set()
+        return io.BytesIO(b"")
+
+    hosted = SimpleNamespace(
+        ollama_key="k",
+        ollama_url="https://models.example",
+        ollama_headers={"Authorization": "Bearer k"},
+    )
+    monkeypatch.setattr(gateway, "_last_wake", [float("-inf")])
+    now = [1000.0]
+    assert gateway.wake_hosted_models(hosted, opener, lambda: now[0])
+    assert sent.wait(5)
+    assert calls == [("https://models.example/api/version", "Bearer k", 300)]
+    now[0] += 30
+    assert not gateway.wake_hosted_models(hosted, opener, lambda: now[0])
+    now[0] += 31
+    assert gateway.wake_hosted_models(hosted, opener, lambda: now[0])
+    local = SimpleNamespace(ollama_key="", ollama_url="http://127.0.0.1:11434", ollama_headers={})
+    monkeypatch.setattr(gateway, "_last_wake", [float("-inf")])
+    assert not gateway.wake_hosted_models(local, opener, lambda: now[0])
