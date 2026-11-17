@@ -270,6 +270,14 @@ the pipeline's evidence and verification rules still control the result. Use
 `pipeline__profile_route(question)` to inspect selection before a run. A specialist without that
 section is still routed and recorded but adds no model guidance.
 
+A brief names the words that recruit it in its frontmatter. `anchors` lists words, any one of
+which anchors it. `anchor_combos` (`a + b/c`) anchors when the question has a word from every
+group: `+` separates the groups, `/` the alternative words in a group, and `;` separates combos.
+`anchor_unless` (`w=b`) means that `w` does not count when `b` is also in the question. `domain`
+names the route's domain when that brief is the first specialist. A brief with none of these
+keys is anchored by every distinctive part of its name. In a reference stub, these keys win over
+its source's.
+
 Independent calls are batched, at most `PIPELINE_CLIENT_BATCH` (12) per turn. A typical question
 takes about a dozen turns: plan, extraction (with paper classification), synthesis, the
 falsification pass, critique, verification and the summary check.
