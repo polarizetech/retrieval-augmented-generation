@@ -12,8 +12,6 @@ One gateway process (`research-rag-gateway`) exposes:
 | `session__read_capsule`, `session__propose` | session store and research PR gate | no |
 | `research__*` | trusted research-repository reads and proposals | no |
 | `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
-| `rules__project` | a project's binding rules: its AGENTS.md and CLAUDE.md, and the owner's shared polarize profile | no |
-| `polarize__read`, `polarize__renders`, `polarize__render` | the polarize tools' own repos (pinned to tags) and polarize-holo's render scripts | no |
 | `web__search` | an optional SearXNG instance; listed only when `SEARXNG_URL` is set | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
 
@@ -73,12 +71,6 @@ there. It decides which parts of the server run, using trigger words rather than
 | `research` | an evidence question ("evidence", "studies", "is it true", ...) | the research pipeline, started on the gateway |
 | `code` | a task on code ("fix the bug", "implement", "add a flag to the cli") or a code review | three passages for context; the assistant then edits through `repos__` tools or its checkout |
 
-The **sign-mixer step** runs on any route when two things are true: the request uses a `[mixer]`
-trigger word ("mixer", "intermodulation", "combination tone", "hard limiter", "clipping", ...), and it
-names two tones ("120 Hz and 210 Hz", with optional `a1=`, `a2=`). The step adds `math__sign_mix`'s
-derived line table and, when configured, the calculator's run with a physical random key, with settle
-on.
-
 A question never recruits the coder, even a question about code ("how does the hook work?"). A
 prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`.
 
@@ -102,19 +94,6 @@ how: a bottom line first, then at most five key points each citing an evidence i
 and limits, and the sources cited. The assistant writes that answer itself; it does not paste the
 brief. In the brief:
 
-- `project_rules`, first, when the request comes from a project with rules (`[project_rules]` in
-  the routing config: the polarize-* projects). The project is `ask`'s `project`, else its repo's
-  name, else the client's folder (the stdio bridge sends it). The rules are read from the project's
-  checkout on every call: the bold-led rules of its `AGENTS.md` and `CLAUDE.md`, and for the
-  polarize tools and polarize-thesis the rule sections of the owner's shared profile
-  (polarize-thesis `.claude/agents/polarize-integrator.md`). A rule in both is listed once, in the
-  project's wording, with the copy under `also_in`. The five nearest the request come in full, the
-  rest as one line with their source. `answer_format` then starts with the rules: they bind before
-  anything else, a conflict stops the assistant to name the rule and ask, and the reply ends with a
-  **Rules checked:** line. `exceptions` says what the request set aside: only explicit wording
-  from `exception_words` ("make an exception to", "break the rule", ...) together with the rule's
-  id, its title or most of its title's words, for that request only. Wording that names no rule
-  sets nothing aside, and `for_you` asks the person which rule.
 - `passages`: each retrieved passage once, with its evidence id, source and reranker score.
 - `coverage`: how well the library covers the question, from the best reranker score: `strong`
   (1 or more), `partial` (−1 to 1), `weak` (under −1, loosely related only), `none`, or
@@ -122,7 +101,7 @@ brief. In the brief:
 - `specialist`: the specialist's name and guidance, when one was picked.
 - `found`, `next`, `for_you`: one sentence per item. `for_you` holds anything the person must do,
   such as a choice after a failure, and the answer starts with it.
-- `tool_results`: anything else that ran (a research run, polarize-clock, the sign mixer, the coder).
+- `tool_results`: anything else that ran (a research run, the coder; an extension's steps under `extensions`).
 - `limits`: the main limit.
 
 The full reply (`relay`, `relay_full`, progress and raw results) is kept in the call log, and the
@@ -166,7 +145,7 @@ with the restart command; restarting it with backoff is phase 3.
 
 **Usage.** `hub__usage` reads OpenRouter (`/api/v1/key` and `/api/v1/credits`: balance, spend
 today, this week and this month, burn per day and projected run-out), NEAR AI (needs the
-organisation id and a reporting token in `~/.config/polarize/nearai-reporting.env`; the API key is
+organisation id and a reporting token in `~/.config/research-rag/nearai-reporting.env`; the API key is
 refused), local Ollama (up, installed, loaded), and says which plans it cannot read (Claude,
 ChatGPT). Readings are cached for five minutes, and each relay ends with a one-line readout from
 the cache, so a reply never waits on a provider (in the full reply, `relay_full`).
@@ -207,8 +186,7 @@ nor held; each works in its own git worktree, and `ask` mentions the other sessi
 work. Fallbacks ask once per session per component. Sessions pass their name or the gateway
 infers it. The ladders and thresholds are as above.
 
-The full plan, with its later phases, is in [hub-plan.md](hub-plan.md); where things can run is
-in [hosting-options.md](hosting-options.md).
+The full plan, with its later phases, is in [hub-plan.md](hub-plan.md).
 
 ## Claude Desktop and Claude Code
 
