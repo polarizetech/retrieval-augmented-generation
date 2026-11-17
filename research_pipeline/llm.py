@@ -62,7 +62,7 @@ class Ollama:
         req = urllib.request.Request(
             self.s.ollama_url + path,
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **self.s.ollama_headers},
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -152,7 +152,7 @@ class Ollama:
         req = urllib.request.Request(
             self.s.ollama_url + "/api/chat",
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **self.s.ollama_headers},
         )
         text = ""
         deadline = time.monotonic() + timeout
@@ -235,7 +235,10 @@ class Ollama:
 
     def _post_get(self, path: str) -> dict[str, Any]:
         try:
-            with urllib.request.urlopen(self.s.ollama_url + path, timeout=10) as response:
+            with urllib.request.urlopen(
+                urllib.request.Request(self.s.ollama_url + path, headers=self.s.ollama_headers),
+                timeout=10,
+            ) as response:
                 return json.load(response)
         except (urllib.error.URLError, TimeoutError) as exc:
             raise LLMError(f"ollama unreachable at {self.s.ollama_url}: {exc}") from exc
