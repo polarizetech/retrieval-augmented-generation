@@ -73,6 +73,9 @@ def _token(path: Path) -> str:
 
 WAKE_INTERVAL = 60.0
 _last_wake = [float("-inf")]
+# Set while no wake-up is in flight; an ask waits on it so it never meets a half-started service.
+_wake_done = [threading.Event()]
+_wake_done[0].set()
 
 
 def wake_hosted_models(
@@ -88,16 +91,26 @@ def wake_hosted_models(
     if not settings.ollama_key or clock() - _last_wake[0] < WAKE_INTERVAL:
         return False
     _last_wake[0] = clock()
+    done = threading.Event()
+    _wake_done[0] = done
     request = urllib.request.Request(
         settings.ollama_url + "/api/version", headers=settings.ollama_headers
     )
 
     def send() -> None:
-        with contextlib.suppress(Exception):
-            opener(request, timeout=300).close()
+        try:
+            with contextlib.suppress(Exception):
+                opener(request, timeout=300).close()
+        finally:
+            done.set()
 
     threading.Thread(target=send, daemon=True).start()
     return True
+
+
+async def models_ready() -> None:
+    """Wait for a wake-up in flight (wake_hosted_models) to finish; returns at once if none is."""
+    await asyncio.to_thread(_wake_done[0].wait)
 
 
 class Federation:
@@ -1052,6 +1065,9 @@ def build_server(
         ):
             return _tool_error(f"unknown tool: {name}", status="refused")
         if name == "ask":
+            # a hosted model service may be starting: wake it if it has been idle, and wait for it
+            wake_hosted_models(settings)
+            await models_ready()
             try:
                 return await asker.ask(
                     arguments["question"],
