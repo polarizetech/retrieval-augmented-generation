@@ -16,6 +16,7 @@ import os
 import secrets
 import sqlite3
 import subprocess
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -61,6 +62,35 @@ def _token(path: Path) -> str:
     path.write_text(value)
     path.chmod(0o600)
     return value
+
+
+WAKE_INTERVAL = 60.0
+_last_wake = [float("-inf")]
+
+
+def wake_hosted_models(
+    settings: Settings,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Start a hosted Ollama (deploy/modal_models.py) loading as a client session starts.
+
+    A hosted Ollama scales to zero; waking it as a session starts hides the cold start. At
+    most once every WAKE_INTERVAL seconds, and nothing for a local Ollama (no key).
+    """
+    if not settings.ollama_key or clock() - _last_wake[0] < WAKE_INTERVAL:
+        return False
+    _last_wake[0] = clock()
+    request = urllib.request.Request(
+        settings.ollama_url + "/api/version", headers=settings.ollama_headers
+    )
+
+    def send() -> None:
+        with contextlib.suppress(Exception):
+            opener(request, timeout=300).close()
+
+    threading.Thread(target=send, daemon=True).start()
+    return True
 
 
 class Federation:
@@ -483,6 +513,8 @@ def build_server(
 
     @low.list_tools()
     async def list_tools() -> list[Tool]:
+        # every client lists tools as its session starts
+        wake_hosted_models(settings)
         status = Tool(
             name="gateway_status",
             description="List connected upstream MCP servers, tool counts, and startup errors.",
