@@ -137,7 +137,7 @@ A `StepSpec` is an ask step. It has a `name`, an async `run`, its `triggers` and
 - A step that raises does not fail the ask. The result under its key becomes
   `{"error": "<ExceptionType>: <message>"}` and the progress list names the failure.
 
-The steps run after the mixer and polarize steps, in the order their extensions were loaded.
+Within each stage, steps run in the order their extensions were loaded.
 
 ## Stages, shared prefixes and brief keys
 

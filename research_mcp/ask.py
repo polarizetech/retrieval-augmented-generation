@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import brief, extensions, mixer, polarize, project_rules, sky
+from research_mcp import brief, extensions
 from research_mcp.extensions import Context, Extension, StepInput, StepSpec
 from research_mcp.hub.contract import (
     CHOICES,
@@ -136,7 +136,6 @@ class Asker:
         web: WebSearch | None = None,
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
-        sign_mixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         steps: Sequence[tuple[Extension, StepSpec, Context]] = (),
     ):
         self.retrieve = retrieve
@@ -150,7 +149,6 @@ class Asker:
         self.web = web
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
-        self.sign_mixer = sign_mixer
         self.steps = tuple(steps)
         # Requests still working after their reply's deadline: held so they finish.
         self._tasks: set[asyncio.Task[dict[str, Any]]] = set()
@@ -607,18 +605,12 @@ class Asker:
         progress = [f"Route: {route.mode} ({route.reason})"]
         progress.append(_specialist_line(spec))
         results: dict[str, Any] = {}
-        # The rules of the project the request comes from go with every reply, first.
+        # The project the request comes from, for the early extension steps (project rules).
         where = (
             project.strip()
             or (repo.rsplit("/", maxsplit=1)[-1] if repo else "")
             or caller.get("project", "")
         )
-        held = await asyncio.to_thread(
-            project_rules.load, where, route.question, rules.project_rules
-        )
-        if held is not None:
-            results["project_rules"] = held
-            progress.append(project_rules.summary(held))
         await self._extension_steps(
             turn,
             route,
@@ -835,28 +827,6 @@ class Asker:
             progress.append(f"Profiles: listed {len(results['profiles'])}; no retrieval")
             return
         research_words = [p for p in rules.research if p in low]
-        sight = sky.parse_sight(route.question)
-        sky_term = "sun sight" if sight is not None else sky.wants_sky(route.question, rules.sky)
-        if sight is not None:
-            results["sight"] = await self._sight(sight)
-            progress.append(_sight_progress(results["sight"]))
-        elif sky_term:
-            results["sky"] = await self._sky(route.question, sky_term)
-            if results["sky"].get("missing") and "clock" in polarize.named(
-                route.question, rules.polarize
-            ):
-                # A question about polarize-clock itself, with no place: its repo answers it.
-                del results["sky"]
-                progress.append("Sky key: not run (a question about polarize-clock, no place)")
-            else:
-                progress.append(_sky_progress(results["sky"]))
-        else:
-            hint = sky.mentions_sky(route.question, rules.sky)
-            if hint:
-                results["sky_hint"] = {"matched": hint}
-                progress.append(
-                    f"Sky key: not run ('{hint}' with no place or time; papers instead)"
-                )
         skip = await self._extension_steps(
             turn,
             route,
@@ -867,15 +837,10 @@ class Asker:
             results=results,
             stage="before_retrieval",
         )
-        # A sky request in quick mode is answered by polarize-clock; papers don't hold clock times.
-        context = (route.mode == "quick" and not sky_term and not skip) or bool(
-            spec["name"] or research_words
-        )
-        if route.mode == "quick" and sky_term and not context:
-            progress.append(
-                f"Retrieval: skipped (a {sky_term} request, answered by polarize-clock)"
-            )
-        if route.mode == "quick" and skip and not sky_term and not context:
+        # A step may ask for retrieval to be skipped in quick mode (a sky request: papers don't
+        # hold clock times).
+        context = (route.mode == "quick" and not skip) or bool(spec["name"] or research_words)
+        if route.mode == "quick" and skip and not context:
             progress.append(f"Retrieval: skipped ({skip[0]})")
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
@@ -938,8 +903,6 @@ class Asker:
                     f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
                 )
             progress.extend(turn.notes)
-        await self._mixer_step(route, rules, progress, results)
-        await self._polarize_step(route, rules, progress, results)
         await self._extension_steps(
             turn,
             route,
@@ -974,43 +937,6 @@ class Asker:
             if overlap:
                 results["coder"]["overlap"] = overlap
             progress.append("Coder: recruited (the assistant edits; the gateway gave context)")
-
-    async def _polarize_step(
-        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
-    ) -> None:
-        """The polarize tools step, on any route: each tool the request names is read from its
-        own repository at its newest tag; with polarize-holo named and audio asked for, one of
-        holo's renders runs and its WAV files come back (research_mcp/polarize.py)."""
-        tools = polarize.named(route.question, rules.polarize)
-        if not tools:
-            return
-        t = time.monotonic()
-        out: dict[str, Any] = {"read": []}
-        for tool in tools[:3]:
-            out["read"].append(
-                await polarize.read(
-                    tool, route.question, rules.polarize, self.call_tool, self.has_tool
-                )
-            )
-        if "holo" in tools and polarize.wants_audio(route.question, rules.polarize_audio):
-            listed = await asyncio.to_thread(polarize.renders)
-            row = polarize.choose(route.question, listed.get("renders", []))
-            if row is None:
-                out["renders"] = listed.get("renders", [])
-                if listed.get("error"):
-                    out["render_error"] = listed["error"]
-            else:
-                args: dict[str, Any] = {}
-                reading = (results.get("sky") or {}).get("reading")
-                if reading:  # polarize-clock's Sun azimuth for the place and time asked about
-                    args["SUN_AZ_DEG"] = reading["sun"]["az_deg"]
-                out["render"] = await asyncio.to_thread(polarize.render, row["slug"], "", args)
-        results["polarize"] = out
-        progress.append(
-            "Polarize tools: "
-            + "; ".join(polarize.summary(out))
-            + f" ({time.monotonic() - t:.1f} s)"
-        )
 
     async def _extension_steps(
         self,
@@ -1066,68 +992,6 @@ class Asker:
             progress.extend(out.progress or [f"{ext.prefix}: ran"])
             turn.ext_lines.append((out.found, out.next, out.for_you, out.relay))
         return skip
-
-    async def _mixer_step(
-        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
-    ) -> None:
-        """The sign-mixer step, on any route: when the request names mixing and two tones."""
-        low = route.question.lower()
-        hit = next((t for t in rules.mixer if _has(low, t)), None)
-        if hit is None or self.sign_mixer is None:
-            return
-        tones = mixer.parse_tones(route.question)
-        if tones is None:
-            progress.append(
-                f"Sign mixer: matched '{hit}', but no two tones (e.g. '120 Hz and 210 Hz') to run"
-            )
-            return
-        t = time.monotonic()
-        try:
-            out = await asyncio.to_thread(self.sign_mixer, tones)
-        except ValueError as exc:
-            progress.append(f"Sign mixer: not run ({exc})")
-            return
-        results["mixer"] = out
-        run = out.get("random_run", {})
-        progress.append(
-            f"Sign mixer: {tones['f1']:g} Hz + {tones['f2']:g} Hz, "
-            f"{out['prediction']['lines_total']} derived lines; "
-            f"random run {run.get('status', 'off')} "
-            f"in {time.monotonic() - t:.1f} s"
-        )
-
-    async def _sight(self, want: dict[str, Any]) -> dict[str, Any]:
-        """polarize-clock's places for the sun sight in the request, or what is missing to ask."""
-        base = {"asked": {k: v for k, v in want.items() if k != "missing"}}
-        if want["missing"]:
-            return {**base, "missing": want["missing"]}
-        args = {k: want[k] for k in ("alt", "az", "stick", "shadow", "bearing") if k in want}
-        try:
-            located = await asyncio.to_thread(lambda: sky.locate(want.get("t"), **args))
-        except (ValueError, KeyError, OSError) as exc:
-            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
-        return {**base, "located": located}
-
-    async def _sky(self, question: str, term: str) -> dict[str, Any]:
-        """polarize-clock's key and clock times for the place and time in the request, or what is
-        missing to ask for them."""
-        want = sky.parse(question)
-        base = {"matched": term, "asked": {k: v for k, v in want.items() if k != "missing"}}
-        if want["missing"]:
-            return {**base, "missing": want["missing"]}
-        try:
-            reading = await asyncio.to_thread(
-                lambda: sky.reading(
-                    want["lat"],
-                    want["lon"],
-                    want.get("t"),
-                    h=want.get("h", 0.0),
-                    heading=want.get("heading"),
-                )
-            )
-        except (ValueError, KeyError, OSError) as exc:
-            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
-        return {**base, "reading": reading}
 
     def _reply(
         self,
@@ -1249,10 +1113,7 @@ def relay(
         "search": "",
         "research": "",
         "coder": "",
-        "mixer": "",
     }
-    if results.get("mixer"):
-        blocks["mixer"] = _mixer_block(results["mixer"])
     found = results.get("evidence")
     if found is not None:
         if found.get("results"):
@@ -1309,7 +1170,6 @@ def relay(
         passages = replies.join(f"**Passages:** {blocks['passages_none']}", blocks["excluded"])
     return replies.join(
         "\n\n".join(p.plain() for p in problems),
-        _rules_block(results.get("project_rules")),
         f"**What the research tool did** ({seconds} s)\n" + "\n".join(f"- {p}" for p in progress),
         *(
             f"**{one['name']} guidance:** {one['guidance']}"
@@ -1322,78 +1182,12 @@ def relay(
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
         fresh_block,
-        _polarize_block(results.get("polarize")),
-        _sky_block(results.get("sky")),
-        _sight_block(results.get("sight")),
         *(row[3] for row in ext_lines if row[3]),
         blocks["research"],
         blocks["coder"],
-        blocks["mixer"],
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
-
-
-def _rules_block(held: dict[str, Any] | None) -> str:
-    """The project's binding rules, for the full relay: each rule's title, source and status."""
-    if not held:
-        return ""
-    if held.get("error"):
-        return f"**Project rules ({held['project']}):** {held['error']}"
-    lines = [f"**Project rules ({held['project']}, binding):** {held['binding']}"]
-    for rule in held["rules"]:
-        mark = " **(set aside for this request)**" if rule.get("set_aside") else ""
-        owner = f" (owner, {rule['owner']})" if rule.get("owner") else ""
-        lines.append(f"- {rule['title']}{owner}{mark}: `{rule['source']}`")
-    return "\n".join(lines)
-
-
-def _polarize_block(tools: dict[str, Any] | None) -> str:
-    """Each tool read (tag, commit, files) and any holo render, for the full relay."""
-    if not tools:
-        return ""
-    lines = ["**Polarize tools**"]
-    for row in tools.get("read", []):
-        at = f"{row['tag']} (commit {row['commit']})" if row.get("pinned") else "not pinned"
-        lines.append(
-            f"- {row['repository']} at {at}" + (f"; {row['note']}" if row.get("note") else "")
-        )
-        for name, f in row.get("files", {}).items():
-            lines.append(f"  - {name} via {f['via']}{' (truncated)' if f['truncated'] else ''}")
-        for hit in row.get("code", [])[:5]:
-            lines.append(f"  - code: {hit.get('path')} {hit.get('url') or ''}".rstrip())
-        for miss in row.get("not_read", []):
-            lines.append(f"  - not read: {miss}")
-    audio = tools.get("render")
-    if audio:
-        lines.append(
-            f"- holo render {audio.get('render')} ({audio.get('status')}): "
-            f"{audio.get('ref') or 'HEAD'}, commit {audio.get('commit')}, "
-            f"{audio.get('environment', '')}"
-        )
-        for w in audio.get("wavs", []):
-            fmt = ", ".join(
-                f"{w[k]}{u}"
-                for k, u in (
-                    ("sample_rate", " Hz"),
-                    ("bits", "-bit"),
-                    ("channels", " ch"),
-                    ("seconds", " s"),
-                )
-                if k in w
-            )
-            lines.append(f"  - {w['path']} ({fmt})")
-        if audio.get("pins"):
-            lines.append("  - pins: " + ", ".join(f"{k} {v}" for k, v in audio["pins"].items()))
-        if audio.get("note"):
-            lines.append(f"  - {audio['note']}")
-        if audio.get("error"):
-            lines.append(f"  - error: {str(audio['error'])[-300:]}")
-    elif tools.get("renders") is not None:
-        lines.append(
-            "- holo renders: " + (", ".join(r["slug"] for r in tools["renders"]) or "none")
-        )
-    return "\n".join(lines)
 
 
 def _fresh_block(fresh: dict[str, Any] | None) -> str:
@@ -1419,39 +1213,6 @@ def _profiles_block(rows: list[dict[str, str]] | None) -> str:
         "**Specialist profiles** (name one in a question to recruit it, up to three)\n"
         + "\n".join(f"- `{r['name']}` ({r['source']}): {r['for']}" for r in rows)
     )
-
-
-def _mixer_block(out: dict[str, Any]) -> str:
-    """The sign-mixer step's table: derived lines, then the random run's settle and checks."""
-    pred = out["prediction"]
-    rows = [
-        f"- {ln['f_hz']:g} Hz: {ln['amplitude']:.4f} ({', '.join(ln['terms'][:2])})"
-        for ln in pred["lines"][:8]
-    ]
-    text = [
-        "**Sign mixer** (DERIVED lines" + (", keyed" if pred["inputs"]["keyed"] else "") + ")",
-        *rows,
-        f"Capture: weak/strong {pred['capture']['weak_over_strong_in']:.3g} in, "
-        f"{pred['capture']['weak_over_strong_out']:.3g} out.",
-    ]
-    run = out.get("random_run")
-    if run and run.get("status") == "done":
-        st = run.get("settle") or {}
-        text.append(
-            f"Random run (SIMULATED, {run.get('key_source', 'physical key')}): keyed lines "
-            f"{'match' if run.get('lines_pass') else 'MISS'} the prediction; twins "
-            f"{'below' if run.get('twin_pass') else 'ABOVE'} their band"
-            + (
-                f"; settle K {st['K_settled']:.3f} (twin {st['twin_K_settled']:.3f}), "
-                f"λ {st['lyapunov']:+.4f}"
-                if st
-                else ""
-            )
-            + f". Run `{run.get('run')}`."
-        )
-    elif run:
-        text.append(f"Random run: {run.get('status')}. {run.get('note', '')}")
-    return "\n".join(text)
 
 
 def apply_relevance_floor(found: dict[str, Any]) -> dict[str, Any]:
@@ -1493,18 +1254,6 @@ def _short(
     nxt: list[str] = []
     you: list[str] = [p.ask_person() for p in problems]
     stopped = any(p.status == "needs_decision" for p in problems)
-    held = results.get("project_rules")
-    if held:
-        got.append(project_rules.summary(held) + ".")
-        nxt.append(
-            "The assistant follows every rule in `brief.project_rules`, stops and says which rule "
-            "when the request conflicts with one, and ends its reply with the rules it checked."
-        )
-        ex = held.get("exceptions") or {}
-        if ex.get("asked") and not ex.get("rules"):
-            you.append(
-                "Name the rule you want set aside for this request; until then every rule holds."
-            )
     if results.get("profiles") is not None:
         rows = results["profiles"]
         got.append(
@@ -1515,28 +1264,6 @@ def _short(
         you.append("Name a profile in your question to recruit it (up to three answer at once).")
     for name in spec.get("unknown") or []:
         got.append(f"No profile is named {name}; ask for the list of profiles.")
-    mix = results.get("mixer")
-    if mix:
-        top = mix["prediction"]["lines"][:3]
-        got.append(
-            "Sign mixer: strongest lines "
-            + ", ".join(f"{ln['f_hz']:g} Hz" for ln in top)
-            + " (derived; odd-order products only)."
-        )
-        run = mix.get("random_run", {})
-        if run.get("status") == "done":
-            st = run.get("settle") or {}
-            got.append(
-                "Random run with a physical key: checks "
-                + ("passed" if run.get("passed") else "FAILED")
-                + (
-                    f"; gain settled at K {st['K_settled']:.2f}, λ {st['lyapunov']:+.3f}."
-                    if st
-                    else "."
-                )
-            )
-        elif run:
-            got.append(f"Random run {run.get('status')}: only the derived lines came back.")
     found = results.get("evidence")
     if found is not None:
         rows = found.get("results", [])
@@ -1615,71 +1342,9 @@ def _short(
         nxt.append(
             "The assistant reads the files, then makes the change locally or as a pull request."
         )
-    sight = results.get("sight")
-    if sight is not None:
-        if sight.get("located"):
-            got.append(sky.sight_summary(sight["located"]))
-            nxt.append(
-                "The assistant shows the place(s) and their solar time from polarize-clock "
-                "(`relay_full` has every value), and computes none itself."
-            )
-        elif sight.get("missing"):
-            got.append("A sun sight was given, but not all of it.")
-            you.append("Give " + " and ".join(sight["missing"]) + ", and a UTC time if not now.")
-        else:
-            got.append(f"polarize-clock didn't answer: {first_sentence(sight.get('error', ''))}")
-            you.append(
-                f"Start the polarize-clock data server ({sky.base_url()}), "
-                "or set POLARIZE_CLOCK_URL."
-            )
-    sky_result = results.get("sky")
-    if sky_result is not None:
-        if sky_result.get("reading"):
-            got.append(sky.summary(sky_result["reading"]))
-            nxt.append(
-                "The assistant shows the key and clock times from polarize-clock (`relay_full` "
-                "has every value), and computes none itself."
-            )
-        elif sky_result.get("missing"):
-            got.append("A sky key was asked for, but the place isn't in decimal coordinates.")
-            you.append(
-                "Give the place as decimal latitude and longitude (for example 48.43, -123.37), "
-                "and a UTC time if not now."
-            )
-        else:
-            got.append(
-                f"polarize-clock didn't answer: {first_sentence(sky_result.get('error', ''))}"
-            )
-            you.append(
-                f"Start the polarize-clock data server ({sky.base_url()}), "
-                "or set POLARIZE_CLOCK_URL."
-            )
-    if results.get("sky_hint"):
-        you.append(
-            "For polarize-clock's key or clock times instead, give the place as decimal latitude "
-            'and longitude (for example 48.43, -123.37), or say "sky key".'
-        )
-    tools = results.get("polarize")
-    if tools is not None:
-        got.extend(polarize.summary(tools))
-        nxt.append(
-            "The assistant answers from the tools' own files (`relay_full` has them) and names "
-            "the tag and commit each was read at."
-        )
-        audio = tools.get("render") or {}
-        if audio.get("status") == "needs arguments" and "SUN_AZ_DEG" in audio.get("missing", []):
-            you.append(
-                "Give a place in decimal coordinates (and a UTC time if not now) so polarize-clock "
-                "can supply the Sun's azimuth."
-            )
-        elif "renders" in tools:
-            you.append("Name one of holo's renders (for example spiral or guitar pluck).")
     if spec.get("name") and route.mode != "research":
         names = [one["name"] for one in spec.get("specialists") or []] or [spec["name"]]
         got.append(f"Specialist{'s' if len(names) > 1 else ''}: {', '.join(names)}.")
-    sky_only = (
-        (sky_result is not None or sight is not None) and found is None and route.mode == "quick"
-    )
     for found_lines, next_lines, for_you_lines, _relay in ext_lines:
         got.extend(found_lines)
         nxt.extend(next_lines)
@@ -1687,8 +1352,6 @@ def _short(
     got.append(
         "Nothing was concluded."
         if stopped
-        else "polarize-clock's numbers are data from an exploratory tool, not a finding."
-        if sky_only
         else ext_limits
         if ext_limits and results.get("evidence") is None and route.mode == "quick"
         else "Nothing was retrieved."
@@ -1727,60 +1390,3 @@ def parse_tool_text(result: Any) -> dict[str, Any]:
     text = content[0].text if content else "{}"
     data = json.loads(text)
     return json.loads(data["result"]) if isinstance(data.get("result"), str) else data
-
-
-def _sky_progress(result: dict[str, Any]) -> str:
-    if result.get("reading"):
-        src = result["reading"]["source"]
-        return f"Sky key: from polarize-clock {src.get('version')} ({src.get('url')})"
-    if result.get("missing"):
-        return f"Sky key: not asked for; missing {', '.join(result['missing'])}"
-    return f"Sky key: polarize-clock failed ({result.get('error', '')[:120]})"
-
-
-def _sky_block(result: dict[str, Any] | None) -> str:
-    """The full reply's sky section: every value polarize-clock returned, as JSON."""
-    if not result:
-        return ""
-    if result.get("reading"):
-        return (
-            "**Sky key and clock times** (from polarize-clock; data, not a finding)\n```json\n"
-            + json.dumps(result["reading"], indent=1)
-            + "\n```"
-        )
-    if result.get("missing"):
-        return (
-            "**Sky key:** missing "
-            + ", ".join(result["missing"])
-            + ". Call `sky__key` with lat and lon in decimal degrees."
-        )
-    return f"**Sky key:** polarize-clock failed: {result.get('error', '')}"
-
-
-def _sight_progress(result: dict[str, Any]) -> str:
-    if result.get("located"):
-        n = len(result["located"].get("candidates", []))
-        url = result["located"]["source"]["url"]
-        return f"Sun sight: located by polarize-clock ({n} place(s); {url})"
-    if result.get("missing"):
-        return f"Sun sight: not asked for; missing {', '.join(result['missing'])}"
-    return f"Sun sight: polarize-clock failed ({result.get('error', '')[:120]})"
-
-
-def _sight_block(result: dict[str, Any] | None) -> str:
-    """The full reply's sun-sight section: every value polarize-clock returned, as JSON."""
-    if not result:
-        return ""
-    if result.get("located"):
-        return (
-            "**Sun sight** (located by polarize-clock; data, not a finding)\n```json\n"
-            + json.dumps(result["located"], indent=1)
-            + "\n```"
-        )
-    if result.get("missing"):
-        return (
-            "**Sun sight:** missing "
-            + ", ".join(result["missing"])
-            + ". Call `sky__locate` with alt and az, or stick, shadow and bearing."
-        )
-    return f"**Sun sight:** polarize-clock failed: {result.get('error', '')}"

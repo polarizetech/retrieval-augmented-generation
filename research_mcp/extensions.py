@@ -33,11 +33,8 @@ RESERVED_PREFIXES = frozenset(
         "web",
         "rag",
         "math",
-        "rules",
         "session",
         "hub",
-        "sky",
-        "polarize",
         "papers",
         "pipeline",
         "datasets",
@@ -48,9 +45,7 @@ RESERVED_PREFIXES = frozenset(
 )
 STAGES = ("early", "before_retrieval", "after")
 SHARED_PREFIXES = frozenset({"math"})
-CORE_SHARED_TOOLS = frozenset(
-    {"math__lookup", "math__bionumber", "math__sign_mix", "math__audio_mix", "math__physical_mix"}
-)
+CORE_SHARED_TOOLS = frozenset({"math__lookup", "math__bionumber"})
 CORE_BRIEF_KEYS = frozenset(
     {
         "coverage",
@@ -64,18 +59,12 @@ CORE_BRIEF_KEYS = frozenset(
         "next",
         "for_you",
         "limits",
-        "project_rules",
         "evidence",
         "search",
         "fresh",
         "profiles",
         "coder",
         "research",
-        "sky",
-        "sight",
-        "sky_hint",
-        "polarize",
-        "mixer",
         "extensions",
     }
 )
