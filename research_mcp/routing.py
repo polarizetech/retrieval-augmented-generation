@@ -14,8 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-MODES = ("quick", "research", "code")
+MODES = ("quick", "research", "code", "fetch")
 WORD = re.compile(r"[a-z0-9][a-z0-9'_-]*")
+# A DOI: 10. then 4 to 9 digits, a slash, and the suffix (the same shape calllog.py checks).
+DOI = re.compile(r"\b10\.\d{4,9}/\S+")
 QUESTION_STARTS = {
     "what", "why", "how", "is", "are", "does", "do", "did", "can", "could", "should", "would",
     "which", "when", "where", "who", "whose", "will", "was", "were", "has", "have",
@@ -24,6 +26,7 @@ SOFTENERS = {"just", "also", "quickly", "now", "then", "please"}
 EXTENSIONS = r"(?:py|ts|tsx|js|jsx|json|toml|md|yml|yaml|sh|css|html|swift|rs|go|sql|txt|cfg|ini)"
 FILE = re.compile(rf"^[\w./-]*\w\.{EXTENSIONS}$")
 SNAKE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+FETCH_VERBS = ("get", "fetch", "download", "index", "add")
 
 
 def _looks_like_code(token: str) -> bool:
@@ -54,15 +57,11 @@ class Rules:
     review: tuple[str, ...]
     request_leads: tuple[str, ...]
     research: tuple[str, ...]
+    fetch: tuple[str, ...] = ()
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    mixer: tuple[str, ...] = ()
-    sky: tuple[str, ...] = ()
     profiles_list: tuple[str, ...] = ()
-    # Tool key -> the words that name it (config [polarize_tools]); and the words asking for audio.
-    polarize: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    polarize_audio: tuple[str, ...] = ()
-    # Config [project_rules]: whose rules every reply carries (research_mcp/project_rules.py).
-    project_rules: dict[str, Any] = field(default_factory=dict)
+    # Config [extensions."<extension name>"]: extra trigger words for each extension's steps.
+    extensions: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -103,29 +102,25 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         review=tuple(words("code", "review")),
         request_leads=tuple(words("code", "request_leads")),
         research=tuple(words("research", "triggers")),
+        fetch=tuple(words("fetch", "triggers")),
         profiles=profiles,
-        mixer=tuple(words("mixer", "triggers")),
-        sky=tuple(words("sky", "triggers")),
         profiles_list=tuple(words("profiles_list", "triggers")),
-        polarize={
-            str(tool): tuple(words("polarize_tools", tool))
-            for tool in {**data.get("polarize_tools", {}), **extra.get("polarize_tools", {})}
-            if tool != "audio"
-        },
-        polarize_audio=tuple(words("polarize_tools", "audio")),
-        project_rules=_project_rules(data.get("project_rules", {}), extra.get("project_rules", {})),
+        extensions=_extension_words(data.get("extensions", {}), extra.get("extensions", {})),
     )
 
 
-def _project_rules(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
-    """Lists are added to (projects, files, exception words, shared profiles); nothing removed."""
-    out: dict[str, Any] = {}
-    for key in ("projects", "files", "exception_words"):
-        merged = [*base.get(key, []), *local.get(key, [])]
-        out[key] = list(
-            dict.fromkeys(str(v) if key != "exception_words" else str(v).lower() for v in merged)
-        )
-    out["shared"] = [*base.get("shared", []), *local.get("shared", [])]
+def _extension_words(
+    default: dict[str, Any], local: dict[str, Any]
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Each extension step's trigger words: the default file's, then the local file's, in order
+    and without repeats. Words are added to, never removed."""
+    out: dict[str, dict[str, tuple[str, ...]]] = {}
+    for source in (default, local):
+        for ext, steps in source.items():
+            row = out.setdefault(str(ext), {})
+            for step, words_ in steps.items():
+                merged = [*row.get(str(step), ()), *(str(w).lower() for w in words_)]
+                row[str(step)] = tuple(dict.fromkeys(merged))
     return out
 
 
@@ -173,6 +168,15 @@ def classify(question: str, rules: Rules, mode: str = "", repo: str = "") -> Rou
         if low.startswith(prefix):
             rest = text[len(prefix) :].strip()
             return Route(chosen, f"the request starts with '{prefix}'", rest, (prefix,))
+
+    fetching = [p for p in rules.fetch if _has(_prose(low), p)]
+    if fetching:
+        reason = f"it asks for a paper to be fetched and indexed ('{fetching[0]}')"
+        return Route("fetch", reason, text, tuple(fetching))
+    doi = DOI.search(low)
+    fetch_verbs = [v for v in FETCH_VERBS if _has(_prose(low), v)]
+    if doi and fetch_verbs:
+        return Route("fetch", "it names a DOI to fetch and index", text, (doi.group(0),))
 
     reviews = [p for p in rules.review if _has(low, p)]
     if reviews:

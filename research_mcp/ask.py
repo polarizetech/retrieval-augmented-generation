@@ -10,18 +10,23 @@ from memory, and any chat model can carry the work on.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import brief, mixer, polarize, project_rules, sky
+from research_mcp import brief, extensions
+from research_mcp.extensions import Context, Extension, StepInput, StepSpec
 from research_mcp.hub.contract import (
+    AUTONOMY,
     CHOICES,
     COMPONENTS,
+    MUST_ASK,
     NO_FALLBACK,
     RESTART_HINT,
     Problem,
@@ -30,6 +35,7 @@ from research_mcp.hub.contract import (
 )
 from research_mcp.hub.health import Hub
 from research_mcp.routing import (
+    DOI,
     Route,
     Rules,
     _has,
@@ -66,6 +72,11 @@ FRESH_PAPERS = 8
 FRESH_WEB = 6
 # SearXNG answers in a second or two; a search past this is dropped and named.
 FRESH_SECONDS = 20.0
+# A fetch by title: the top hit is indexed, the other hits of this search are offered.
+FETCH_HITS = 3
+PMID = re.compile(r"\bpmid:\s*(\d+)", re.IGNORECASE)
+FETCH_TRAILING = ".,;:)]}'\""
+INDEXED = ("indexed", "already_indexed")
 
 Retrieve = Callable[[str, int, int], Awaitable[dict[str, Any]]]
 # Retrieval with one part of the library's ranking off ("reranker" or "embeddings").
@@ -92,6 +103,24 @@ class Turn:
     problems: list[Problem] = field(default_factory=list)
     rid: str = ""
     notes: list[str] = field(default_factory=list)
+    ext_lines: list[tuple[list[str], list[str], list[str], str]] = field(default_factory=list)
+    ext_limits: str = ""
+    brief_notes: dict[str, str] = field(default_factory=dict)
+    autonomy: str = "strict"
+
+
+def paper_identifiers(text: str) -> list[str]:
+    """The DOIs and PMIDs (pmid:...) a request names, in order, without repeats."""
+    dois = [m.group(0).rstrip(FETCH_TRAILING) for m in DOI.finditer(text)]
+    pmids = [f"pmid:{m.group(1)}" for m in PMID.finditer(text)]
+    return list(dict.fromkeys([*dois, *pmids]))
+
+
+def _without_phrases(text: str, phrases: Sequence[str]) -> str:
+    """`text` with each trigger phrase taken out, whole words only, and its spaces tidied."""
+    for phrase in phrases:
+        text = re.sub(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", " ", text, flags=re.I)
+    return " ".join(text.split())
 
 
 def _pipeline_full(error: str) -> bool:
@@ -131,8 +160,12 @@ class Asker:
         web: WebSearch | None = None,
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
-        sign_mixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        steps: Sequence[tuple[Extension, StepSpec, Context]] = (),
+        default_autonomy: str = "delegate",
     ):
+        if default_autonomy not in AUTONOMY:
+            raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY)}")
+        self.default_autonomy = default_autonomy
         self.retrieve = retrieve
         self.call_tool = call_tool
         self.has_tool = has_tool
@@ -144,7 +177,7 @@ class Asker:
         self.web = web
         self.plain_retrieve = plain_retrieve
         self.can_switch = can_switch
-        self.sign_mixer = sign_mixer
+        self.steps = tuple(steps)
         # Requests still working after their reply's deadline: held so they finish.
         self._tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
@@ -224,6 +257,9 @@ class Asker:
                 )
             )
         choice = turn.decisions.get(component)
+        if choice is None and turn.autonomy == "delegate" and component not in MUST_ASK:
+            # delegate: take the labelled fallback, unless the component must ask
+            choice = "fallback"
         if choice is None:
             raise Halt(needs_decision(component, what_failed, retry))
         if choice == "stop":
@@ -530,6 +566,86 @@ class Asker:
             )
         return run
 
+    # -- a paper into the index, without the pipeline --------------------------------------------
+    async def _index(self, identifiers: list[str]) -> list[dict[str, Any]]:
+        """rag__index_paper on these identifiers: one result row each, saying what happened."""
+        try:
+            out = await self.call_tool("rag__index_paper", {"identifiers": identifiers})
+        except Exception as exc:  # a dead upstream surfaces as many types
+            raise Halt(
+                Problem(
+                    "failed",
+                    "library",
+                    f"The paper library did not index the paper: {type(exc).__name__}.",
+                    recommendation=f"check `hub__status`; the library may need a restart: "
+                    f"`{RESTART_HINT}`",
+                )
+            ) from exc
+        return list(out.get("results") or [])
+
+    async def _find_title(self, query: str) -> list[dict[str, Any]]:
+        """The top hits of a title search in the paper library (at most FETCH_HITS)."""
+        try:
+            found = await self.call_tool("papers__search", {"query": query, "limit": FETCH_HITS})
+        except Exception as exc:  # a dead upstream surfaces as many types
+            raise Halt(
+                Problem(
+                    "failed",
+                    "library",
+                    f"The paper search did not answer: {type(exc).__name__}.",
+                )
+            ) from exc
+        # An upstream tool replies with its envelope; the hits are in its `data`.
+        return list((found.get("data") or {}).get("hits") or [])[:FETCH_HITS]
+
+    async def _fetch(
+        self, route: Route, *, rules: Rules, progress: list[str], results: dict[str, Any]
+    ) -> None:
+        """Get papers into the passage index without the research pipeline: the DOIs and PMIDs the
+        request names, or else the top hit of a title search (the other hits are offered)."""
+        ids = paper_identifiers(route.question)
+        alternatives: list[dict[str, Any]] | None = None
+        if ids:
+            papers = [
+                {
+                    "title": r.get("title"),
+                    "doi": r.get("doi") or r.get("identifier"),
+                    "index": r,
+                }
+                for r in await self._index(ids)
+            ]
+        else:
+            query = _without_phrases(route.question, rules.fetch)
+            hits = await self._find_title(query) if query else []
+            if not hits:
+                results["fetch"] = {"papers": [], "note": "No paper was named or matched."}
+                progress.append("Fetch: no DOI, PMID or matching title, so nothing was indexed")
+                return
+            top = hits[0]
+            top_ids = top.get("ids") or {}
+            key = top_ids.get("doi") or top_ids.get("openalex")  # the work id, without a DOI
+            rows = await self._index([key]) if key else []
+            papers = [
+                {
+                    "title": top.get("title"),
+                    "doi": top_ids.get("doi"),
+                    "index": rows[0] if rows else {"status": "no DOI or work id to index"},
+                }
+            ]
+            alternatives = [
+                {"title": h.get("title"), "doi": (h.get("ids") or {}).get("doi")} for h in hits[1:]
+            ]
+        fetch: dict[str, Any] = {"papers": papers}
+        if alternatives is not None:
+            fetch["alternatives"] = alternatives
+            fetch["alternatives_note"] = "if this isn't the paper you meant"
+        results["fetch"] = fetch
+        done = sum(p["index"].get("status") in INDEXED for p in papers)
+        progress.append(
+            f"Fetch: indexed {done} of {len(papers)} paper(s) with rag__index_paper; "
+            "no pipeline run"
+        )
+
     def _overlap(self, turn: Turn, repo: str, touches: list[str]) -> str:
         """Recent code work on the same repository from another session (decided: worktrees)."""
         if self.hub is None or not repo:
@@ -560,6 +676,7 @@ class Asker:
         project: str = "",
         decisions: dict[str, str] | None = None,
         caller: dict[str, str] | None = None,
+        autonomy: str = "",
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -570,12 +687,16 @@ class Asker:
                 raise ValueError(f"decisions: unknown component {component!r}")
             if choice not in CHOICES:
                 raise ValueError(f"decisions: choice must be one of {', '.join(CHOICES)}")
+        if autonomy and autonomy not in AUTONOMY:
+            raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY)}")
         started = time.monotonic()
         rules = self.rules()
         route = classify(question, rules, mode, repo)
         spec = self.specialist(route.question, rules)
+        if route.mode == "fetch":  # a fetch names no specialist
+            spec = {**spec, "name": None, "specialists": [], "guidance": ""}
         sid = session.strip() or caller.get("session", "") or "unknown"
-        turn = Turn(sid, {})
+        turn = Turn(sid, {}, autonomy=autonomy or self.default_autonomy)
         rid = uuid.uuid4().hex[:12]
         touches = [t.strip("`'\"(),:;!?") for t in question.split() if _looks_like_code(t)]
         if self.hub is not None:
@@ -600,18 +721,23 @@ class Asker:
         progress = [f"Route: {route.mode} ({route.reason})"]
         progress.append(_specialist_line(spec))
         results: dict[str, Any] = {}
-        # The rules of the project the request comes from go with every reply, first.
+        # The project the request comes from, for the early extension steps (project rules).
         where = (
             project.strip()
             or (repo.rsplit("/", maxsplit=1)[-1] if repo else "")
             or caller.get("project", "")
         )
-        held = await asyncio.to_thread(
-            project_rules.load, where, route.question, rules.project_rules
+        await self._extension_steps(
+            turn,
+            route,
+            rules=rules,
+            project=where,
+            repo=repo,
+            progress=progress,
+            results=results,
+            stage="early",
         )
-        if held is not None:
-            results["project_rules"] = held
-            progress.append(project_rules.summary(held))
+        early = copy.deepcopy(results)
         turn.rid = rid
         work = self._work(
             turn,
@@ -619,6 +745,7 @@ class Asker:
             spec=spec,
             rules=rules,
             repo=repo,
+            project=where,
             strictness=strictness,
             touches=touches,
             progress=progress,
@@ -636,8 +763,10 @@ class Asker:
         if task in done:
             return task.result()
         pending = self._pending(rid, route, spec=spec, progress=progress, started=started)
-        if held is not None:
-            pending["results"] = {"project_rules": held}
+        if early:
+            pending["results"] = early
+        if turn.brief_notes:
+            pending["brief_notes"] = dict(turn.brief_notes)
         return pending
 
     def _settled(self, rid: str) -> Callable[[asyncio.Task[dict[str, Any]]], None]:
@@ -742,6 +871,7 @@ class Asker:
         spec: dict[str, Any],
         rules: Rules,
         repo: str,
+        project: str,
         strictness: str,
         touches: list[str],
         progress: list[str],
@@ -756,6 +886,7 @@ class Asker:
                 spec=spec,
                 rules=rules,
                 repo=repo,
+                project=project,
                 strictness=strictness,
                 touches=touches,
                 progress=progress,
@@ -772,6 +903,10 @@ class Asker:
                 results=results,
                 seconds=seconds,
                 problems=problems,
+                ext_lines=turn.ext_lines,
+                ext_limits=turn.ext_limits,
+                brief_notes=turn.brief_notes,
+                autonomy=turn.autonomy,
             )
         seconds = round(time.monotonic() - started, 1)
         return self._reply(
@@ -782,6 +917,10 @@ class Asker:
             results=results,
             seconds=seconds,
             problems=turn.problems,
+            ext_lines=turn.ext_lines,
+            ext_limits=turn.ext_limits,
+            brief_notes=turn.brief_notes,
+            autonomy=turn.autonomy,
         )
 
     async def _run(
@@ -792,11 +931,15 @@ class Asker:
         spec: dict[str, Any],
         rules: Rules,
         repo: str,
+        project: str,
         strictness: str,
         touches: list[str],
         progress: list[str],
         results: dict[str, Any],
     ) -> None:
+        if route.mode == "fetch":  # no pipeline, no passages, no fresh search: just the index
+            await self._fetch(route, rules=rules, progress=progress, results=results)
+            return
         # A code task gets passages only when it has research content: the library holds papers,
         # not code, so "fix the failing test" would get unrelated passages and cost seconds.
         low = route.question.lower()
@@ -805,34 +948,21 @@ class Asker:
             progress.append(f"Profiles: listed {len(results['profiles'])}; no retrieval")
             return
         research_words = [p for p in rules.research if p in low]
-        sight = sky.parse_sight(route.question)
-        sky_term = "sun sight" if sight is not None else sky.wants_sky(route.question, rules.sky)
-        if sight is not None:
-            results["sight"] = await self._sight(sight)
-            progress.append(_sight_progress(results["sight"]))
-        elif sky_term:
-            results["sky"] = await self._sky(route.question, sky_term)
-            if results["sky"].get("missing") and "clock" in polarize.named(
-                route.question, rules.polarize
-            ):
-                # A question about polarize-clock itself, with no place: its repo answers it.
-                del results["sky"]
-                progress.append("Sky key: not run (a question about polarize-clock, no place)")
-            else:
-                progress.append(_sky_progress(results["sky"]))
-        else:
-            hint = sky.mentions_sky(route.question, rules.sky)
-            if hint:
-                results["sky_hint"] = {"matched": hint}
-                progress.append(
-                    f"Sky key: not run ('{hint}' with no place or time; papers instead)"
-                )
-        # A sky request in quick mode is answered by polarize-clock; papers don't hold clock times.
-        context = (route.mode == "quick" and not sky_term) or bool(spec["name"] or research_words)
-        if route.mode == "quick" and sky_term and not context:
-            progress.append(
-                f"Retrieval: skipped (a {sky_term} request, answered by polarize-clock)"
-            )
+        skip = await self._extension_steps(
+            turn,
+            route,
+            rules=rules,
+            project=project,
+            repo=repo,
+            progress=progress,
+            results=results,
+            stage="before_retrieval",
+        )
+        # A step may ask for retrieval to be skipped in quick mode (a sky request: papers don't
+        # hold clock times).
+        context = (route.mode == "quick" and not skip) or bool(spec["name"] or research_words)
+        if route.mode == "quick" and skip and not context:
+            progress.append(f"Retrieval: skipped ({skip[0]})")
         if route.mode == "code" and not context:
             progress.append("Retrieval: skipped (no research content in this code task)")
         if route.mode in ("quick", "code") and context:
@@ -894,8 +1024,16 @@ class Asker:
                     f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
                 )
             progress.extend(turn.notes)
-        await self._mixer_step(route, rules, progress, results)
-        await self._polarize_step(route, rules, progress, results)
+        await self._extension_steps(
+            turn,
+            route,
+            rules=rules,
+            project=project,
+            repo=repo,
+            progress=progress,
+            results=results,
+            stage="after",
+        )
         if route.mode == "code":
             note = (
                 "The gateway does not make code changes itself yet. The assistant makes the "
@@ -921,104 +1059,60 @@ class Asker:
                 results["coder"]["overlap"] = overlap
             progress.append("Coder: recruited (the assistant edits; the gateway gave context)")
 
-    async def _polarize_step(
-        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
-    ) -> None:
-        """The polarize tools step, on any route: each tool the request names is read from its
-        own repository at its newest tag; with polarize-holo named and audio asked for, one of
-        holo's renders runs and its WAV files come back (research_mcp/polarize.py)."""
-        tools = polarize.named(route.question, rules.polarize)
-        if not tools:
-            return
-        t = time.monotonic()
-        out: dict[str, Any] = {"read": []}
-        for tool in tools[:3]:
-            out["read"].append(
-                await polarize.read(
-                    tool, route.question, rules.polarize, self.call_tool, self.has_tool
-                )
+    async def _extension_steps(
+        self,
+        turn: Turn,
+        route: Route,
+        *,
+        rules: Rules,
+        project: str,
+        repo: str,
+        progress: list[str],
+        results: dict[str, Any],
+        stage: str,
+    ) -> list[str]:
+        """The extension steps, on any route: each step whose trigger words the request names runs
+        on a copy of the results so far. Its result goes under its own key and its lines join the
+        reply; a step that fails is named, and nothing else in the reply changes
+        (research_mcp/extensions.py). Only steps of the given stage run; the reasons the
+        before_retrieval steps give for skipping retrieval are returned."""
+        skip: list[str] = []
+        for ext, step, ctx in self.steps:
+            if step.stage != stage:
+                continue
+            words = rules.extensions.get(ext.name, {}).get(step.name, ())
+            if not extensions.matches(step, route.question, words):
+                continue
+            step_input = StepInput(
+                question=route.question,
+                mode=route.mode,
+                project=project,
+                repo=repo,
+                results=copy.deepcopy(results),
+                context=ctx,
             )
-        if "holo" in tools and polarize.wants_audio(route.question, rules.polarize_audio):
-            listed = await asyncio.to_thread(polarize.renders)
-            row = polarize.choose(route.question, listed.get("renders", []))
-            if row is None:
-                out["renders"] = listed.get("renders", [])
-                if listed.get("error"):
-                    out["render_error"] = listed["error"]
-            else:
-                args: dict[str, Any] = {}
-                reading = (results.get("sky") or {}).get("reading")
-                if reading:  # polarize-clock's Sun azimuth for the place and time asked about
-                    args["SUN_AZ_DEG"] = reading["sun"]["az_deg"]
-                out["render"] = await asyncio.to_thread(polarize.render, row["slug"], "", args)
-        results["polarize"] = out
-        progress.append(
-            "Polarize tools: "
-            + "; ".join(polarize.summary(out))
-            + f" ({time.monotonic() - t:.1f} s)"
-        )
-
-    async def _mixer_step(
-        self, route: Route, rules: Rules, progress: list[str], results: dict[str, Any]
-    ) -> None:
-        """The sign-mixer step, on any route: when the request names mixing and two tones."""
-        low = route.question.lower()
-        hit = next((t for t in rules.mixer if _has(low, t)), None)
-        if hit is None or self.sign_mixer is None:
-            return
-        tones = mixer.parse_tones(route.question)
-        if tones is None:
-            progress.append(
-                f"Sign mixer: matched '{hit}', but no two tones (e.g. '120 Hz and 210 Hz') to run"
-            )
-            return
-        t = time.monotonic()
-        try:
-            out = await asyncio.to_thread(self.sign_mixer, tones)
-        except ValueError as exc:
-            progress.append(f"Sign mixer: not run ({exc})")
-            return
-        results["mixer"] = out
-        run = out.get("random_run", {})
-        progress.append(
-            f"Sign mixer: {tones['f1']:g} Hz + {tones['f2']:g} Hz, "
-            f"{out['prediction']['lines_total']} derived lines; "
-            f"random run {run.get('status', 'off')} "
-            f"in {time.monotonic() - t:.1f} s"
-        )
-
-    async def _sight(self, want: dict[str, Any]) -> dict[str, Any]:
-        """polarize-clock's places for the sun sight in the request, or what is missing to ask."""
-        base = {"asked": {k: v for k, v in want.items() if k != "missing"}}
-        if want["missing"]:
-            return {**base, "missing": want["missing"]}
-        args = {k: want[k] for k in ("alt", "az", "stick", "shadow", "bearing") if k in want}
-        try:
-            located = await asyncio.to_thread(lambda: sky.locate(want.get("t"), **args))
-        except (ValueError, KeyError, OSError) as exc:
-            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
-        return {**base, "located": located}
-
-    async def _sky(self, question: str, term: str) -> dict[str, Any]:
-        """polarize-clock's key and clock times for the place and time in the request, or what is
-        missing to ask for them."""
-        want = sky.parse(question)
-        base = {"matched": term, "asked": {k: v for k, v in want.items() if k != "missing"}}
-        if want["missing"]:
-            return {**base, "missing": want["missing"]}
-        try:
-            reading = await asyncio.to_thread(
-                lambda: sky.reading(
-                    want["lat"],
-                    want["lon"],
-                    want.get("t"),
-                    h=want.get("h", 0.0),
-                    heading=want.get("heading"),
-                )
-            )
-        except (ValueError, KeyError, OSError) as exc:
-            return {**base, "error": f"{type(exc).__name__}: {exc}"[:400]}
-        return {**base, "reading": reading}
+            try:
+                out = await step.run(step_input)
+            except Exception as exc:  # noqa: BLE001 - one step's failure must not fail the ask
+                failure = f"{type(exc).__name__}: {exc}"
+                results.setdefault("extensions", {}).setdefault(ext.name, {})[step.name] = {
+                    "error": failure
+                }
+                progress.append(f"{ext.prefix}/{step.name}: failed ({failure})")
+                continue
+            if out is None:
+                continue
+            results.setdefault("extensions", {}).setdefault(ext.name, {})[step.name] = out.result
+            if ext.brief_key and out.brief is not None:
+                results[ext.brief_key] = out.brief
+                turn.brief_notes[ext.brief_key] = ext.brief_note
+            if out.limits and not turn.ext_limits:
+                turn.ext_limits = out.limits
+            if out.skip_retrieval:
+                skip.append(out.skip_retrieval)
+            progress.extend(out.progress or [f"{ext.prefix}: ran"])
+            turn.ext_lines.append((out.found, out.next, out.for_you, out.relay))
+        return skip
 
     def _reply(
         self,
@@ -1030,22 +1124,31 @@ class Asker:
         results: dict[str, Any],
         seconds: float,
         problems: list[Problem],
+        ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
+        ext_limits: str = "",
+        brief_notes: dict[str, str] | None = None,
+        autonomy: str = "",
     ) -> dict[str, Any]:
         worst = next((p for p in problems if p.status != "degraded"), None)
         status = worst.status if worst else ("degraded" if problems else "done")
         if status == "done" and "research" in results:
             status = "working"
         usage = self.hub.meters.line() if self.hub is not None else ""
-        got, nxt, you = _short(route, spec, results, problems, rid)
+        got, nxt, you = _short(
+            route, spec, results, problems, rid, ext_lines=ext_lines, ext_limits=ext_limits,
+            autonomy=autonomy,
+        )  # fmt: skip
         text, full = (
             relay(
                 route, spec, progress, results, seconds, problems=problems, usage=usage,
-                request_id=rid, full=f,
+                request_id=rid, full=f, ext_lines=ext_lines, ext_limits=ext_limits,
+                autonomy=autonomy,
             )
             for f in (False, True)
         )  # fmt: skip
         out: dict[str, Any] = {
             "request_id": rid or None,
+            "autonomy": autonomy,
             "status": status,
             "route": route.as_dict(),
             "specialist": spec,
@@ -1064,6 +1167,8 @@ class Asker:
                 "from memory."
             ),
         }
+        if brief_notes:
+            out["brief_notes"] = dict(brief_notes)
         if worst is not None:
             out["error"] = worst.as_dict()
         if problems:
@@ -1114,12 +1219,20 @@ def relay(
     usage: str = "",
     request_id: str = "",
     full: bool = False,
+    ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
+    ext_limits: str = "",
+    autonomy: str = "",
 ) -> str:
     """The block the chat model shows unchanged. Short (the default): three lists from
     `_short`. Full: problems first, then what ran, what came back, and its limits; last, the
     request id and usage."""
     if not full:
-        return replies.short(*_short(route, spec, results, problems, request_id))
+        return replies.short(
+            *_short(
+                route, spec, results, problems, request_id,
+                ext_lines=ext_lines, ext_limits=ext_limits, autonomy=autonomy,
+            )
+        )  # fmt: skip
     blocks: dict[str, str] = {
         "passages": "",
         "passages_none": "",
@@ -1127,10 +1240,7 @@ def relay(
         "search": "",
         "research": "",
         "coder": "",
-        "mixer": "",
     }
-    if results.get("mixer"):
-        blocks["mixer"] = _mixer_block(results["mixer"])
     found = results.get("evidence")
     if found is not None:
         if found.get("results"):
@@ -1173,6 +1283,7 @@ def relay(
         "they answer the question. Start the request with `research:` for a checked answer.",
         "research": "The answer arrives when the run is done; until then nothing is concluded.",
         "code": "Any passages are context only; the change itself is not made or tested yet.",
+        "fetch": "The papers are indexed, not read: nothing is answered from them yet.",
     }[route.mode]
     if any(p.status == "needs_decision" for p in problems):
         limits = "Nothing was concluded: the request stopped to ask how to handle a failure."
@@ -1187,7 +1298,6 @@ def relay(
         passages = replies.join(f"**Passages:** {blocks['passages_none']}", blocks["excluded"])
     return replies.join(
         "\n\n".join(p.plain() for p in problems),
-        _rules_block(results.get("project_rules")),
         f"**What the research tool did** ({seconds} s)\n" + "\n".join(f"- {p}" for p in progress),
         *(
             f"**{one['name']} guidance:** {one['guidance']}"
@@ -1200,77 +1310,12 @@ def relay(
         and "**Scholarly search results** (titles only: no verbatim passages, not citable)\n"
         + blocks["search"],
         fresh_block,
-        _polarize_block(results.get("polarize")),
-        _sky_block(results.get("sky")),
-        _sight_block(results.get("sight")),
+        *(row[3] for row in ext_lines if row[3]),
         blocks["research"],
         blocks["coder"],
-        blocks["mixer"],
         f"**Limits:** {limits}",
         footer and f"_{footer}_",
     )
-
-
-def _rules_block(held: dict[str, Any] | None) -> str:
-    """The project's binding rules, for the full relay: each rule's title, source and status."""
-    if not held:
-        return ""
-    if held.get("error"):
-        return f"**Project rules ({held['project']}):** {held['error']}"
-    lines = [f"**Project rules ({held['project']}, binding):** {held['binding']}"]
-    for rule in held["rules"]:
-        mark = " **(set aside for this request)**" if rule.get("set_aside") else ""
-        owner = f" (owner, {rule['owner']})" if rule.get("owner") else ""
-        lines.append(f"- {rule['title']}{owner}{mark}: `{rule['source']}`")
-    return "\n".join(lines)
-
-
-def _polarize_block(tools: dict[str, Any] | None) -> str:
-    """Each tool read (tag, commit, files) and any holo render, for the full relay."""
-    if not tools:
-        return ""
-    lines = ["**Polarize tools**"]
-    for row in tools.get("read", []):
-        at = f"{row['tag']} (commit {row['commit']})" if row.get("pinned") else "not pinned"
-        lines.append(
-            f"- {row['repository']} at {at}" + (f"; {row['note']}" if row.get("note") else "")
-        )
-        for name, f in row.get("files", {}).items():
-            lines.append(f"  - {name} via {f['via']}{' (truncated)' if f['truncated'] else ''}")
-        for hit in row.get("code", [])[:5]:
-            lines.append(f"  - code: {hit.get('path')} {hit.get('url') or ''}".rstrip())
-        for miss in row.get("not_read", []):
-            lines.append(f"  - not read: {miss}")
-    audio = tools.get("render")
-    if audio:
-        lines.append(
-            f"- holo render {audio.get('render')} ({audio.get('status')}): "
-            f"{audio.get('ref') or 'HEAD'}, commit {audio.get('commit')}, "
-            f"{audio.get('environment', '')}"
-        )
-        for w in audio.get("wavs", []):
-            fmt = ", ".join(
-                f"{w[k]}{u}"
-                for k, u in (
-                    ("sample_rate", " Hz"),
-                    ("bits", "-bit"),
-                    ("channels", " ch"),
-                    ("seconds", " s"),
-                )
-                if k in w
-            )
-            lines.append(f"  - {w['path']} ({fmt})")
-        if audio.get("pins"):
-            lines.append("  - pins: " + ", ".join(f"{k} {v}" for k, v in audio["pins"].items()))
-        if audio.get("note"):
-            lines.append(f"  - {audio['note']}")
-        if audio.get("error"):
-            lines.append(f"  - error: {str(audio['error'])[-300:]}")
-    elif tools.get("renders") is not None:
-        lines.append(
-            "- holo renders: " + (", ".join(r["slug"] for r in tools["renders"]) or "none")
-        )
-    return "\n".join(lines)
 
 
 def _fresh_block(fresh: dict[str, Any] | None) -> str:
@@ -1296,39 +1341,6 @@ def _profiles_block(rows: list[dict[str, str]] | None) -> str:
         "**Specialist profiles** (name one in a question to recruit it, up to three)\n"
         + "\n".join(f"- `{r['name']}` ({r['source']}): {r['for']}" for r in rows)
     )
-
-
-def _mixer_block(out: dict[str, Any]) -> str:
-    """The sign-mixer step's table: derived lines, then the random run's settle and checks."""
-    pred = out["prediction"]
-    rows = [
-        f"- {ln['f_hz']:g} Hz: {ln['amplitude']:.4f} ({', '.join(ln['terms'][:2])})"
-        for ln in pred["lines"][:8]
-    ]
-    text = [
-        "**Sign mixer** (DERIVED lines" + (", keyed" if pred["inputs"]["keyed"] else "") + ")",
-        *rows,
-        f"Capture: weak/strong {pred['capture']['weak_over_strong_in']:.3g} in, "
-        f"{pred['capture']['weak_over_strong_out']:.3g} out.",
-    ]
-    run = out.get("random_run")
-    if run and run.get("status") == "done":
-        st = run.get("settle") or {}
-        text.append(
-            f"Random run (SIMULATED, {run.get('key_source', 'physical key')}): keyed lines "
-            f"{'match' if run.get('lines_pass') else 'MISS'} the prediction; twins "
-            f"{'below' if run.get('twin_pass') else 'ABOVE'} their band"
-            + (
-                f"; settle K {st['K_settled']:.3f} (twin {st['twin_K_settled']:.3f}), "
-                f"λ {st['lyapunov']:+.4f}"
-                if st
-                else ""
-            )
-            + f". Run `{run.get('run')}`."
-        )
-    elif run:
-        text.append(f"Random run: {run.get('status')}. {run.get('note', '')}")
-    return "\n".join(text)
 
 
 def apply_relevance_floor(found: dict[str, Any]) -> dict[str, Any]:
@@ -1360,6 +1372,10 @@ def _short(
     results: dict[str, Any],
     problems: list[Problem] | tuple[Problem, ...],
     request_id: str,
+    *,
+    ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
+    ext_limits: str = "",
+    autonomy: str = "",
 ) -> tuple[list[str], list[str], list[str]]:
     """The short reply's three lists, one sentence per item: what came back, what the assistant
     does next, and what the person needs to do (often nothing)."""
@@ -1367,18 +1383,6 @@ def _short(
     nxt: list[str] = []
     you: list[str] = [p.ask_person() for p in problems]
     stopped = any(p.status == "needs_decision" for p in problems)
-    held = results.get("project_rules")
-    if held:
-        got.append(project_rules.summary(held) + ".")
-        nxt.append(
-            "The assistant follows every rule in `brief.project_rules`, stops and says which rule "
-            "when the request conflicts with one, and ends its reply with the rules it checked."
-        )
-        ex = held.get("exceptions") or {}
-        if ex.get("asked") and not ex.get("rules"):
-            you.append(
-                "Name the rule you want set aside for this request; until then every rule holds."
-            )
     if results.get("profiles") is not None:
         rows = results["profiles"]
         got.append(
@@ -1389,28 +1393,6 @@ def _short(
         you.append("Name a profile in your question to recruit it (up to three answer at once).")
     for name in spec.get("unknown") or []:
         got.append(f"No profile is named {name}; ask for the list of profiles.")
-    mix = results.get("mixer")
-    if mix:
-        top = mix["prediction"]["lines"][:3]
-        got.append(
-            "Sign mixer: strongest lines "
-            + ", ".join(f"{ln['f_hz']:g} Hz" for ln in top)
-            + " (derived; odd-order products only)."
-        )
-        run = mix.get("random_run", {})
-        if run.get("status") == "done":
-            st = run.get("settle") or {}
-            got.append(
-                "Random run with a physical key: checks "
-                + ("passed" if run.get("passed") else "FAILED")
-                + (
-                    f"; gain settled at K {st['K_settled']:.2f}, λ {st['lyapunov']:+.3f}."
-                    if st
-                    else "."
-                )
-            )
-        elif run:
-            got.append(f"Random run {run.get('status')}: only the derived lines came back.")
     found = results.get("evidence")
     if found is not None:
         rows = found.get("results", [])
@@ -1447,6 +1429,24 @@ def _short(
             f"Found {len(hits.get('results', []))} paper title(s) in the scholarly indexes, "
             "which can't be cited."
         )
+    fetched = results.get("fetch")
+    if fetched is not None:
+        papers = fetched.get("papers", [])
+        indexed = [p for p in papers if p["index"].get("status") in INDEXED]
+        missed = [p for p in papers if p["index"].get("status") not in INDEXED]
+        if indexed:
+            titles = "; ".join(str(p.get("title") or "(untitled)") for p in indexed)
+            got.append(f"Indexed {len(indexed)} paper(s) for retrieval: {titles}.")
+            nxt.append("The assistant asks its question again to answer from the indexed passages.")
+        if missed:
+            names = "; ".join(
+                f"{p.get('title') or p.get('doi') or '(no id)'}: "
+                f"{p['index'].get('status') or 'no result'}"
+                for p in missed
+            )
+            got.append(f"Not indexed: {names}.")
+        if not papers:
+            got.append("No paper was named or matched, so nothing was indexed.")
     fresh = results.get("fresh")
     if fresh is not None:
         n_papers, n_web = len(fresh.get("papers", [])), len(fresh.get("web", []))
@@ -1458,7 +1458,10 @@ def _short(
             level = (brief.coverage(found) or {}).get("level") if found is not None else "none"
             if level in ("partial", "weak", "none"):
                 nxt.append(
-                    "The assistant points to the closest fresh leads, with their links, and "
+                    "The assistant fetches and indexes the closest fresh leads, then retrieves "
+                    "again."
+                    if autonomy == "delegate"
+                    else "The assistant points to the closest fresh leads, with their links, and "
                     "suggests `research:` to fetch and read them."
                 )
         else:
@@ -1486,82 +1489,25 @@ def _short(
         nxt.append(
             "The assistant reads the files, then makes the change locally or as a pull request."
         )
-    sight = results.get("sight")
-    if sight is not None:
-        if sight.get("located"):
-            got.append(sky.sight_summary(sight["located"]))
-            nxt.append(
-                "The assistant shows the place(s) and their solar time from polarize-clock "
-                "(`relay_full` has every value), and computes none itself."
-            )
-        elif sight.get("missing"):
-            got.append("A sun sight was given, but not all of it.")
-            you.append("Give " + " and ".join(sight["missing"]) + ", and a UTC time if not now.")
-        else:
-            got.append(f"polarize-clock didn't answer: {first_sentence(sight.get('error', ''))}")
-            you.append(
-                f"Start the polarize-clock data server ({sky.base_url()}), "
-                "or set POLARIZE_CLOCK_URL."
-            )
-    sky_result = results.get("sky")
-    if sky_result is not None:
-        if sky_result.get("reading"):
-            got.append(sky.summary(sky_result["reading"]))
-            nxt.append(
-                "The assistant shows the key and clock times from polarize-clock (`relay_full` "
-                "has every value), and computes none itself."
-            )
-        elif sky_result.get("missing"):
-            got.append("A sky key was asked for, but the place isn't in decimal coordinates.")
-            you.append(
-                "Give the place as decimal latitude and longitude (for example 48.43, -123.37), "
-                "and a UTC time if not now."
-            )
-        else:
-            got.append(
-                f"polarize-clock didn't answer: {first_sentence(sky_result.get('error', ''))}"
-            )
-            you.append(
-                f"Start the polarize-clock data server ({sky.base_url()}), "
-                "or set POLARIZE_CLOCK_URL."
-            )
-    if results.get("sky_hint"):
-        you.append(
-            "For polarize-clock's key or clock times instead, give the place as decimal latitude "
-            'and longitude (for example 48.43, -123.37), or say "sky key".'
-        )
-    tools = results.get("polarize")
-    if tools is not None:
-        got.extend(polarize.summary(tools))
-        nxt.append(
-            "The assistant answers from the tools' own files (`relay_full` has them) and names "
-            "the tag and commit each was read at."
-        )
-        audio = tools.get("render") or {}
-        if audio.get("status") == "needs arguments" and "SUN_AZ_DEG" in audio.get("missing", []):
-            you.append(
-                "Give a place in decimal coordinates (and a UTC time if not now) so polarize-clock "
-                "can supply the Sun's azimuth."
-            )
-        elif "renders" in tools:
-            you.append("Name one of holo's renders (for example spiral or guitar pluck).")
     if spec.get("name") and route.mode != "research":
         names = [one["name"] for one in spec.get("specialists") or []] or [spec["name"]]
         got.append(f"Specialist{'s' if len(names) > 1 else ''}: {', '.join(names)}.")
-    sky_only = (
-        (sky_result is not None or sight is not None) and found is None and route.mode == "quick"
-    )
+    for found_lines, next_lines, for_you_lines, _relay in ext_lines:
+        got.extend(found_lines)
+        nxt.extend(next_lines)
+        you.extend(for_you_lines)
     got.append(
         "Nothing was concluded."
         if stopped
-        else "polarize-clock's numbers are data from an exploratory tool, not a finding."
-        if sky_only
+        else ext_limits
+        if ext_limits and results.get("evidence") is None and route.mode == "quick"
         else "Nothing was retrieved."
         if results.get("profiles") is not None
         else {
             "quick": "These are passages, not a checked answer.",
             "research": "Nothing is concluded until the run finishes.",
             "code": "The change isn't made or tested yet.",
+            "fetch": "The papers are indexed, not read: nothing is answered from them yet.",
         }[route.mode]
     )
     if stopped:
@@ -1592,60 +1538,3 @@ def parse_tool_text(result: Any) -> dict[str, Any]:
     text = content[0].text if content else "{}"
     data = json.loads(text)
     return json.loads(data["result"]) if isinstance(data.get("result"), str) else data
-
-
-def _sky_progress(result: dict[str, Any]) -> str:
-    if result.get("reading"):
-        src = result["reading"]["source"]
-        return f"Sky key: from polarize-clock {src.get('version')} ({src.get('url')})"
-    if result.get("missing"):
-        return f"Sky key: not asked for; missing {', '.join(result['missing'])}"
-    return f"Sky key: polarize-clock failed ({result.get('error', '')[:120]})"
-
-
-def _sky_block(result: dict[str, Any] | None) -> str:
-    """The full reply's sky section: every value polarize-clock returned, as JSON."""
-    if not result:
-        return ""
-    if result.get("reading"):
-        return (
-            "**Sky key and clock times** (from polarize-clock; data, not a finding)\n```json\n"
-            + json.dumps(result["reading"], indent=1)
-            + "\n```"
-        )
-    if result.get("missing"):
-        return (
-            "**Sky key:** missing "
-            + ", ".join(result["missing"])
-            + ". Call `sky__key` with lat and lon in decimal degrees."
-        )
-    return f"**Sky key:** polarize-clock failed: {result.get('error', '')}"
-
-
-def _sight_progress(result: dict[str, Any]) -> str:
-    if result.get("located"):
-        n = len(result["located"].get("candidates", []))
-        url = result["located"]["source"]["url"]
-        return f"Sun sight: located by polarize-clock ({n} place(s); {url})"
-    if result.get("missing"):
-        return f"Sun sight: not asked for; missing {', '.join(result['missing'])}"
-    return f"Sun sight: polarize-clock failed ({result.get('error', '')[:120]})"
-
-
-def _sight_block(result: dict[str, Any] | None) -> str:
-    """The full reply's sun-sight section: every value polarize-clock returned, as JSON."""
-    if not result:
-        return ""
-    if result.get("located"):
-        return (
-            "**Sun sight** (located by polarize-clock; data, not a finding)\n```json\n"
-            + json.dumps(result["located"], indent=1)
-            + "\n```"
-        )
-    if result.get("missing"):
-        return (
-            "**Sun sight:** missing "
-            + ", ".join(result["missing"])
-            + ". Call `sky__locate` with alt and az, or stick, shadow and bearing."
-        )
-    return f"**Sun sight:** polarize-clock failed: {result.get('error', '')}"

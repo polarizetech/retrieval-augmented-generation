@@ -51,183 +51,9 @@ STOPWORDS = {
     "why",
     "with",
 }
-SPECIALIST_TERMS = {
-    "auditory-evoked-potentials": {
-        "abr",
-        "assr",
-        "auditory",
-        "binaural",
-        "cochlear",
-        "ffr",
-        "neurophonic",
-        "tinnitus",
-    },
-    "visual-evoked-potentials": {
-        "erg",
-        "ocular",
-        "photic",
-        "retinal",
-        "ssvep",
-        "vep",
-        "visual",
-    },
-    "bone-conduction-auditory": {
-        "bone",
-        "bone-conduction",
-        "cross-talk",
-        "mastoid",
-        "transducer",
-    },
-    "honeybee-communications-analyst": {
-        "bee",
-        "bees",
-        "honeybee",
-        "honeybees",
-        "waggle",
-        "colony",
-        "foraging",
-        "electroreception",
-    },
-    "signal-processing": {
-        "fft",
-        "fourier",
-        "frequency",
-        "harmonics",
-        "intermodulation",
-        "mixing",
-        "psychoacoustic",
-        "rf",
-        "signal-processing",
-        "spectral",
-    },
-    # Reference briefs (kept in the repository they serve) get curated anchors too: their names'
-    # parts are too strict ("translator", "nonlinear signal mixing") to anchor a natural question.
-    "aramaic-translator": {"aramaic", "syriac", "targum", "targums"},
-    "nonlinear-signal-mixing": {
-        "adler",
-        "arnold",
-        "hard-limiter",
-        "nonlinearity",
-        "polarity",
-        "polarity-only",
-        "righetti",
-        "teetering",
-    },
-    # Not "toroidal" or "helicity" alone: grid-cell tori and protein helices use them too.
-    "plasma-toroids": {
-        "co-helicity",
-        "compact-toroid",
-        "counter-helicity",
-        "field-reversed",
-        "frc",
-        "frcs",
-        "plasmoid",
-        "plasmoids",
-        "spheromak",
-        "spheromaks",
-        "theta-pinch",
-        "toroid",
-        "toroids",
-    },
-    # Build words, not subjects: "plasma", "coil", "mixer" and "signal" alone stay with the
-    # plasma-toroids and signal-processing specialists.
-    "macgyver": {
-        "arduino",
-        "breadboard",
-        "contact-mic",
-        "diy",
-        "esp32",
-        "homemade",
-        "household",
-        "macgyver",
-        "makeshift",
-        "photodiode",
-        "plasma-ball",
-        "plasma-globe",
-    },
-    # Not "energy", "motion", "force", "momentum" or "rolling" alone: neural, plasma, signal and
-    # optimiser questions use them too. "ramp", "terminal" and "drag" are guarded below.
-    "classical-mechanics": {
-        "coefficient-of-friction",
-        "drag",
-        "free-body",
-        "friction",
-        "frictional",
-        "incline",
-        "inclined",
-        "kinematics",
-        "projectile",
-        "projectiles",
-        "restitution",
-        "stick-slip",
-        "tribology",
-    },
-    # Not "string", "resonance", "pitch", "note", "tone" or "harmonics" alone: programming, neural,
-    # hearing and signal questions use them too. "string" is guarded below.
-    "musical-acoustics": {
-        "banjo",
-        "cello",
-        "flageolet",
-        "fretboard",
-        "frets",
-        "fretted",
-        "guitar",
-        "guitars",
-        "harp",
-        "musical-acoustics",
-        "overtone",
-        "overtones",
-        "pluck",
-        "plucked",
-        "plucking",
-        "soundboard",
-        "strum",
-        "strummed",
-        "strumming",
-        "timbre",
-        "violin",
-        "violins",
-    },
-    "relative-mapping": {
-        "azimuth",
-        "bearing",
-        "bearings",
-        "relative-mapping",
-        "straightedge",
-        "triangulation",
-        "trilateration",
-    },
-}
-# A "ramp" is also a signal shape: it anchors classical-mechanics only beside a moving object.
-RAMP_MOTION_WORDS = {
-    "ball",
-    "block",
-    "cart",
-    "cylinder",
-    "roll",
-    "rolling",
-    "rolls",
-    "slide",
-    "slides",
-    "sliding",
-}
-# A "string" is also a data type: it anchors musical-acoustics only beside a vibration word.
-STRING_SOUND_WORDS = {"bowed", "instrument", "tension", "tuning", "vibrating", "vibration"}
-RELATIVE_MAP_WORDS = {"landmark", "landmarks", "layout", "map", "mapping", "sketch", "sketches"}
-RELATIVE_METHOD_WORDS = {
-    "angle",
-    "angles",
-    "baseline",
-    "bearing",
-    "bearings",
-    "compass",
-    "coordinates",
-    "geometry",
-    "reference",
-    "ruler",
-    "scale",
-    "straightedge",
-}
+# Frontmatter keys a reference stub keeps over its source's: the routing keywords stay with the
+# overlay that routes it.
+ANCHOR_KEYS = ("anchors", "anchor_combos", "anchor_unless", "domain")
 ROLE_TERMS = {
     "analyst": {"analysis", "dataset", "data", "statistics", "statistical", "regression"},
     "mathematician": {"equation", "derive", "derivation", "constant", "units", "proof"},
@@ -267,11 +93,41 @@ class Brief:
     guidance: str
     positive: tuple[str, ...]
     negative: tuple[str, ...]
+    anchors: frozenset[str] = frozenset()
+    combos: tuple[tuple[frozenset[str], ...], ...] = ()
+    unless: tuple[tuple[str, str], ...] = ()
+    domain: str = ""
 
 
 def _words(text: str) -> set[str]:
     tokens = set(WORD.findall(text.lower()))
     return (tokens | {part for token in tokens for part in token.split("-")}) - STOPWORDS
+
+
+def _anchor_words(value: str) -> frozenset[str]:
+    return frozenset(w.strip().lower() for w in value.split(",") if w.strip())
+
+
+def _combos(value: str) -> tuple[tuple[frozenset[str], ...], ...]:
+    combos = []
+    for combo in value.split(";"):
+        groups = [
+            frozenset(w.strip().lower() for w in group.split("/") if w.strip())
+            for group in combo.split("+")
+        ]
+        groups = [group for group in groups if group]
+        if groups:
+            combos.append(tuple(groups))
+    return tuple(combos)
+
+
+def _unless(value: str) -> tuple[tuple[str, str], ...]:
+    pairs = []
+    for pair in value.split(","):
+        if "=" in pair:
+            word, blocker = pair.split("=", 1)
+            pairs.append((word.strip().lower(), blocker.strip().lower()))
+    return tuple(pairs)
 
 
 # Parts of a profile name that say what kind of work it is, not its subject. Without curated
@@ -297,40 +153,19 @@ def _name_anchored(name: str, words: set[str]) -> bool:
     return all(p in words or f"{p}s" in words or f"{p}es" in words for p in parts)
 
 
-def _has_specialist_anchor(name: str, words: set[str]) -> bool:
-    if name == "bone-conduction-auditory":
-        return {"bone", "conduction"} <= words or "mastoid" in words
-    if name == "relative-mapping":
-        return (
-            bool(words & (SPECIALIST_TERMS[name] - {"straightedge"}))
-            or {"relative", "mapping"} <= words
-            or {"relative", "map"} <= words
-            or bool(words & RELATIVE_MAP_WORDS and words & RELATIVE_METHOD_WORDS)
-            or {"compass", "ruler"} <= words
-            or {"compass", "straightedge"} <= words
-        )
-    if name == "classical-mechanics":
-        terms = SPECIALIST_TERMS[name] - ({"drag"} if "drop" in words else set())
-        return (
-            bool(words & terms)
-            or {"terminal", "velocity"} <= words
-            or ("ramp" in words and bool(words & RAMP_MOTION_WORDS))
-        )
-    if name == "musical-acoustics":
-        return (
-            bool(words & SPECIALIST_TERMS[name])
-            or ("musical" in words and bool(words & {"instrument", "instruments"}))
-            or (bool(words & {"string", "strings"}) and bool(words & STRING_SOUND_WORDS))
-        )
-    if name == "macgyver":
-        return (
-            bool(words & SPECIALIST_TERMS[name])
-            or {"plasma", "ball"} <= words
-            or {"plasma", "globe"} <= words
-        )
-    if name in SPECIALIST_TERMS:
-        return bool(words & SPECIALIST_TERMS[name])
-    return _name_anchored(name, words)
+def _declares_anchors(brief: Brief) -> bool:
+    return bool(brief.anchors or brief.combos)
+
+
+def _has_specialist_anchor(brief: Brief, words: set[str]) -> bool:
+    """Whether the question names this specialist's field: its brief's anchors and anchor combos,
+    else every distinctive part of its name."""
+    if not _declares_anchors(brief):
+        return _name_anchored(brief.name, words)
+    blocked = {w for w, b in brief.unless if b in words}
+    return bool(words & (brief.anchors - blocked)) or any(
+        all(words & group for group in combo) for combo in brief.combos
+    )
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -389,7 +224,12 @@ def load(root: Path) -> dict[str, Brief]:
                 continue
             text, brief_path = source.read_text(), source
             brief_root = _source_root(source)
-            meta = {**_frontmatter(text), "name": name}
+            stub = meta
+            meta = {
+                **_frontmatter(text),
+                "name": name,
+                **{k: stub[k] for k in ANCHOR_KEYS if k in stub},
+            }
         briefs[name] = Brief(
             name=name,
             description=meta.get("description", ""),
@@ -400,6 +240,10 @@ def load(root: Path) -> dict[str, Brief]:
             guidance=_section(text, "Pipeline guidance"),
             positive=_examples(text, "Positive routing examples:"),
             negative=_examples(text, "Negative routing examples:"),
+            anchors=_anchor_words(meta.get("anchors", "")),
+            combos=_combos(meta.get("anchor_combos", "")),
+            unless=_unless(meta.get("anchor_unless", "")),
+            domain=meta.get("domain", ""),
         )
     return briefs
 
@@ -435,7 +279,7 @@ def _all_briefs(root: Path, extensions_root: Path | None) -> dict[str, Brief]:
 
 
 def _is_specialist(name: str, brief: Brief) -> bool:
-    return name != "researcher" and (brief.extends == "researcher" or name in SPECIALIST_TERMS)
+    return name != "researcher" and (brief.extends == "researcher" or _declares_anchors(brief))
 
 
 def named_profiles(question: str, names: Iterable[str]) -> list[str]:
@@ -504,14 +348,14 @@ def route(
         (
             (name, _score(question, brief))
             for name, brief in briefs.items()
-            if brief.extends == "researcher" or name in SPECIALIST_TERMS
+            if brief.extends == "researcher" or _declares_anchors(brief)
         ),
         key=lambda row: (-row[1], row[0]),
     )
     # Profile prose contains intentionally broad research vocabulary, so overlap against the
     # prose alone is too permissive. Require at least one specialist anchor term as well; the
     # score then breaks ties and remains useful in the provenance record.
-    anchored = [row for row in ranked if _has_specialist_anchor(row[0], words)]
+    anchored = [row for row in ranked if _has_specialist_anchor(briefs[row[0]], words)]
     scored = []
     if anchored and anchored[0][1] >= MIN_SCORE:
         best = anchored[0][1]
@@ -524,12 +368,8 @@ def route(
     specialist = specialists[0] if specialists else None
     domain = explicit_domain
     if not domain:
-        if specialist in {
-            "auditory-evoked-potentials",
-            "visual-evoked-potentials",
-            "bone-conduction-auditory",
-        }:
-            domain = "neuroscience"
+        if specialist and briefs[specialist].domain:
+            domain = briefs[specialist].domain
         else:
             scored = sorted(
                 ((name, len(words & terms)) for name, terms in DOMAIN_TERMS.items()),

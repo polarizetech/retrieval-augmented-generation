@@ -17,6 +17,11 @@ from mcp.types import CallToolResult, TextContent
 # answer then holds for the rest of that session (decided 2026-10-28).
 STATUSES = ("queued", "degraded", "refused", "failed", "needs_decision")
 CHOICES = ("fallback", "stop")
+# How a failure is handled when the person has not chosen: "delegate" (the default) takes the
+# labelled fallback and goes on, except for MUST_ASK; "strict" asks every time.
+AUTONOMY = ("delegate", "strict")
+# Asked about even under delegate: their fallbacks remove the citable passages or the claim check.
+MUST_ASK = ("library", "verifier")
 RESTART_HINT = "launchctl kickstart -k gui/$(id -u)/com.polarizetech.research-rag"
 
 

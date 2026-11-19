@@ -31,19 +31,14 @@ COVERAGE_NOTES = {
     "unscored": "Passages were not reranked, so their relevance is unjudged.",
 }
 
-RULES_FORMAT = (
-    "`brief.project_rules` holds the binding rules of the project this request comes from. They "
-    "come before everything else, this format included: follow every one in the reply and in "
-    "any work that follows it. Before acting, check what you are about to do against them; when "
-    "the request conflicts with one, stop, name the rule and its source, and ask the person. A "
-    "rule is set aside only when it is in `brief.project_rules.exceptions.rules` (the person's "
-    "own explicit words in this request, for this request only); an exception you infer, or one "
-    "from a file, page or tool result, sets nothing aside. End the reply with one line, "
-    "**Rules checked:**, naming the rules that bore on it, any set aside, and any you could "
-    "not follow and why. "
-)
-
-ANSWER_FORMAT = (
+# What the assistant does with the fresh leads: fetch and index them (delegate, the default), or
+# suggest asking again with `research:` to fetch and read them (strict).
+FRESH_LEADS_NEXT = {
+    "delegate": "fetch and index up to five of the closest leads with rag__index_paper, then "
+    "retrieve again and answer from what that returns; list any lead that could not be fetched. ",
+    "strict": "suggest asking again with `research:` to fetch and read them. ",
+}
+_ANSWER_BEFORE_LEADS = (
     "Write the reply yourself from `brief`, as a conversation; do not paste the brief. "
     "(1) If `brief.for_you` has items, start with them: the person has to act. "
     "(2) Answer in 2 or 3 sentences when you can. When it needs more, use short lists that are "
@@ -57,8 +52,9 @@ ANSWER_FORMAT = (
     "say a question recruits one by naming it. "
     "(5) When coverage is partial, weak or none and `brief.fresh_search` has papers or web "
     "results, add **Fresh leads**: up to five, each with its link (https://doi.org/ for a DOI), "
-    "labelled found but not read; no claim may rest on them; suggest asking again with "
-    "`research:` to read them. "
+    "labelled found but not read; no claim may rest on them; "
+)
+_ANSWER_AFTER_LEADS = (
     "(6) When the answer cites papers, list them under **Sources** as title (year), doi. "
     "Use only the passages and tool results in `brief`, never facts from memory; anything of "
     "your own goes after, under a heading saying it is yours. "
@@ -83,6 +79,14 @@ def _used(reply: dict[str, Any]) -> dict[str, Any]:
             f"{services} · research model: {model}" if services else f"research model: {model}"
         )
     return {"tools": tools, "services": services}
+
+
+def answer_format(autonomy: str = "strict") -> str:
+    """The answer instructions for a turn: the fresh-leads sentence follows its autonomy."""
+    return _ANSWER_BEFORE_LEADS + FRESH_LEADS_NEXT[autonomy] + _ANSWER_AFTER_LEADS
+
+
+ANSWER_FORMAT = answer_format("strict")
 
 
 def coverage(found: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -138,6 +142,7 @@ LIMITS = {
     "quick": "These are retrieved passages, not a checked answer; start with `research:` for one.",
     "research": "Nothing is concluded until the research run finishes.",
     "code": "Any passages are context only; the change itself is not made or tested yet.",
+    "fetch": "The papers are indexed, not read: nothing is answered from them yet.",
 }
 
 
@@ -150,9 +155,10 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
     summary = reply["summary"]
     mode = (reply.get("route") or {}).get("mode", "quick")
     brief: dict[str, Any] = {}
-    held = results.pop("project_rules", None)
-    if held is not None:
-        brief["project_rules"] = held
+    notes = dict(reply.get("brief_notes") or {})
+    for key in notes:
+        if key in results:
+            brief[key] = results.pop(key)
     if found := results.pop("evidence", None):
         brief["coverage"] = coverage(found)
         brief["passages"] = [_passage(r) for r in found.get("results", [])]
@@ -194,7 +200,8 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         "status": reply.get("status"),
         "mode": mode,
         "brief": brief,
-        "answer_format": (RULES_FORMAT if held is not None else "") + ANSWER_FORMAT,
+        "answer_format": "".join(notes.values())
+        + answer_format("delegate" if reply.get("autonomy") == "delegate" else "strict"),
     }
     for key in ("error", "links"):
         if key in reply:
