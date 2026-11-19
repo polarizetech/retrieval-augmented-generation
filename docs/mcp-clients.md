@@ -12,8 +12,6 @@ One gateway process (`research-rag-gateway`) exposes:
 | `session__read_capsule`, `session__propose` | session store and research PR gate | no |
 | `research__*` | trusted research-repository reads and proposals | no |
 | `repos__*` | allowlisted GitHub repository search, reads and PR proposals | no |
-| `rules__project` | a project's binding rules: its AGENTS.md and CLAUDE.md, and the owner's shared polarize profile | no |
-| `polarize__read`, `polarize__renders`, `polarize__render` | the polarize tools' own repos (pinned to tags) and polarize-holo's render scripts | no |
 | `web__search` | an optional SearXNG instance; listed only when `SEARXNG_URL` is set | no |
 | `gateway_status` | the gateway | no; lists connected upstreams and startup errors |
 
@@ -73,14 +71,16 @@ there. It decides which parts of the server run, using trigger words rather than
 | `research` | an evidence question ("evidence", "studies", "is it true", ...) | the research pipeline, started on the gateway |
 | `code` | a task on code ("fix the bug", "implement", "add a flag to the cli") or a code review | three passages for context; the assistant then edits through `repos__` tools or its checkout |
 
-The **sign-mixer step** runs on any route when two things are true: the request uses a `[mixer]`
-trigger word ("mixer", "intermodulation", "combination tone", "hard limiter", "clipping", ...), and it
-names two tones ("120 Hz and 210 Hz", with optional `a1=`, `a2=`). The step adds `math__sign_mix`'s
-derived line table and, when configured, the calculator's run with a physical random key, with settle
-on.
-
 A question never recruits the coder, even a question about code ("how does the hook work?"). A
 prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`.
+
+Fetch mode gets a paper into the passage index without the research pipeline. It is recruited by
+`fetch:` or `paper:` at the start, a phrase such as "get the paper", "download the paper" or "index
+this paper", or a DOI in the request. A DOI or PMID named in the request goes straight to
+`rag__index_paper`. Otherwise the title is searched in the paper library (three hits), the top hit
+is indexed, and the other two are listed as "if this isn't the paper you meant". Nothing is read or
+answered in this mode: the reply says what was indexed, and a question asked afterwards draws its
+passages from those papers. No specialist runs and no fresh search is made.
 
 Up to three specialist briefs answer one question:
 - any profile the question names ("ask classical-mechanics", "@plasma-toroids", "plasma toroids")
@@ -102,19 +102,6 @@ how: a bottom line first, then at most five key points each citing an evidence i
 and limits, and the sources cited. The assistant writes that answer itself; it does not paste the
 brief. In the brief:
 
-- `project_rules`, first, when the request comes from a project with rules (`[project_rules]` in
-  the routing config: the polarize-* projects). The project is `ask`'s `project`, else its repo's
-  name, else the client's folder (the stdio bridge sends it). The rules are read from the project's
-  checkout on every call: the bold-led rules of its `AGENTS.md` and `CLAUDE.md`, and for the
-  polarize tools and polarize-thesis the rule sections of the owner's shared profile
-  (polarize-thesis `.claude/agents/polarize-integrator.md`). A rule in both is listed once, in the
-  project's wording, with the copy under `also_in`. The five nearest the request come in full, the
-  rest as one line with their source. `answer_format` then starts with the rules: they bind before
-  anything else, a conflict stops the assistant to name the rule and ask, and the reply ends with a
-  **Rules checked:** line. `exceptions` says what the request set aside: only explicit wording
-  from `exception_words` ("make an exception to", "break the rule", ...) together with the rule's
-  id, its title or most of its title's words, for that request only. Wording that names no rule
-  sets nothing aside, and `for_you` asks the person which rule.
 - `passages`: each retrieved passage once, with its evidence id, source and reranker score.
 - `coverage`: how well the library covers the question, from the best reranker score: `strong`
   (1 or more), `partial` (−1 to 1), `weak` (under −1, loosely related only), `none`, or
@@ -122,7 +109,7 @@ brief. In the brief:
 - `specialist`: the specialist's name and guidance, when one was picked.
 - `found`, `next`, `for_you`: one sentence per item. `for_you` holds anything the person must do,
   such as a choice after a failure, and the answer starts with it.
-- `tool_results`: anything else that ran (a research run, polarize-clock, the sign mixer, the coder).
+- `tool_results`: anything else that ran (a research run, the coder; an extension's steps under `extensions`).
 - `limits`: the main limit.
 
 The full reply (`relay`, `relay_full`, progress and raw results) is kept in the call log, and the
@@ -164,9 +151,18 @@ those two fall back to scholarly search results, and the relay says so. A part t
 by itself (no reranker, lexical only) is labelled as detected. An upstream that is down fails
 with the restart command; restarting it with backoff is phase 3.
 
+**Autonomy.** `autonomy` on `ask` is `delegate` (the default; set the gateway's default with
+`ASK_AUTONOMY`) or `strict`. Under `delegate` a failure takes its labelled fallback and the request
+goes on, without asking, and the reply still says what was lost. The paper library and the
+verifier are the exceptions (`MUST_ASK` in `research_mcp/hub/contract.py`): they still ask, because
+their fallbacks would remove the citable passages or the claim check. Under `strict` every failure
+asks. A `decisions` choice the person has made for the session always applies first, so `stop`
+stops a request under either mode. Under `delegate` the answer fetches and indexes up to five of the
+closest fresh leads and retrieves again; under `strict` it suggests asking again with `research:`.
+
 **Usage.** `hub__usage` reads OpenRouter (`/api/v1/key` and `/api/v1/credits`: balance, spend
 today, this week and this month, burn per day and projected run-out), NEAR AI (needs the
-organisation id and a reporting token in `~/.config/polarize/nearai-reporting.env`; the API key is
+organisation id and a reporting token in `~/.config/research-rag/nearai-reporting.env`; the API key is
 refused), local Ollama (up, installed, loaded), and says which plans it cannot read (Claude,
 ChatGPT). Readings are cached for five minutes, and each relay ends with a one-line readout from
 the cache, so a reply never waits on a provider (in the full reply, `relay_full`).
@@ -207,8 +203,7 @@ nor held; each works in its own git worktree, and `ask` mentions the other sessi
 work. Fallbacks ask once per session per component. Sessions pass their name or the gateway
 infers it. The ladders and thresholds are as above.
 
-The full plan, with its later phases, is in [hub-plan.md](hub-plan.md); where things can run is
-in [hosting-options.md](hosting-options.md).
+The full plan, with its later phases, is in [hub-plan.md](hub-plan.md).
 
 ## Claude Desktop and Claude Code
 
@@ -291,6 +286,14 @@ the brief's bounded `## Pipeline guidance` section shapes search planning and cl
 the pipeline's evidence and verification rules still control the result. Use
 `pipeline__profile_route(question)` to inspect selection before a run. A specialist without that
 section is still routed and recorded but adds no model guidance.
+
+A brief names the words that recruit it in its frontmatter. `anchors` lists words, any one of
+which anchors it. `anchor_combos` (`a + b/c`) anchors when the question has a word from every
+group: `+` separates the groups, `/` the alternative words in a group, and `;` separates combos.
+`anchor_unless` (`w=b`) means that `w` does not count when `b` is also in the question. `domain`
+names the route's domain when that brief is the first specialist. A brief with none of these
+keys is anchored by every distinctive part of its name. In a reference stub, these keys win over
+its source's.
 
 Independent calls are batched, at most `PIPELINE_CLIENT_BATCH` (12) per turn. A typical question
 takes about a dozen turns: plan, extraction (with paper classification), synthesis, the

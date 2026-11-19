@@ -1,0 +1,16 @@
+[project]
+name = "rag-ext-example"
+version = "0.1.0"
+description = "Example research-rag extension: one tool and one ask step."
+requires-python = ">=3.11"
+dependencies = ["retrieval-augmented-generation"]
+
+[project.entry-points."rag.extensions"]
+example = "rag_ext_example"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rag_ext_example"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

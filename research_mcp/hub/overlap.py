@@ -21,9 +21,11 @@ Post = Callable[[str, dict[str, Any]], Any]
 EMBED_TIMEOUT = 10.0
 
 
-def http_post(url: str, body: dict[str, Any]) -> Any:
+def http_post(url: str, body: dict[str, Any], headers: dict[str, str] | None = None) -> Any:
     req = urllib.request.Request(
-        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
     )
     with urllib.request.urlopen(req, timeout=EMBED_TIMEOUT) as response:
         return json.load(response)

@@ -31,10 +31,22 @@ RULES = load_rules(ROOT / "config" / "routing.default.toml")
         ("Write a summary of the literature on 1/f noise", "research"),
         ("What does the evidence say about stochastic resonance in hearing?", "research"),
         ("Is it true that pink noise improves sleep?", "research"),
+        ("What do papers say about binaural beats?", "research"),
+        # Asking for a paper to be fetched and indexed skips the pipeline.
+        ("get the paper 10.1038/xyz", "fetch"),
+        ("fetch: some title", "fetch"),
+        ("index this paper 10.1000/abc", "fetch"),
+        ("download the paper on binaural beats", "fetch"),
+        ("get 10.1000/abc", "fetch"),
+        ("index 10.1000/abc", "fetch"),
     ],
 )
 def test_each_request_recruits_only_what_it_needs(request_text: str, mode: str) -> None:
     assert classify(request_text, RULES).mode == mode
+
+
+def test_a_doi_in_a_code_task_is_not_fetched() -> None:
+    assert classify("fix the DOI 10.1000/abc in tests/x.py", RULES).mode != "fetch"
 
 
 def test_prefixes_and_an_explicit_mode_win_and_say_why() -> None:

@@ -11,11 +11,11 @@ from typing import Any
 import pytest
 from mcp import ClientSession
 from mcp.shared.memory import create_connected_server_and_client_session
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, TextContent, Tool
 from paper_fetch import Library, LocalStore, OpenAlex
 from paper_fetch.passages import PassageIndex
 
-from research_mcp import gateway
+from research_mcp import extensions, gateway
 from research_pipeline.papers import PaperLibrary, PapersError
 from tests.conftest import OfflineHttp, hold, hold_w1
 
@@ -119,9 +119,6 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
             "rag__index_paper",
             "math__lookup",
             "math__bionumber",
-            "math__sign_mix",
-            "math__audio_mix",
-            "math__physical_mix",
             "session__read_capsule",
             "session__propose",
             "papers__search",
@@ -137,7 +134,7 @@ async def test_tools_are_listed_with_annotations(config: Path, tmp_path: Path) -
         status = payload(await session.call_tool("gateway_status", {}))
         assert status["connected"] == {"papers": len(library_tools)}
         assert set(status["errors"]) == {"broken"}
-        assert status["total_tools"] == len(library_tools) + 25  # built-ins, no web__search
+        assert status["total_tools"] == len(library_tools) + 15  # built-ins, no web__search
 
     await with_session(config, tmp_path, body)
 
@@ -306,6 +303,25 @@ async def test_index_paper_makes_a_fetched_paper_citable(config: Path, tmp_path:
 
 
 @pytest.mark.anyio
+async def test_ask_fetch_indexes_through_the_gateway(config: Path, tmp_path: Path) -> None:
+    async def body(session: ClientSession) -> None:
+        before = payload(
+            await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
+        )
+        assert all(r["work"] != "W2" for r in before["results"])
+
+        asked = payload(await session.call_tool("ask", {"question": "fetch: 10.1000/open"}))
+        assert asked["status"] not in ("failed", "needs_decision")
+
+        after = payload(
+            await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
+        )
+        assert after["results"][0]["work"] == "W2"
+
+    await with_session(config, tmp_path, body)
+
+
+@pytest.mark.anyio
 async def test_web_search_is_offered_once_searxng_is_configured(
     config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -319,3 +335,95 @@ async def test_web_search_is_offered_once_searxng_is_configured(
         assert status["total_tools"] == len(names)
 
     await with_session(config, tmp_path, body)
+
+
+@pytest.mark.anyio
+async def test_extension_tools_are_listed_and_dispatched(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(extensions, "_REGISTRY", {})
+
+    def echo(arguments: dict[str, Any], context: extensions.Context) -> dict[str, Any]:
+        return {"echo": arguments}
+
+    def fail(arguments: dict[str, Any], context: extensions.Context) -> dict[str, Any]:
+        raise ValueError("bad")
+
+    no_args = {"type": "object", "properties": {}}
+    extensions.declare(
+        name="rag-ext-demo",
+        module="rag_ext_demo",
+        version="0.1.0",
+        core_requires=">=0.3.0",
+        job="demo",
+        prefix="demo",
+        tools=(
+            extensions.ToolSpec(
+                tool=Tool(name="demo__echo", inputSchema=no_args), handler=echo, label="demo echo"
+            ),
+            extensions.ToolSpec(
+                tool=Tool(name="demo__fail", inputSchema=no_args), handler=fail, label="demo fail"
+            ),
+        ),
+    )
+
+    async def body(session: ClientSession) -> None:
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert "demo__echo" in names
+        echoed = payload(await session.call_tool("demo__echo", {"x": 1}))
+        assert echoed["echo"] == {"x": 1}
+        status = payload(await session.call_tool("gateway_status", {}))
+        assert len(status["extensions"]) == 1
+        assert status["extensions"][0]["status"] == "ok"
+        failed = await session.call_tool("demo__fail", {})
+        assert failed.isError
+        first = failed.content[0]
+        assert isinstance(first, TextContent)
+        assert "demo fail failed" in first.text
+
+    await with_session(config, tmp_path, body)
+
+    cfg = json.loads(config.read_text())
+    cfg["server"] = {"builtin_tools": False}
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps(cfg))
+
+    async def plain_body(session: ClientSession) -> None:
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert "demo__echo" not in names
+        refused = await session.call_tool("demo__echo", {"x": 1})
+        assert refused.isError
+
+    await with_session(plain, tmp_path, plain_body)
+
+
+@pytest.mark.anyio
+async def test_extension_context_carries_the_gateway_config(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(extensions, "_REGISTRY", {})
+
+    def where(arguments: dict[str, Any], context: extensions.Context) -> dict[str, Any]:
+        return {"config_path": str(context.config_path)}
+
+    no_args = {"type": "object", "properties": {}}
+    extensions.declare(
+        name="rag-ext-demo",
+        module="rag_ext_demo",
+        version="0.1.0",
+        core_requires=">=0.3.0",
+        job="demo",
+        prefix="demo",
+        tools=(
+            extensions.ToolSpec(
+                tool=Tool(name="demo__where", inputSchema=no_args),
+                handler=where,
+                label="demo where",
+            ),
+        ),
+    )
+
+    async def look(session: ClientSession) -> None:
+        assert payload(await session.call_tool("demo__where", {}))["config_path"] == str(config)
+
+    await with_session(config, tmp_path, look)

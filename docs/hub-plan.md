@@ -93,7 +93,7 @@ tokens, cost), so it can report the balance, the burn rate per day and week, and
 | Provider | How it is read | Notes |
 |---|---|---|
 | OpenRouter | `GET /api/v1/key` (usage today, week, month) and `GET /api/v1/credits` (total and used) | works with the existing key; also covers the zero-retention Qwen and Kimi runs |
-| NEAR AI, direct | `GET /v1/organizations/{org_id}/usage/balance` and the Usage Reporting API | the API key is refused (401); needs the organisation id and a reporting token from the dashboard, kept in `~/.config/polarize/` |
+| NEAR AI, direct | `GET /v1/organizations/{org_id}/usage/balance` and the Usage Reporting API | the API key is refused (401); needs the organisation id and a reporting token from the dashboard, kept in `~/.config/research-rag/` |
 | Claude plan | only a Claude session can read it (the app's usage reading: 5-hour and weekly windows, extra usage) | the gateway cannot; Claude sessions add their own line |
 | ChatGPT plan | no usage API for a consumer plan | shown as not readable; the gateway counts only what it does for ChatGPT |
 | Local Ollama | free; whether it is up and which model is loaded | always the last rung |
@@ -171,5 +171,4 @@ Waiting:
 
 ## Related
 
-- [Hosting options](hosting-options.md): where things run, and what was decided about paid hosting.
 - [MCP clients](mcp-clients.md): `ask`, the bridge and the tools as they are today.

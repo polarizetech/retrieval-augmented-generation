@@ -15,7 +15,7 @@
     "shortDescription": "Evidence-first research"
   },
   "name": "scientific-research-rag",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Evidence-first scientific literature research using the hosted retrieval-augmented-generation MCP gateway.",
   "author": {
     "name": "Joshua Anderton",

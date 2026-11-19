@@ -2,7 +2,7 @@
   "mcpServers": {
     "scientific-research-rag": {
       "type": "streamable-http",
-      "url": "https://polarize-mcp.your-tailnet.ts.net/retrieval-augmented-generation",
+      "url": "https://research-rag.your-tailnet.ts.net/retrieval-augmented-generation",
       "headers": {},
       "extensions": {
         "com.openai": {

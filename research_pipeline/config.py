@@ -59,9 +59,26 @@ def _endpoint_key() -> str:
     return path.read_text().strip() if path and path.exists() else ""
 
 
+def _ollama_key() -> str:
+    """A key for an Ollama served behind one (the hosted copy in deploy/modal_models.py), from
+    PIPELINE_OLLAMA_KEY or the file PIPELINE_OLLAMA_KEY_FILE; empty for a local Ollama."""
+    key = os.environ.get("PIPELINE_OLLAMA_KEY", "").strip()
+    if key:
+        return key
+    path = _optional_path("PIPELINE_OLLAMA_KEY_FILE")
+    return path.read_text().strip() if path and path.exists() else ""
+
+
 @dataclass
 class Settings:
     ollama_url: str = field(default_factory=_ollama_url)
+    ollama_key: str = field(default_factory=_ollama_key, repr=False)
+
+    @property
+    def ollama_headers(self) -> dict[str, str]:
+        """Authorization for a hosted Ollama; none for a local one."""
+        return {"Authorization": f"Bearer {self.ollama_key}"} if self.ollama_key else {}
+
     text_model: str = field(
         default_factory=lambda: os.environ.get(
             "PIPELINE_TEXT_MODEL", os.environ.get("TEXT_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
