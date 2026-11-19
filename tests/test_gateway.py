@@ -303,6 +303,25 @@ async def test_index_paper_makes_a_fetched_paper_citable(config: Path, tmp_path:
 
 
 @pytest.mark.anyio
+async def test_ask_fetch_indexes_through_the_gateway(config: Path, tmp_path: Path) -> None:
+    async def body(session: ClientSession) -> None:
+        before = payload(
+            await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
+        )
+        assert all(r["work"] != "W2" for r in before["results"])
+
+        asked = payload(await session.call_tool("ask", {"question": "fetch: 10.1000/open"}))
+        assert asked["status"] not in ("failed", "needs_decision")
+
+        after = payload(
+            await session.call_tool("rag__retrieve_evidence", {"query": "paced breathing"})
+        )
+        assert after["results"][0]["work"] == "W2"
+
+    await with_session(config, tmp_path, body)
+
+
+@pytest.mark.anyio
 async def test_web_search_is_offered_once_searxng_is_configured(
     config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

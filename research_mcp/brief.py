@@ -28,7 +28,14 @@ COVERAGE_NOTES = {
     "unscored": "Passages were not reranked, so their relevance is unjudged.",
 }
 
-ANSWER_FORMAT = (
+# What the assistant does with the fresh leads: fetch and index them (delegate, the default), or
+# suggest asking again with `research:` to fetch and read them (strict).
+FRESH_LEADS_NEXT = {
+    "delegate": "fetch and index up to five of the closest leads with rag__index_paper, then "
+    "retrieve again and answer from what that returns; list any lead that could not be fetched. ",
+    "strict": "suggest asking again with `research:` to fetch and read them. ",
+}
+_ANSWER_BEFORE_LEADS = (
     "Write the reply yourself from `brief`; do not paste the brief. Keep it short, in this order: "
     "(1) If `brief.for_you` has items, start with them: the person has to act. "
     "(2) **Bottom line**: one or two sentences answering the question as far as the passages "
@@ -40,8 +47,10 @@ ANSWER_FORMAT = (
     "When coverage is partial, weak or none and `brief.fresh_search` has papers or web results, "
     "add **Fresh leads** after the gaps: up to five that look closest to the question, each "
     "with its link (https://doi.org/ for a DOI), labelled as found but not read; no claim may "
-    "rest on them, and suggest asking again with `research:` to fetch and read them. Name "
-    "anything in `brief.fresh_search.not_run` in one line. "
+    "rest on them, and "
+)
+_ANSWER_AFTER_LEADS = (
+    "Name anything in `brief.fresh_search.not_run` in one line. "
     "When `brief.specialists` lists more than one, add **Specialist views** after the key "
     "points: one short paragraph (1-3 sentences) per specialist, reading the same passages "
     "through its guidance and citing evidence ids; a specialist the passages don't serve gets "
@@ -51,6 +60,14 @@ ANSWER_FORMAT = (
     "memory; anything of your own goes after, under a heading saying it is yours. When the "
     "person asks for more, open the record link: it holds the full reply."
 )
+
+
+def answer_format(autonomy: str = "strict") -> str:
+    """The answer instructions for a turn: the fresh-leads sentence follows its autonomy."""
+    return _ANSWER_BEFORE_LEADS + FRESH_LEADS_NEXT[autonomy] + _ANSWER_AFTER_LEADS
+
+
+ANSWER_FORMAT = answer_format("strict")
 
 
 def coverage(found: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -106,6 +123,7 @@ LIMITS = {
     "quick": "These are retrieved passages, not a checked answer; start with `research:` for one.",
     "research": "Nothing is concluded until the research run finishes.",
     "code": "Any passages are context only; the change itself is not made or tested yet.",
+    "fetch": "The papers are indexed, not read: nothing is answered from them yet.",
 }
 
 
@@ -162,7 +180,8 @@ def compact(reply: dict[str, Any]) -> dict[str, Any]:
         "status": reply.get("status"),
         "mode": mode,
         "brief": brief,
-        "answer_format": "".join(notes.values()) + ANSWER_FORMAT,
+        "answer_format": "".join(notes.values())
+        + answer_format("delegate" if reply.get("autonomy") == "delegate" else "strict"),
     }
     for key in ("error", "links"):
         if key in reply:

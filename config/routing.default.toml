@@ -17,6 +17,8 @@
 "deep:" = "research"
 "code:" = "code"
 "review:" = "code"
+"fetch:" = "fetch"
+"paper:" = "fetch"
 
 [code]
 # Verbs that are code work on their own.
@@ -53,6 +55,13 @@ triggers = [
   "meta-analysis", "systematic", "mechanism", "mechanisms", "is it true", "what is known",
   "what does the science", "citation", "citations", "cite", "hypothesis", "falsify",
   "replicated", "replication", "consensus",
+]
+
+[fetch]
+# Asking for a paper to be fetched and indexed: rag__index_paper, not the research pipeline.
+triggers = [
+  "get the paper", "get this paper", "fetch the paper", "fetch this paper", "download the paper",
+  "index the paper", "index this paper", "add the paper", "add this paper", "pull the paper",
 ]
 
 [profiles_list]
