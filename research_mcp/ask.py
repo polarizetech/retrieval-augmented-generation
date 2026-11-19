@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -22,8 +23,10 @@ from typing import Any
 from research_mcp import brief, extensions
 from research_mcp.extensions import Context, Extension, StepInput, StepSpec
 from research_mcp.hub.contract import (
+    AUTONOMY,
     CHOICES,
     COMPONENTS,
+    MUST_ASK,
     NO_FALLBACK,
     RESTART_HINT,
     Problem,
@@ -32,6 +35,7 @@ from research_mcp.hub.contract import (
 )
 from research_mcp.hub.health import Hub
 from research_mcp.routing import (
+    DOI,
     Route,
     Rules,
     _has,
@@ -68,6 +72,11 @@ FRESH_PAPERS = 8
 FRESH_WEB = 6
 # SearXNG answers in a second or two; a search past this is dropped and named.
 FRESH_SECONDS = 20.0
+# A fetch by title: the top hit is indexed, the other hits of this search are offered.
+FETCH_HITS = 3
+PMID = re.compile(r"\bpmid:\s*(\d+)", re.IGNORECASE)
+FETCH_TRAILING = ".,;:)]}'\""
+INDEXED = ("indexed", "already_indexed")
 
 Retrieve = Callable[[str, int, int], Awaitable[dict[str, Any]]]
 # Retrieval with one part of the library's ranking off ("reranker" or "embeddings").
@@ -97,6 +106,21 @@ class Turn:
     ext_lines: list[tuple[list[str], list[str], list[str], str]] = field(default_factory=list)
     ext_limits: str = ""
     brief_notes: dict[str, str] = field(default_factory=dict)
+    autonomy: str = "strict"
+
+
+def paper_identifiers(text: str) -> list[str]:
+    """The DOIs and PMIDs (pmid:...) a request names, in order, without repeats."""
+    dois = [m.group(0).rstrip(FETCH_TRAILING) for m in DOI.finditer(text)]
+    pmids = [f"pmid:{m.group(1)}" for m in PMID.finditer(text)]
+    return list(dict.fromkeys([*dois, *pmids]))
+
+
+def _without_phrases(text: str, phrases: Sequence[str]) -> str:
+    """`text` with each trigger phrase taken out, whole words only, and its spaces tidied."""
+    for phrase in phrases:
+        text = re.sub(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", " ", text, flags=re.I)
+    return " ".join(text.split())
 
 
 def _pipeline_full(error: str) -> bool:
@@ -137,7 +161,11 @@ class Asker:
         plain_retrieve: PlainRetrieve | None = None,
         can_switch: Callable[[str], bool] = lambda _component: True,
         steps: Sequence[tuple[Extension, StepSpec, Context]] = (),
+        default_autonomy: str = "delegate",
     ):
+        if default_autonomy not in AUTONOMY:
+            raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY)}")
+        self.default_autonomy = default_autonomy
         self.retrieve = retrieve
         self.call_tool = call_tool
         self.has_tool = has_tool
@@ -229,6 +257,9 @@ class Asker:
                 )
             )
         choice = turn.decisions.get(component)
+        if choice is None and turn.autonomy == "delegate" and component not in MUST_ASK:
+            # delegate: take the labelled fallback, unless the component must ask
+            choice = "fallback"
         if choice is None:
             raise Halt(needs_decision(component, what_failed, retry))
         if choice == "stop":
@@ -535,6 +566,86 @@ class Asker:
             )
         return run
 
+    # -- a paper into the index, without the pipeline --------------------------------------------
+    async def _index(self, identifiers: list[str]) -> list[dict[str, Any]]:
+        """rag__index_paper on these identifiers: one result row each, saying what happened."""
+        try:
+            out = await self.call_tool("rag__index_paper", {"identifiers": identifiers})
+        except Exception as exc:  # a dead upstream surfaces as many types
+            raise Halt(
+                Problem(
+                    "failed",
+                    "library",
+                    f"The paper library did not index the paper: {type(exc).__name__}.",
+                    recommendation=f"check `hub__status`; the library may need a restart: "
+                    f"`{RESTART_HINT}`",
+                )
+            ) from exc
+        return list(out.get("results") or [])
+
+    async def _find_title(self, query: str) -> list[dict[str, Any]]:
+        """The top hits of a title search in the paper library (at most FETCH_HITS)."""
+        try:
+            found = await self.call_tool("papers__search", {"query": query, "limit": FETCH_HITS})
+        except Exception as exc:  # a dead upstream surfaces as many types
+            raise Halt(
+                Problem(
+                    "failed",
+                    "library",
+                    f"The paper search did not answer: {type(exc).__name__}.",
+                )
+            ) from exc
+        # An upstream tool replies with its envelope; the hits are in its `data`.
+        return list((found.get("data") or {}).get("hits") or [])[:FETCH_HITS]
+
+    async def _fetch(
+        self, route: Route, *, rules: Rules, progress: list[str], results: dict[str, Any]
+    ) -> None:
+        """Get papers into the passage index without the research pipeline: the DOIs and PMIDs the
+        request names, or else the top hit of a title search (the other hits are offered)."""
+        ids = paper_identifiers(route.question)
+        alternatives: list[dict[str, Any]] | None = None
+        if ids:
+            papers = [
+                {
+                    "title": r.get("title"),
+                    "doi": r.get("doi") or r.get("identifier"),
+                    "index": r,
+                }
+                for r in await self._index(ids)
+            ]
+        else:
+            query = _without_phrases(route.question, rules.fetch)
+            hits = await self._find_title(query) if query else []
+            if not hits:
+                results["fetch"] = {"papers": [], "note": "No paper was named or matched."}
+                progress.append("Fetch: no DOI, PMID or matching title, so nothing was indexed")
+                return
+            top = hits[0]
+            top_ids = top.get("ids") or {}
+            key = top_ids.get("doi") or top_ids.get("openalex")  # the work id, without a DOI
+            rows = await self._index([key]) if key else []
+            papers = [
+                {
+                    "title": top.get("title"),
+                    "doi": top_ids.get("doi"),
+                    "index": rows[0] if rows else {"status": "no DOI or work id to index"},
+                }
+            ]
+            alternatives = [
+                {"title": h.get("title"), "doi": (h.get("ids") or {}).get("doi")} for h in hits[1:]
+            ]
+        fetch: dict[str, Any] = {"papers": papers}
+        if alternatives is not None:
+            fetch["alternatives"] = alternatives
+            fetch["alternatives_note"] = "if this isn't the paper you meant"
+        results["fetch"] = fetch
+        done = sum(p["index"].get("status") in INDEXED for p in papers)
+        progress.append(
+            f"Fetch: indexed {done} of {len(papers)} paper(s) with rag__index_paper; "
+            "no pipeline run"
+        )
+
     def _overlap(self, turn: Turn, repo: str, touches: list[str]) -> str:
         """Recent code work on the same repository from another session (decided: worktrees)."""
         if self.hub is None or not repo:
@@ -565,6 +676,7 @@ class Asker:
         project: str = "",
         decisions: dict[str, str] | None = None,
         caller: dict[str, str] | None = None,
+        autonomy: str = "",
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -575,12 +687,16 @@ class Asker:
                 raise ValueError(f"decisions: unknown component {component!r}")
             if choice not in CHOICES:
                 raise ValueError(f"decisions: choice must be one of {', '.join(CHOICES)}")
+        if autonomy and autonomy not in AUTONOMY:
+            raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY)}")
         started = time.monotonic()
         rules = self.rules()
         route = classify(question, rules, mode, repo)
         spec = self.specialist(route.question, rules)
+        if route.mode == "fetch":  # a fetch names no specialist
+            spec = {**spec, "name": None, "specialists": [], "guidance": ""}
         sid = session.strip() or caller.get("session", "") or "unknown"
-        turn = Turn(sid, {})
+        turn = Turn(sid, {}, autonomy=autonomy or self.default_autonomy)
         rid = uuid.uuid4().hex[:12]
         touches = [t.strip("`'\"(),:;!?") for t in question.split() if _looks_like_code(t)]
         if self.hub is not None:
@@ -790,6 +906,7 @@ class Asker:
                 ext_lines=turn.ext_lines,
                 ext_limits=turn.ext_limits,
                 brief_notes=turn.brief_notes,
+                autonomy=turn.autonomy,
             )
         seconds = round(time.monotonic() - started, 1)
         return self._reply(
@@ -803,6 +920,7 @@ class Asker:
             ext_lines=turn.ext_lines,
             ext_limits=turn.ext_limits,
             brief_notes=turn.brief_notes,
+            autonomy=turn.autonomy,
         )
 
     async def _run(
@@ -819,6 +937,9 @@ class Asker:
         progress: list[str],
         results: dict[str, Any],
     ) -> None:
+        if route.mode == "fetch":  # no pipeline, no passages, no fresh search: just the index
+            await self._fetch(route, rules=rules, progress=progress, results=results)
+            return
         # A code task gets passages only when it has research content: the library holds papers,
         # not code, so "fix the failing test" would get unrelated passages and cost seconds.
         low = route.question.lower()
@@ -1006,6 +1127,7 @@ class Asker:
         ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
         ext_limits: str = "",
         brief_notes: dict[str, str] | None = None,
+        autonomy: str = "",
     ) -> dict[str, Any]:
         worst = next((p for p in problems if p.status != "degraded"), None)
         status = worst.status if worst else ("degraded" if problems else "done")
@@ -1013,17 +1135,20 @@ class Asker:
             status = "working"
         usage = self.hub.meters.line() if self.hub is not None else ""
         got, nxt, you = _short(
-            route, spec, results, problems, rid, ext_lines=ext_lines, ext_limits=ext_limits
-        )
+            route, spec, results, problems, rid, ext_lines=ext_lines, ext_limits=ext_limits,
+            autonomy=autonomy,
+        )  # fmt: skip
         text, full = (
             relay(
                 route, spec, progress, results, seconds, problems=problems, usage=usage,
                 request_id=rid, full=f, ext_lines=ext_lines, ext_limits=ext_limits,
+                autonomy=autonomy,
             )
             for f in (False, True)
         )  # fmt: skip
         out: dict[str, Any] = {
             "request_id": rid or None,
+            "autonomy": autonomy,
             "status": status,
             "route": route.as_dict(),
             "specialist": spec,
@@ -1095,6 +1220,7 @@ def relay(
     full: bool = False,
     ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
     ext_limits: str = "",
+    autonomy: str = "",
 ) -> str:
     """The block the chat model shows unchanged. Short (the default): three lists from
     `_short`. Full: problems first, then what ran, what came back, and its limits; last, the
@@ -1103,7 +1229,7 @@ def relay(
         return replies.short(
             *_short(
                 route, spec, results, problems, request_id,
-                ext_lines=ext_lines, ext_limits=ext_limits,
+                ext_lines=ext_lines, ext_limits=ext_limits, autonomy=autonomy,
             )
         )  # fmt: skip
     blocks: dict[str, str] = {
@@ -1156,6 +1282,7 @@ def relay(
         "they answer the question. Start the request with `research:` for a checked answer.",
         "research": "The answer arrives when the run is done; until then nothing is concluded.",
         "code": "Any passages are context only; the change itself is not made or tested yet.",
+        "fetch": "The papers are indexed, not read: nothing is answered from them yet.",
     }[route.mode]
     if any(p.status == "needs_decision" for p in problems):
         limits = "Nothing was concluded: the request stopped to ask how to handle a failure."
@@ -1247,6 +1374,7 @@ def _short(
     *,
     ext_lines: Sequence[tuple[list[str], list[str], list[str], str]] = (),
     ext_limits: str = "",
+    autonomy: str = "",
 ) -> tuple[list[str], list[str], list[str]]:
     """The short reply's three lists, one sentence per item: what came back, what the assistant
     does next, and what the person needs to do (often nothing)."""
@@ -1303,6 +1431,24 @@ def _short(
             "which can't be cited."
         )
         nxt.append("The assistant says no passage applies before answering any other way.")
+    fetched = results.get("fetch")
+    if fetched is not None:
+        papers = fetched.get("papers", [])
+        indexed = [p for p in papers if p["index"].get("status") in INDEXED]
+        missed = [p for p in papers if p["index"].get("status") not in INDEXED]
+        if indexed:
+            titles = "; ".join(str(p.get("title") or "(untitled)") for p in indexed)
+            got.append(f"Indexed {len(indexed)} paper(s) for retrieval: {titles}.")
+            nxt.append("The assistant asks its question again to answer from the indexed passages.")
+        if missed:
+            names = "; ".join(
+                f"{p.get('title') or p.get('doi') or '(no id)'}: "
+                f"{p['index'].get('status') or 'no result'}"
+                for p in missed
+            )
+            got.append(f"Not indexed: {names}.")
+        if not papers:
+            got.append("No paper was named or matched, so nothing was indexed.")
     fresh = results.get("fresh")
     if fresh is not None:
         n_papers, n_web = len(fresh.get("papers", [])), len(fresh.get("web", []))
@@ -1314,7 +1460,10 @@ def _short(
             level = (brief.coverage(found) or {}).get("level") if found is not None else "none"
             if level in ("partial", "weak", "none"):
                 nxt.append(
-                    "The assistant points to the closest fresh leads, with their links, and "
+                    "The assistant fetches and indexes the closest fresh leads, then retrieves "
+                    "again."
+                    if autonomy == "delegate"
+                    else "The assistant points to the closest fresh leads, with their links, and "
                     "suggests `research:` to fetch and read them."
                 )
         else:
@@ -1360,6 +1509,7 @@ def _short(
             "quick": "These are passages, not a checked answer.",
             "research": "Nothing is concluded until the run finishes.",
             "code": "The change isn't made or tested yet.",
+            "fetch": "The papers are indexed, not read: nothing is answered from them yet.",
         }[route.mode]
     )
     if stopped:

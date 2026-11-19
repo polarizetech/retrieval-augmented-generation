@@ -14,8 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-MODES = ("quick", "research", "code")
+MODES = ("quick", "research", "code", "fetch")
 WORD = re.compile(r"[a-z0-9][a-z0-9'_-]*")
+# A DOI: 10. then 4 to 9 digits, a slash, and the suffix (the same shape calllog.py checks).
+DOI = re.compile(r"\b10\.\d{4,9}/\S+")
 QUESTION_STARTS = {
     "what", "why", "how", "is", "are", "does", "do", "did", "can", "could", "should", "would",
     "which", "when", "where", "who", "whose", "will", "was", "were", "has", "have",
@@ -24,6 +26,7 @@ SOFTENERS = {"just", "also", "quickly", "now", "then", "please"}
 EXTENSIONS = r"(?:py|ts|tsx|js|jsx|json|toml|md|yml|yaml|sh|css|html|swift|rs|go|sql|txt|cfg|ini)"
 FILE = re.compile(rf"^[\w./-]*\w\.{EXTENSIONS}$")
 SNAKE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+FETCH_VERBS = ("get", "fetch", "download", "index", "add")
 
 
 def _looks_like_code(token: str) -> bool:
@@ -54,6 +57,7 @@ class Rules:
     review: tuple[str, ...]
     request_leads: tuple[str, ...]
     research: tuple[str, ...]
+    fetch: tuple[str, ...] = ()
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
     profiles_list: tuple[str, ...] = ()
     # Config [extensions."<extension name>"]: extra trigger words for each extension's steps.
@@ -98,6 +102,7 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         review=tuple(words("code", "review")),
         request_leads=tuple(words("code", "request_leads")),
         research=tuple(words("research", "triggers")),
+        fetch=tuple(words("fetch", "triggers")),
         profiles=profiles,
         profiles_list=tuple(words("profiles_list", "triggers")),
         extensions=_extension_words(data.get("extensions", {}), extra.get("extensions", {})),
@@ -163,6 +168,15 @@ def classify(question: str, rules: Rules, mode: str = "", repo: str = "") -> Rou
         if low.startswith(prefix):
             rest = text[len(prefix) :].strip()
             return Route(chosen, f"the request starts with '{prefix}'", rest, (prefix,))
+
+    fetching = [p for p in rules.fetch if _has(_prose(low), p)]
+    if fetching:
+        reason = f"it asks for a paper to be fetched and indexed ('{fetching[0]}')"
+        return Route("fetch", reason, text, tuple(fetching))
+    doi = DOI.search(low)
+    fetch_verbs = [v for v in FETCH_VERBS if _has(_prose(low), v)]
+    if doi and fetch_verbs:
+        return Route("fetch", "it names a DOI to fetch and index", text, (doi.group(0),))
 
     reviews = [p for p in rules.review if _has(low, p)]
     if reviews:

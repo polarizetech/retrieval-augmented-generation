@@ -57,6 +57,53 @@ def asker(tmp_path: Path, calls: list[tuple[str, Any]], local: str = "", **hooks
     )
 
 
+def fetch_asker(tmp_path: Path, calls: list[tuple[str, Any]]) -> Asker:
+    """An asker whose paper search and library indexing are stubs; nothing else is reached."""
+    ask = asker(tmp_path, calls)
+
+    async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        if name == "papers__search":  # an upstream envelope: the hits are in its data
+            hits = [
+                {
+                    "title": "Binaural beats and attention",
+                    "year": 2019,
+                    "ids": {"doi": "10.1000/a"},
+                },
+                {"title": "Beat perception", "year": 2015, "ids": {"doi": "10.1000/b"}},
+                {"title": "Binaural beats in rats", "year": 2012, "ids": {"openalex": "W99"}},
+            ]
+            return {"ok": True, "data": {"hits": hits}}
+        rows = [{"identifier": i, "status": "indexed"} for i in arguments["identifiers"]]
+        return {"results": rows}
+
+    ask.call_tool = call_tool
+    return ask
+
+
+def test_a_doi_is_indexed_without_the_pipeline(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    out = asyncio.run(fetch_asker(tmp_path, calls).ask("get the paper 10.1038/xyz"))
+    assert out["route"]["mode"] == "fetch"
+    assert calls == [("rag__index_paper", {"identifiers": ["10.1038/xyz"]})]
+    assert out["specialist"]["name"] is None
+    assert out["results"]["fetch"]["papers"][0]["doi"] == "10.1038/xyz"
+
+
+def test_a_title_is_searched_and_its_top_hit_indexed_with_two_alternatives(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    out = asyncio.run(fetch_asker(tmp_path, calls).ask("fetch: binaural beats"))
+    assert calls == [
+        ("papers__search", {"query": "binaural beats", "limit": 3}),
+        ("rag__index_paper", {"identifiers": ["10.1000/a"]}),
+    ]
+    fetch = compact(out)["brief"]["tool_results"]["fetch"]
+    assert "if this isn't the paper you meant" in fetch["alternatives_note"]
+    listed = json.dumps(fetch["alternatives"])
+    assert "Beat perception" in listed
+    assert "Binaural beats in rats" in listed
+
+
 def test_a_question_runs_one_retrieval_and_nothing_else(tmp_path: Path) -> None:
     calls: list[tuple[str, Any]] = []
     out = asyncio.run(asker(tmp_path, calls).ask("What is pink noise?"))
