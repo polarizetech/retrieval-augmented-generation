@@ -74,6 +74,14 @@ there. It decides which parts of the server run, using trigger words rather than
 A question never recruits the coder, even a question about code ("how does the hook work?"). A
 prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`.
 
+Fetch mode gets a paper into the passage index without the research pipeline. It is recruited by
+`fetch:` or `paper:` at the start, a phrase such as "get the paper", "download the paper" or "index
+this paper", or a DOI in the request. A DOI or PMID named in the request goes straight to
+`rag__index_paper`. Otherwise the title is searched in the paper library (three hits), the top hit
+is indexed, and the other two are listed as "if this isn't the paper you meant". Nothing is read or
+answered in this mode: the reply says what was indexed, and a question asked afterwards draws its
+passages from those papers. No specialist runs and no fresh search is made.
+
 Up to three specialist briefs answer one question:
 - any profile the question names ("ask classical-mechanics", "@plasma-toroids", "plasma toroids")
   or the operator's own `[profiles]` words pick, first;
@@ -142,6 +150,15 @@ switching off only the reranker or only the embeddings (the library's `retrieve`
 those two fall back to scholarly search results, and the relay says so. A part the library dropped
 by itself (no reranker, lexical only) is labelled as detected. An upstream that is down fails
 with the restart command; restarting it with backoff is phase 3.
+
+**Autonomy.** `autonomy` on `ask` is `delegate` (the default; set the gateway's default with
+`ASK_AUTONOMY`) or `strict`. Under `delegate` a failure takes its labelled fallback and the request
+goes on, without asking, and the reply still says what was lost. The paper library and the
+verifier are the exceptions (`MUST_ASK` in `research_mcp/hub/contract.py`): they still ask, because
+their fallbacks would remove the citable passages or the claim check. Under `strict` every failure
+asks. A `decisions` choice the person has made for the session always applies first, so `stop`
+stops a request under either mode. Under `delegate` the answer fetches and indexes up to five of the
+closest fresh leads and retrieves again; under `strict` it suggests asking again with `research:`.
 
 **Usage.** `hub__usage` reads OpenRouter (`/api/v1/key` and `/api/v1/credits`: balance, spend
 today, this week and this month, burn per day and projected run-out), NEAR AI (needs the
