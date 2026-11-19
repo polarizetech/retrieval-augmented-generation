@@ -218,6 +218,9 @@ class Rig:
 
     def ask(self, question: str, **kw: Any) -> dict[str, Any]:
         kw.setdefault("session", "s1")
+        # These tests cover asking; delegate is covered in tests/test_autonomy.py, which passes
+        # autonomy explicitly.
+        kw.setdefault("autonomy", "strict")
         return asyncio.run(self.asker.ask(question, **kw))
 
 
