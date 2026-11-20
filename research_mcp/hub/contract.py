@@ -8,6 +8,7 @@ and as JSON after (so a client can act on it).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,7 +23,14 @@ CHOICES = ("fallback", "stop")
 AUTONOMY = ("delegate", "strict")
 # Asked about even under delegate: their fallbacks remove the citable passages or the claim check.
 MUST_ASK = ("library", "verifier")
-RESTART_HINT = "launchctl kickstart -k gui/$(id -u)/com.polarizetech.research-rag"
+# How the gateway restarts depends on where it runs: set GATEWAY_RESTART_HINT there
+# (config/rag.env); without it, the hint is the Mac's LaunchAgent.
+DEFAULT_RESTART_HINT = "launchctl kickstart -k gui/$(id -u)/com.polarizetech.research-rag"
+
+
+def restart_hint() -> str:
+    """The command that restarts this gateway, for error replies; read when the reply is made."""
+    return os.environ.get("GATEWAY_RESTART_HINT", "").strip() or DEFAULT_RESTART_HINT
 
 
 @dataclass(frozen=True)
