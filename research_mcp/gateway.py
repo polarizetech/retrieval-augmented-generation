@@ -44,7 +44,7 @@ from research_mcp import (
 from research_mcp.ask import Asker, parse_tool_text
 from research_mcp.calllog import CallLog
 from research_mcp.extensions import Context, Extension, StepSpec, ToolSpec
-from research_mcp.hub.contract import RESTART_HINT, Problem, error_result
+from research_mcp.hub.contract import Problem, error_result, restart_hint
 from research_mcp.hub.health import Hub
 from research_mcp.hub.ledger import Ledger
 from research_mcp.hub.processes import stale
@@ -204,7 +204,9 @@ class Federation:
 
 def _tool_error(message: str, component: str = "request", status: str = "failed") -> CallToolResult:
     """Every error reply carries the hub's contract: plain words first, then the JSON."""
-    hint = f"restart the gateway: `{RESTART_HINT}`" if component in ("upstream", "library") else ""
+    hint = (
+        f"restart the gateway: `{restart_hint()}`" if component in ("upstream", "library") else ""
+    )
     return error_result(Problem(status, component, message, recommendation=hint))
 
 

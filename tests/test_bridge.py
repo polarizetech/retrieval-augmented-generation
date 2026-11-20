@@ -82,3 +82,9 @@ def test_a_gateway_that_is_down_fails_one_call_only() -> None:
         assert "not reachable" in result.content[0].text  # type: ignore[union-attr]
 
     asyncio.run(go())
+
+
+def test_the_bridge_names_the_machine_a_remote_gateway_runs_on() -> None:
+    remote = bridge.restart_advice("https://research-rag.example.ts.net:8891/token/mcp")
+    assert remote == "restart it on research-rag.example.ts.net, where it runs"
+    assert bridge.restart_advice("http://127.0.0.1:8891/mcp").startswith("restart it: `")

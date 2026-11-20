@@ -19,7 +19,7 @@ import pytest
 
 from research_mcp import bridge
 from research_mcp.ask import Asker
-from research_mcp.hub.contract import COMPONENTS, RESTART_HINT, Problem, error_result
+from research_mcp.hub.contract import COMPONENTS, Problem, error_result, restart_hint
 from research_mcp.hub.health import Hub
 from research_mcp.hub.ledger import Ledger, fingerprint
 from research_pipeline.config import Settings
@@ -394,7 +394,7 @@ def test_library_and_its_search_both_down_fail_with_the_contract(tmp_path: Path)
     out = rig.ask("What is pink noise?", decisions={"library": "fallback"})
     assert_contract(out, "failed", "library")
     assert out["relay_full"].startswith("**Failed: the paper library.**")
-    assert RESTART_HINT in out["relay_full"]
+    assert restart_hint() in out["relay_full"]
 
 
 # -- model provider ---------------------------------------------------------------------------
@@ -450,7 +450,7 @@ def test_pipeline_upstream_down_fails_with_the_restart_hint_without_asking(tmp_p
     out = rig.ask("research: is pink noise safe?", decisions={})
     assert_contract(out, "failed", "upstream")
     assert "BrokenPipeError" in out["error"]["what_failed"]
-    assert RESTART_HINT in out["relay_full"]
+    assert restart_hint() in out["relay_full"]
 
 
 def test_pipeline_dying_mid_call_and_a_full_pipeline_are_reported(tmp_path: Path) -> None:
@@ -516,7 +516,7 @@ def test_the_bridge_reports_a_dead_gateway_with_the_contract() -> None:
         text = result.content[0].text  # type: ignore[union-attr]
         assert text.startswith("**Failed: the gateway.**")
         assert "files can still be read; no grounded claims" in text
-        assert RESTART_HINT in text
+        assert restart_hint() in text
 
     asyncio.run(go())
 
@@ -807,3 +807,12 @@ def test_the_gateway_lists_hub_tools_and_asks_through_the_contract(tmp_path: Pat
             assert "**Refused: the request.**" in bad.content[0].text  # type: ignore[union-attr]
 
     asyncio.run(go())
+
+
+def test_the_restart_hint_follows_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_mcp.hub import contract
+
+    monkeypatch.delenv("GATEWAY_RESTART_HINT", raising=False)
+    assert contract.restart_hint() == contract.DEFAULT_RESTART_HINT
+    monkeypatch.setenv("GATEWAY_RESTART_HINT", "sudo systemctl restart research-rag")
+    assert contract.restart_hint() == "sudo systemctl restart research-rag"
