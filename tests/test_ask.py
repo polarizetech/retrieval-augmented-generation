@@ -260,12 +260,15 @@ def test_coverage_levels_follow_the_best_reranker_score() -> None:
     assert weak is not None
     assert weak["level"] == "weak"
     assert weak["best_score"] == -1.3
-    assert "Say so before anything else" in weak["note"]
+    assert "Library: weak match" in weak["note"]
     assert coverage(
         {"results": [], "below_floor": {"n": 5, "floor": -3.0, "best_score": -4.2}}
     ) == {
         "level": "none",
-        "note": "No passage in the library matched. Say so before answering any other way.",
+        "note": (
+            "No passage in the library matched. Note it in the footer as `Library: no match`, "
+            "not in the answer."
+        ),
         "left_out": "5 weaker passage(s) scored under the relevance floor (-3; best -4.20).",
     }
     assert coverage(found(1.0, reranked=False))["level"] == "unscored"  # type: ignore[index]
@@ -292,8 +295,28 @@ def test_a_quick_reply_becomes_one_brief_with_each_passage_once(tmp_path: Path) 
     # The passage text is sent once, not three times as in the full reply.
     assert json.dumps(out).count("equal energy per octave") == 1
     assert json.dumps(full).count("equal energy per octave") >= 2
-    assert "Bottom line" in out["answer_format"]
+    assert "2 or 3 sentences" in out["answer_format"]
     assert "evidence id" in out["answer_format"]
+
+
+def test_the_brief_is_conversational_with_a_short_footer(tmp_path: Path) -> None:
+    full = asyncio.run(asker(tmp_path, []).ask("What is pink noise?"))
+    full["progress"] = full["progress"] + [
+        "Retrieval: skipped (no research content in this code task)",
+        "Sky key: not run (no place)",
+        "Left out 5 passage(s) under the relevance floor",
+    ]
+    full["usage"] = "Usage: OpenRouter: $4.20 left"
+    out = compact(full)
+    used = out["brief"]["used"]
+    assert used["services"] == "Usage: OpenRouter: $4.20 left"
+    assert used["tools"]
+    assert not any(
+        "skipped" in t or "not run" in t or t.startswith("Left out") for t in used["tools"]
+    )
+    fmt = out["answer_format"]
+    assert "2 or 3 sentences" in fmt
+    assert "say first that the library doesn't cover it" not in fmt
 
 
 def test_a_research_reply_keeps_its_run_and_next_step(tmp_path: Path) -> None:
