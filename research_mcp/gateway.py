@@ -931,6 +931,8 @@ def build_server(
                     "type": "string",
                     "enum": ["", "explore", "grounded", "publication"],
                     "default": "",
+                    "description": "explore: lenient prototyping; a code ask skips passage "
+                    "retrieval. grounded (default) and publication: full evidence rules.",
                 },
                 "session": {
                     "type": "string",

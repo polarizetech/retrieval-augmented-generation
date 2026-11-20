@@ -961,10 +961,17 @@ class Asker:
         # A step may ask for retrieval to be skipped in quick mode (a sky request: papers don't
         # hold clock times).
         context = (route.mode == "quick" and not skip) or bool(spec["name"] or research_words)
+        if route.mode == "code" and strictness == "explore":
+            context = False  # explore tier: a build step gets the rules and the plan, not passages
         if route.mode == "quick" and skip and not context:
             progress.append(f"Retrieval: skipped ({skip[0]})")
         if route.mode == "code" and not context:
-            progress.append("Retrieval: skipped (no research content in this code task)")
+            why = (
+                "explore tier"
+                if strictness == "explore"
+                else "no research content in this code task"
+            )
+            progress.append(f"Retrieval: skipped ({why})")
         if route.mode in ("quick", "code") and context:
             limit = QUICK_PASSAGES if route.mode == "quick" else CODE_PASSAGES
             t = time.monotonic()
