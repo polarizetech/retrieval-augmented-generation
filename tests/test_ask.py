@@ -155,6 +155,18 @@ def test_a_plain_code_task_skips_retrieval(tmp_path: Path) -> None:
     assert out["results"]["coder"]["runs_on"] == "client"
 
 
+def test_an_explore_code_task_skips_retrieval(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    out = asyncio.run(
+        asker(tmp_path, calls).ask(
+            "Fix the bug in the pink noise generator", repo="polarizetech/x", strictness="explore"
+        )
+    )
+    assert calls == []  # explore tier: no passages for a build step
+    assert "Retrieval: skipped (explore tier)" in out["relay_full"]
+    assert out["results"]["coder"]["runs_on"] == "client"
+
+
 def test_my_own_words_pick_the_specialist(tmp_path: Path) -> None:
     calls: list[tuple[str, Any]] = []
     a = asker(tmp_path, calls, '[profiles]\nnoise-engineering = ["hiss"]\n')
