@@ -50,6 +50,7 @@ from research_mcp.hub.ledger import Ledger
 from research_mcp.hub.processes import stale
 from research_mcp.quantities import QuantityStore, corpus_root
 from research_mcp.rag import EvidenceStore
+from research_mcp.routing import classify
 from research_pipeline import web as websearch
 from research_pipeline.config import ROOT, Settings, load_env
 from research_pipeline.papers import PaperLibrary, PapersError
@@ -111,6 +112,15 @@ def wake_hosted_models(
 async def models_ready() -> None:
     """Wait for a wake-up in flight (wake_hosted_models) to finish; returns at once if none is."""
     await asyncio.to_thread(_wake_done[0].wait)
+
+
+# The ask modes that call the hosted models (retrieval, research, indexing); code asks don't.
+MODEL_MODES = ("quick", "research", "fetch")
+
+
+def needs_models(mode: str) -> bool:
+    """Whether an ask routed to this mode uses the hosted models, so it should wake them."""
+    return mode in MODEL_MODES
 
 
 class Federation:
@@ -573,8 +583,6 @@ def build_server(
 
     @low.list_tools()
     async def list_tools() -> list[Tool]:
-        # every client lists tools as its session starts
-        wake_hosted_models(settings)
         status = Tool(
             name="gateway_status",
             description="List connected upstream MCP servers, tool counts, and startup errors.",
@@ -1087,9 +1095,17 @@ def build_server(
         ):
             return _tool_error(f"unknown tool: {name}", status="refused")
         if name == "ask":
-            # a hosted model service may be starting: wake it if it has been idle, and wait for it
-            wake_hosted_models(settings)
-            await models_ready()
+            # a hosted model service may be starting: wake it if it has been idle, and wait for it,
+            # but only for an ask that uses the models
+            route = classify(
+                arguments["question"],
+                asker.rules(),
+                arguments.get("mode", ""),
+                arguments.get("repo", ""),
+            )
+            if needs_models(route.mode):
+                wake_hosted_models(settings)
+                await models_ready()
             try:
                 return await asker.ask(
                     arguments["question"],

@@ -105,3 +105,15 @@ def test_ask_waits_for_a_wake_up_in_flight(monkeypatch):
     release.set()
     asyncio.run(asyncio.wait_for(gateway.models_ready(), 5))
     assert gateway._wake_done[0].is_set()
+
+
+def test_only_asks_that_use_the_models_wake_them() -> None:
+    from pathlib import Path
+
+    from research_mcp import gateway
+    from research_mcp.routing import classify, load_rules
+
+    rules = load_rules(Path(__file__).parent.parent / "config" / "routing.default.toml")
+    assert gateway.needs_models(classify("What is pink noise?", rules).mode)
+    assert not gateway.needs_models(classify("code: rename the helper in ask.py", rules).mode)
+    assert gateway.needs_models("fetch")
