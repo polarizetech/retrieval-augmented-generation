@@ -4,6 +4,9 @@
 #   "fastapi[standard]",
 #   "httpx",
 #   "paper-fetch[rerank] @ git+https://github.com/polarizetech/paper-fetch@d733c25",
+#   "torch",
+#   "transformers",
+#   "sentencepiece",
 # ]
 # ///
 """The research tool's model service: one app for every host.
@@ -24,6 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 RERANK_REPO = "onnx-community/bge-reranker-v2-m3-ONNX"
@@ -31,8 +35,6 @@ RERANK_REPO = "onnx-community/bge-reranker-v2-m3-ONNX"
 
 def create_app(token: str, ollama_url: str, reranker: Callable[[], Any]) -> Any:
     """The FastAPI app: the bearer check, /rerank, and Ollama's API proxied unchanged."""
-    from types import SimpleNamespace
-
     import httpx
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse, StreamingResponse
@@ -133,16 +135,53 @@ class LazyReranker:
             return False
 
 
+class TorchReranker:
+    """bge-reranker-v2-m3 in PyTorch, for a host with no CUDA where onnxruntime runs it on
+    the CPU too slowly (the Mac: device "mps", its GPU). The same model as the ONNX files, at full
+    precision: on the Mac its scores matched onnx/model.onnx to three decimals."""
+
+    def __init__(self, repo: str, device: str) -> None:
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        self.torch = torch
+        self.device = device
+        self.tokenizer = AutoTokenizer.from_pretrained(repo)
+        self.model = AutoModelForSequenceClassification.from_pretrained(repo).to(device).eval()
+        self.session = SimpleNamespace(get_providers=lambda: [f"torch:{device}"])
+
+    def score(self, query: str, passages: list[Any], batch: int = 8) -> list[float]:
+        pairs = [[query, p.text] for p in passages]
+        scores: list[float] = []
+        with self.torch.no_grad():
+            for i in range(0, len(pairs), batch):
+                inputs = self.tokenizer(
+                    pairs[i : i + batch],
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                ).to(self.device)
+                scores += self.model(**inputs).logits.view(-1).float().cpu().tolist()
+        return scores
+
+
 def main() -> None:
     import uvicorn
 
     key_file = os.environ.get("MODELS_KEY_FILE", "~/.config/polarize/models.key")
     token = Path(key_file).expanduser().read_text().strip()
-    lazy = LazyReranker(
-        RERANK_REPO,
-        os.environ.get("RERANK_FILE", "onnx/model.onnx"),
-        float(os.environ.get("RERANK_IDLE_SECONDS", "600")),
-    )
+    idle = float(os.environ.get("RERANK_IDLE_SECONDS", "600"))
+    if os.environ.get("RERANK_BACKEND", "onnx") == "torch":
+        device = os.environ.get("RERANK_DEVICE", "mps")
+        lazy = LazyReranker(
+            os.environ.get("RERANK_TORCH_REPO", "BAAI/bge-reranker-v2-m3"),
+            "",
+            idle,
+            loader=lambda repo, _file: TorchReranker(repo, device),
+        )
+    else:
+        lazy = LazyReranker(RERANK_REPO, os.environ.get("RERANK_FILE", "onnx/model.onnx"), idle)
 
     def sweep() -> None:
         while True:
