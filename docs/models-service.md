@@ -23,6 +23,10 @@ router says which service it is using; each switch is logged to the router's jou
   droplet (`~/.config/polarize/models.key`). The reranker loads on the first /rerank and is dropped
   after `RERANK_IDLE_SECONDS` (600) without one; `RERANK_FILE` picks the ONNX file (default
   `onnx/model.onnx`, the file Modal serves).
+- `RERANK_BACKEND=torch` runs the reranker in PyTorch on the Mac's GPU (`RERANK_DEVICE`, default
+  `mps`), from `BAAI/bge-reranker-v2-m3` (`RERANK_TORCH_REPO`). Its scores match `onnx/model.onnx`;
+  onnxruntime on the Mac's CPU was too slow for the 40 s retrieval limit (about 36 s for 50 passages
+  with int8, 5 s on the GPU). The Mac's LaunchAgent sets it.
 - Published to the tailnet only: `tailscale serve --bg --https=8896 http://localhost:8896`.
 
 The Mac has to be awake and on the tailnet for the fallback to answer. When neither service
