@@ -21,6 +21,7 @@ import asyncio
 import itertools
 import os
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +30,12 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import LATEST_PROTOCOL_VERSION, CallToolResult, Tool
 
-from research_mcp.hub.contract import Problem, error_result
+from research_mcp.hub.contract import Problem, error_result, restart_hint
 
 # A research run or a large fetch can hold a call open for minutes; the client's own MCP
 # timeout is what bounds a call, not the bridge.
 CALL_SECONDS = 1800.0
 STARTUP_ATTEMPTS = 15
-RESTART_HINT = "launchctl kickstart -k gui/$(id -u)/com.polarizetech.research-rag"
 
 
 def session_headers() -> dict[str, str]:
@@ -45,6 +45,15 @@ def session_headers() -> dict[str, str]:
 
 def _log(message: str) -> None:
     print(f"research-rag bridge: {message}", file=sys.stderr, flush=True)
+
+
+def restart_advice(url: str) -> str:
+    """How to restart the gateway this bridge connects to: the local command when it runs here,
+    otherwise the machine it runs on."""
+    host = urllib.parse.urlparse(url).hostname or ""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return f"restart it: `{restart_hint()}`"
+    return f"restart it on {host}, where it runs"
 
 
 class GatewayError(RuntimeError):
@@ -93,7 +102,9 @@ class Upstream:
                 return await self.request("initialize", params)
             except GatewayError as exc:
                 if attempt == STARTUP_ATTEMPTS - 1:
-                    raise GatewayError(f"{exc}. Is it running? {RESTART_HINT}") from exc
+                    raise GatewayError(
+                        f"{exc}. Is it running? {restart_advice(self.url)}."
+                    ) from exc
                 await asyncio.sleep(2)
         raise AssertionError("unreachable")
 
@@ -108,7 +119,7 @@ class Upstream:
                 "failed",
                 "gateway",
                 f"{exc}.",
-                recommendation=f"start or restart it: `{RESTART_HINT}`",
+                recommendation=restart_advice(self.url),
                 retry_after=30,
             )
             return error_result(problem)

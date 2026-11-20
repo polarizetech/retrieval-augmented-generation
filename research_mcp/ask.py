@@ -28,10 +28,10 @@ from research_mcp.hub.contract import (
     COMPONENTS,
     MUST_ASK,
     NO_FALLBACK,
-    RESTART_HINT,
     Problem,
     first_sentence,
     needs_decision,
+    restart_hint,
 )
 from research_mcp.hub.health import Hub
 from research_mcp.routing import (
@@ -252,7 +252,7 @@ class Asker:
                     "failed",
                     component,
                     what_failed,
-                    recommendation=f"restart the gateway: `{RESTART_HINT}`",
+                    recommendation=f"restart the gateway: `{restart_hint()}`",
                     retry_after=retry,
                 )
             )
@@ -386,7 +386,7 @@ class Asker:
                     "library",
                     f"{error} The scholarly search fallback failed too ({type(exc).__name__}).",
                     recommendation="check `hub__status`; the library may need a gateway restart: "
-                    f"`{RESTART_HINT}`",
+                    f"`{restart_hint()}`",
                     retry_after=self._retry("library"),
                 )
             ) from exc
@@ -578,7 +578,7 @@ class Asker:
                     "library",
                     f"The paper library did not index the paper: {type(exc).__name__}.",
                     recommendation=f"check `hub__status`; the library may need a restart: "
-                    f"`{RESTART_HINT}`",
+                    f"`{restart_hint()}`",
                 )
             ) from exc
         return list(out.get("results") or [])
