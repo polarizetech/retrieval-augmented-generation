@@ -80,8 +80,8 @@ def pull() -> None:
     gpu=["L4", "A10", "T4"],
     volumes={"/models": volume},
     secrets=[modal.Secret.from_name("research-rag-models")],
-    # stay up 10 idle minutes, so a session's calls find the models loaded
-    scaledown_window=600,
+    # stay up 5 idle minutes, so a session's calls find the models loaded
+    scaledown_window=300,
 )
 # one container takes the gateway's overlapping calls instead of starting more
 @modal.concurrent(max_inputs=8)
