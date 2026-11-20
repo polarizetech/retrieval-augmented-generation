@@ -7,6 +7,7 @@ Same models, same files, same scoring as before, on other hardware:
   checks), proxied unchanged.
 - POST /rerank for bge-reranker-v2-m3 (onnx-community int8 ONNX), scored by paper-fetch's own
   OnnxReranker.score; only the onnxruntime session moves to the GPU.
+The app itself is deploy/models_service.py, the same one the Mac fallback runs.
 
 Every request needs `Authorization: Bearer <token>`; the token is the Modal secret
 `research-rag-models` (key MODELS_TOKEN). Containers start on demand and stop when idle, with
@@ -19,6 +20,8 @@ Clients: PIPELINE_OLLAMA_URL and PIPELINE_OLLAMA_KEY_FILE (pipeline and gateway)
 PAPER_FETCH_EMBED_URL=<url>/v1 and PAPER_FETCH_RERANK_URL=<url>, each with its _KEY_FILE
 (paper-fetch).
 """
+
+from pathlib import Path
 
 import modal
 
@@ -41,6 +44,7 @@ image = (
     )
     .run_commands("pip uninstall -y onnxruntime", "pip install 'onnxruntime-gpu[cuda,cudnn]'")
     .env({"OLLAMA_MODELS": "/models/ollama", "HF_HOME": "/models/hf", "OLLAMA_KEEP_ALIVE": "-1"})
+    .add_local_file(Path(__file__).parent / "models_service.py", "/root/models_service.py")
 )
 app = modal.App("research-rag-models", image=image)
 
@@ -125,48 +129,7 @@ class Models:
     @modal.asgi_app()
     def web(self):
         import os
-        from types import SimpleNamespace
 
-        import httpx
-        from fastapi import FastAPI, HTTPException, Request
-        from fastapi.responses import JSONResponse, StreamingResponse
-        from starlette.background import BackgroundTask
+        from models_service import create_app
 
-        token = os.environ["MODELS_TOKEN"]
-        api = FastAPI()
-        # No timeout: a claim check streams as long as it needs; the pipeline bounds each call.
-        client = httpx.AsyncClient(base_url=OLLAMA, timeout=None)  # noqa: S113
-
-        @api.middleware("http")
-        async def bearer(request: Request, call_next):
-            if request.headers.get("authorization") != f"Bearer {token}":
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
-            return await call_next(request)
-
-        @api.post("/rerank")
-        def rerank(body: dict) -> dict:
-            passages = [SimpleNamespace(text=text) for text in body["documents"]]
-            return {
-                "scores": self.reranker.score(body["query"], passages),
-                "providers": self.reranker.session.get_providers(),
-            }
-
-        @api.api_route("/{path:path}", methods=["GET", "POST"])
-        async def ollama(path: str, request: Request):
-            if not path.startswith(("api/", "v1/")):
-                raise HTTPException(status_code=404)
-            upstream = client.build_request(
-                request.method,
-                "/" + path,
-                content=await request.body(),
-                headers={"content-type": request.headers.get("content-type", "application/json")},
-            )
-            response = await client.send(upstream, stream=True)
-            return StreamingResponse(
-                response.aiter_raw(),
-                status_code=response.status_code,
-                media_type=response.headers.get("content-type"),
-                background=BackgroundTask(response.aclose),
-            )
-
-        return api
+        return create_app(os.environ["MODELS_TOKEN"], OLLAMA, lambda: self.reranker)
