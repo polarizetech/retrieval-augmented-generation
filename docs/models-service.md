@@ -27,6 +27,9 @@ router says which service it is using; each switch is logged to the router's jou
   `mps`), from `BAAI/bge-reranker-v2-m3` (`RERANK_TORCH_REPO`). Its scores match `onnx/model.onnx`;
   onnxruntime on the Mac's CPU was too slow for the 40 s retrieval limit (about 36 s for 50 passages
   with int8, 5 s on the GPU). The Mac's LaunchAgent sets it.
+- Memory: on a 16 GB Mac, bespoke-minicheck (about 7 GB in Ollama) and the GPU reranker (about
+  6 GB) together left 8% free and pushed the Mac into swap. Keep `RERANK_IDLE_SECONDS` at its 600
+  default rather than `inf`, and `ollama stop bespoke-minicheck` frees the claim checker at once.
 - Published to the tailnet only: `tailscale serve --bg --https=8896 http://localhost:8896`.
 
 The Mac has to be awake and on the tailnet for the fallback to answer. When neither service
@@ -46,6 +49,19 @@ answers, the router returns 503 and the gateway degrades as before.
 - `~/.config/paper-fetch/retrieval.env`: `PAPER_FETCH_EMBED_URL=http://127.0.0.1:8895/v1` and
   `PAPER_FETCH_RERANK_URL=http://127.0.0.1:8895`.
 - The key files stay as they are: the router passes the key through, and both services use it.
+
+## Cost
+
+Checked 2026-11-21 on modal.com/pricing and digitalocean.com/pricing/gpu-droplets:
+
+- Modal Starter, the plan in use: $0 a month plus compute, with $30 of free compute a month. Team is
+  $250 a month plus compute ($100 credit). An L4 is $0.000222 a second, so the credit buys about 37
+  L4-hours; with `scaledown_window=300`, each cold wake costs at least about 7 cents.
+- In November 2026 every ask and every session start woke the GPU, so it ran about 20 hours a day
+  and spent about $40 before Modal started answering 429; since then the router has used the Mac.
+  PR #64 wakes it only for asks that use the models.
+- DigitalOcean's cheapest GPU Droplet (RTX 4000 Ada) is $0.76 an hour, about $511 a month at its
+  672-hour monthly cap, and a powered-off Droplet is still billed, so it was not used.
 
 ## Later
 
