@@ -39,6 +39,8 @@ Repository = "https://github.com/polarizetech/retrieval-augmented-generation"
 dev = [
   # The tests run the pipeline against a real, in-memory paper library (no network). The pipeline
   # itself talks to paper-fetch over MCP and does not import it.
+  "fastapi>=0.115",
+  "httpx>=0.28",
   "paper-fetch[retrieval] @ git+https://github.com/polarizetech/paper-fetch@7001d7882e4669ace263209de91e2f970ab15fe2",
   "pyright>=1.1.400",
   "pytest>=8",
