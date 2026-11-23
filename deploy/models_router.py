@@ -17,16 +17,27 @@ Settings: `MODELS_PROVIDERS` is a comma list of names (default `local,modal`). E
 such as tailscaled's outbound proxy on a host whose Tailscale runs in userspace mode. The older
 settings still work and mean modal then local: `MODELS_PRIMARY_URL`, `MODELS_FALLBACK_URL` and
 `MODELS_FALLBACK_PROXY`.
+
+Per provider, `MODELS_<N>_KIND` is `ollama` (default) or `digitalocean`. `MODELS_<N>_KEY_FILE` names
+a file holding that provider's key, sent in place of the caller's key. `MODELS_<N>_EMBED_MODEL` and
+`MODELS_<N>_RERANK_MODEL` name the models a `digitalocean` provider uses (`bge-m3` and
+`bge-reranker-v2-m3` by default). A `digitalocean` provider serves reranking and embeddings and
+hands every other call (chat, tags, ps) to the next provider.
 """
 
+import json
+import math
 import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 OUT_STATUSES = (402, 429)
+DO_OUT_STATUSES = (401, 402, 403, 429)
 DEFAULT_PROVIDERS = "local,modal"
+KINDS = ("ollama", "digitalocean")
 
 
 @dataclass
@@ -36,6 +47,10 @@ class Provider:
     name: str
     url: str
     proxy: str
+    kind: str = "ollama"
+    key: str = ""
+    embed_model: str = "bge-m3"
+    rerank_model: str = "bge-reranker-v2-m3"
     out_until: float = float("-inf")
 
     def __post_init__(self) -> None:
@@ -78,11 +93,75 @@ class Providers:
         }
 
 
-def create_app(providers: Providers) -> Any:
+def digitalocean_request(
+    method: str, path: str, body: bytes, provider: Provider
+) -> tuple[str, dict, str] | None:
+    """The DigitalOcean path, JSON body and reply kind for a call, or None when it doesn't serve it.
+
+    DigitalOcean's serverless inference (`https://inference.do-ai.run`) serves bge-reranker-v2-m3
+    and bge-m3, so `rerank`, `v1/embeddings` and Ollama's `api/embed` map onto its `v1/rerank` and
+    `v1/embeddings`. Every other call (chat, tags, ps) is left to the next provider.
+    """
+    path = path.lstrip("/")
+    if method != "POST":
+        return None
+    if path == "rerank":
+        b = json.loads(body)
+        return (
+            "v1/rerank",
+            {"model": provider.rerank_model, "query": b["query"], "documents": b["documents"]},
+            "rerank",
+        )
+    if path == "v1/embeddings":
+        b = json.loads(body)
+        return ("v1/embeddings", {"model": provider.embed_model, "input": b["input"]}, "openai")
+    if path == "api/embed":
+        b = json.loads(body)
+        text = b["input"]
+        if isinstance(text, str):
+            text = [text]
+        return ("v1/embeddings", {"model": provider.embed_model, "input": text}, "ollama")
+    return None
+
+
+def _unit(vector: list[float]) -> list[float]:
+    """The vector divided by its Euclidean norm; a zero vector is returned as it is."""
+    norm = math.sqrt(sum(x * x for x in vector))
+    if norm == 0:
+        return list(vector)
+    return [x / norm for x in vector]
+
+
+def digitalocean_response(kind: str, body: dict, model: str) -> dict:
+    """The DigitalOcean reply reshaped into the shape the caller expects.
+
+    For `rerank`, the scores come back one per document in document order, placed by each
+    result's `index`; a document with no result gets -inf, so it can never outrank a real one.
+
+    For `openai` and `ollama`, the embeddings come back in index order. DigitalOcean's embedding
+    vectors are not unit length while Ollama's are, so the router scales them to unit length to
+    match what the Mac and Modal return.
+    """
+    if kind == "rerank":
+        results = body["results"]
+        scores = [float("-inf")] * len(results)
+        for r in results:
+            scores[r["index"]] = r["relevance_score"]
+        return {"scores": scores}
+    if kind == "openai":
+        data = sorted(body["data"], key=lambda d: d["index"])
+        return {**body, "data": [{**d, "embedding": _unit(d["embedding"])} for d in data]}
+    if kind == "ollama":
+        data = sorted(body["data"], key=lambda d: d["index"])
+        return {"model": model, "embeddings": [_unit(d["embedding"]) for d in data]}
+    raise ValueError(f"no reply shaping for {kind!r} yet")
+
+
+def create_app(providers: Providers, transports: Mapping[str, Any] | None = None) -> Any:
     """The FastAPI app: /router/status, and every other call forwarded with its body streamed."""
     import httpx
     from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import JSONResponse, Response, StreamingResponse
     from starlette.background import BackgroundTask
 
     api = FastAPI()
@@ -90,8 +169,14 @@ def create_app(providers: Providers) -> Any:
     # with a proxy setting goes through that proxy (tailscaled's, to reach the tailnet); no
     # client takes proxy settings from the environment.
     timeout = httpx.Timeout(None, connect=10.0)
+    transports = transports or {}
     clients = {
-        p.name: httpx.AsyncClient(timeout=timeout, trust_env=False, proxy=p.proxy or None)
+        p.name: httpx.AsyncClient(
+            timeout=timeout,
+            trust_env=False,
+            proxy=p.proxy or None,
+            **({"transport": transports[p.name]} if p.name in transports else {}),
+        )
         for p in providers.providers
     }
 
@@ -107,8 +192,44 @@ def create_app(providers: Providers) -> Any:
         last = "nothing was tried"
         for p in providers.order():
             client = clients[p.name]
+            if p.kind == "digitalocean":
+                sent = digitalocean_request(request.method, path, body, p)
+                if sent is None:
+                    last = f"{p.name}: does not serve {path}"
+                    continue
+                do_path, json_body, kind = sent
+                do_headers = {"content-type": "application/json"}
+                if p.key:
+                    do_headers["authorization"] = f"Bearer {p.key}"
+                try:
+                    do_response = await client.post(
+                        f"{p.url}/{do_path}", json=json_body, headers=do_headers
+                    )
+                except httpx.TransportError as exc:
+                    providers.mark_out(p)
+                    last = f"{p.name}: {type(exc).__name__}"
+                    print(f"models router: {last}; trying the next provider", flush=True)
+                    continue
+                if do_response.status_code in DO_OUT_STATUSES:
+                    providers.mark_out(p)
+                    last = f"{p.name}: HTTP {do_response.status_code}"
+                    print(f"models router: {last}; the next provider serves for now", flush=True)
+                    continue
+                if 200 <= do_response.status_code < 300:
+                    return JSONResponse(
+                        digitalocean_response(kind, do_response.json(), p.embed_model),
+                        status_code=do_response.status_code,
+                    )
+                return Response(
+                    content=do_response.content,
+                    status_code=do_response.status_code,
+                    media_type=do_response.headers.get("content-type"),
+                )
+            out_headers = dict(headers)
+            if p.key:
+                out_headers["authorization"] = f"Bearer {p.key}"
             outgoing = client.build_request(
-                request.method, f"{p.url}/{path}", content=body, headers=headers
+                request.method, f"{p.url}/{path}", content=body, headers=out_headers
             )
             try:
                 response = await client.send(outgoing, stream=True)
@@ -140,11 +261,28 @@ def _named_providers(env: Mapping[str, str], names: list[str]) -> list[Provider]
         name = raw.strip().lower()
         if not name:
             continue
-        url_var = f"MODELS_{name.upper()}_URL"
+        upper = name.upper()
+        url_var = f"MODELS_{upper}_URL"
         if url_var not in env:
             raise KeyError(url_var)
-        proxy = env.get(f"MODELS_{name.upper()}_PROXY") or ""
-        providers.append(Provider(name, env[url_var], proxy))
+        proxy = env.get(f"MODELS_{upper}_PROXY") or ""
+        kind_var = f"MODELS_{upper}_KIND"
+        kind = (env.get(kind_var) or "ollama").strip().lower()
+        if kind not in KINDS:
+            raise ValueError(f"{kind_var} must be ollama or digitalocean, not {kind!r}")
+        key_file = env.get(f"MODELS_{upper}_KEY_FILE") or ""
+        key = Path(key_file).expanduser().read_text().strip() if key_file else ""
+        providers.append(
+            Provider(
+                name,
+                env[url_var],
+                proxy,
+                kind=kind,
+                key=key,
+                embed_model=env.get(f"MODELS_{upper}_EMBED_MODEL") or "bge-m3",
+                rerank_model=env.get(f"MODELS_{upper}_RERANK_MODEL") or "bge-reranker-v2-m3",
+            )
+        )
     return providers
 
 

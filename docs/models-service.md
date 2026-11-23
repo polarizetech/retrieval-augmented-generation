@@ -8,6 +8,7 @@ Ollama and the models can run it:
 |---|---|---|
 | the Mac (Ollama with Metal) | `uv run deploy/models_service.py` | first (default) |
 | Modal (GPU) | `modal deploy deploy/modal_models.py` | next |
+| DigitalOcean (serverless inference) | `MODELS_<N>_KIND=digitalocean`, `https://inference.do-ai.run` | reranking and embeddings only |
 
 The droplet's gateway, pipeline and paper-fetch call `deploy/models_router.py` on
 `127.0.0.1:8895`, not a model service. The router tries providers in the order `MODELS_PROVIDERS`
@@ -35,6 +36,21 @@ remaining cooldown; each switch is logged to the router's journal.
 
 The Mac has to be awake and on the tailnet for the fallback to answer. When neither service
 answers, the router returns 503 and the gateway degrades as before.
+
+## DigitalOcean
+
+- The router translates `/rerank`, `/v1/embeddings` and Ollama's `/api/embed` into DigitalOcean's
+  `/v1/rerank` and `/v1/embeddings` (models `bge-reranker-v2-m3` and `bge-m3`). It scales its
+  embedding vectors to unit length, to match Ollama's.
+- Every other call (the claim checker's `/api/chat`, `/api/tags`, `/api/ps`) goes to the next
+  provider.
+- 401, 402, 403 and 429 put it out for the cooldown.
+- Its key is a DigitalOcean model access key in `MODELS_<N>_KEY_FILE`, sent in place of the caller's
+  key.
+- The droplet's order would be `MODELS_PROVIDERS=digitalocean,local,modal`.
+- Checked by us on 2026-11-23 on 100 passages from the paper index: the reranker matched the Mac's
+  full-precision reranker to within 1.1e-5, with the same order and top 5; bge-m3 matched Ollama's
+  at a cosine similarity of at least 0.9996.
 
 ## The droplet
 
@@ -66,6 +82,9 @@ Checked 2026-11-21 on modal.com/pricing and digitalocean.com/pricing/gpu-droplet
   PR #64 wakes it only for asks that use the models.
 - DigitalOcean's cheapest GPU Droplet (RTX 4000 Ada) is $0.76 an hour, about $511 a month at its
   672-hour monthly cap, and a powered-off Droplet is still billed, so it was not used.
+- DigitalOcean serverless inference (its pricing docs, checked 2026-11-23, last verified by
+  DigitalOcean on 18 Nov 2026) charges $0.01 per million tokens for bge-reranker-v2-m3 and $0.02 per
+  million for bge-m3, prepaid only. Reranking 20 passages took about 6,000 tokens in our check.
 
 ## Later
 
