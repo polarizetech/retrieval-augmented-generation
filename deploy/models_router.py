@@ -73,9 +73,7 @@ class Providers:
             "order": [p.name for p in self.providers],
             "using": using.name,
             "out_for_seconds": {
-                p.name: round(p.out_until - self.clock(), 1)
-                for p in self.providers
-                if self.out(p)
+                p.name: round(p.out_until - self.clock(), 1) for p in self.providers if self.out(p)
             },
         }
 
