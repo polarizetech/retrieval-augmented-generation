@@ -6,14 +6,15 @@ Ollama and the models can run it:
 
 | host | how | role |
 |---|---|---|
-| Modal (GPU) | `modal deploy deploy/modal_models.py` | primary |
-| the Mac (Ollama with Metal) | `uv run deploy/models_service.py` | fallback |
+| the Mac (Ollama with Metal) | `uv run deploy/models_service.py` | first (default) |
+| Modal (GPU) | `modal deploy deploy/modal_models.py` | next |
 
 The droplet's gateway, pipeline and paper-fetch call `deploy/models_router.py` on
-`127.0.0.1:8895`, not a model service. The router sends each call to Modal. When Modal answers 402
-or 429 (out of budget or limited) or cannot be reached, the router uses the Mac for the next
-`MODELS_COOLDOWN_SECONDS` (900 by default), then tries Modal again. `GET /router/status` on the
-router says which service it is using; each switch is logged to the router's journal.
+`127.0.0.1:8895`, not a model service. The router tries providers in the order `MODELS_PROVIDERS`
+gives (default `local,modal`). A provider that answers 402 or 429, or can't be reached, sits out for
+`MODELS_COOLDOWN_SECONDS` (900 by default) while the next one serves. When all are out, all are
+still tried in order. `GET /router/status` shows the order, the provider in use and each provider's
+remaining cooldown; each switch is logged to the router's journal.
 
 ## The Mac
 
@@ -38,11 +39,14 @@ answers, the router returns 503 and the gateway degrades as before.
 ## The droplet
 
 - `research-rag-models-router.service` runs `uv run deploy/models_router.py` with
-  `MODELS_PRIMARY_URL` (the Modal URL) and `MODELS_FALLBACK_URL` (the Mac's tailnet URL on 8896).
+  `MODELS_PROVIDERS`, `MODELS_<NAME>_URL` and `MODELS_<NAME>_PROXY` (for example `MODELS_LOCAL_URL`
+  set to the Mac's tailnet URL on 8896, `MODELS_MODAL_URL` set to the Modal URL, and
+  `MODELS_LOCAL_PROXY=http://127.0.0.1:1055`). The old `MODELS_PRIMARY_URL`, `MODELS_FALLBACK_URL`
+  and `MODELS_FALLBACK_PROXY` still work and mean modal then local.
 - The droplet's Tailscale runs in userspace mode (`--tun=userspace-networking`), so its programs
   have no route to the tailnet. tailscaled also runs its outbound HTTP proxy on loopback only
   (`--outbound-http-proxy-listen=127.0.0.1:1055` in `/etc/default/tailscaled`), and the router
-  sets `MODELS_FALLBACK_PROXY=http://127.0.0.1:1055`: only the router's calls to the Mac use it.
+  sets `MODELS_LOCAL_PROXY=http://127.0.0.1:1055`: only the router's calls to the Mac use it.
   Never bind that proxy to a public address. Paper and web fetches don't use it, so a bad link
   can't reach the tailnet.
 - `config/rag.env`: `PIPELINE_OLLAMA_URL=http://127.0.0.1:8895`.
