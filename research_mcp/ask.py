@@ -1161,6 +1161,7 @@ class Asker:
             "specialist": spec,
             "progress": progress,
             "seconds": seconds,
+            "usage": usage,
             "results": results,
             "relay": text,
             "relay_full": full,
@@ -1417,10 +1418,8 @@ def _short(
                 f"No passage was relevant enough to show: the {low['n']} closest scored at most "
                 f"{low['best_score']:.2f}, under the relevance floor of {low['floor']:g}."
             )
-            nxt.append("The assistant says no passage applies before answering any other way.")
         else:
             got.append("No passage in the library matched.")
-            nxt.append("The assistant says no passage applies before answering any other way.")
         if rows and found.get("below_floor"):
             got.append(
                 f"{found['below_floor']['n']} weaker passage(s) under the relevance floor were "
@@ -1437,7 +1436,6 @@ def _short(
             f"Found {len(hits.get('results', []))} paper title(s) in the scholarly indexes, "
             "which can't be cited."
         )
-        nxt.append("The assistant says no passage applies before answering any other way.")
     fetched = results.get("fetch")
     if fetched is not None:
         papers = fetched.get("papers", [])
