@@ -169,8 +169,8 @@ the cache, so a reply never waits on a provider (in the full reply, `relay_full`
 
 **Provider ladders.** `config/hub.default.toml` (your own values in the gitignored
 `config/hub.toml`) gives each pipeline step its providers in order: planning, extraction and
-writing go OpenRouter Qwen3.8 27B (zero retention), then NEAR AI direct, then the local
-`qwen3:4b-instruct-2507`. A provider counts as low at USD 1 left or 95 % of a key limit used.
+writing go by default to OpenRouter Qwen3.8 27B (zero retention), then the local
+`qwen3:4b-instruct-2507`; NEAR AI and other providers are optional, added to a ladder in `config/hub.toml`. A provider counts as low at USD 1 left or 95 % of a key limit used.
 Checking stays on the local verifier and is not laddered: when it is down, runs drop to explore
 strictness and claims are marked unverified. Inside a run, a failing or low provider moves the
 step down at once and the run log's notes say so; before a run starts, `ask` checks the ladder
