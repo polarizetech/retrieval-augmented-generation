@@ -104,8 +104,8 @@ tokens, cost), so it can report the balance, the burn rate per day and week, and
   can show the same without spending tokens on every reply.
 
 **Provider ladders.** Each pipeline step (planning, extraction, writing, checking) has its own ordered list
-of providers, for example writing: OpenRouter Qwen3.8 27B (zero retention), then NEAR AI direct, then the
-local model; checking: the local verifier first, since it is free. The gateway moves down a ladder when a
+of providers, for example writing: the shipped default is OpenRouter Qwen3.8 27B (zero retention), then the
+local model; other providers (such as NEAR AI direct) are added to a ladder in config/hub.toml; checking: the local verifier first, since it is free. The gateway moves down a ladder when a
 provider fails, runs low (an operator threshold, such as USD 1 left or 95 % used) or is exhausted, and
 back up when it recovers or resets. The relay block names the provider each step used.
 
@@ -161,9 +161,9 @@ Taken 2026-10-28:
   `needs_decision`; the answer (`fallback` or `stop`) holds for the rest of that session.
 - **Session identity:** sessions pass their name and project; otherwise the gateway infers them and
   marks them as inferred.
-- **Ladders and thresholds:** planning, extraction and writing go OpenRouter Qwen3.8 27B (zero
-  retention), then NEAR AI direct, then local `qwen3:4b-instruct-2507`; checking stays on the local
-  verifier. A provider is low at USD 1 left or 95 % of a key limit used.
+- **Ladders and thresholds:** planning, extraction and writing go by default to OpenRouter Qwen3.8 27B
+  (zero retention), then local `qwen3:4b-instruct-2507`; NEAR AI and others are optional via
+  config/hub.toml; checking stays on the local verifier. A provider is low at USD 1 left or 95 % of a key limit used.
 
 Waiting:
 

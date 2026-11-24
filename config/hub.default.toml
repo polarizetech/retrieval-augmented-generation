@@ -53,6 +53,7 @@ key_file = "~/.config/research-rag/openrouter.key"
 min_usd = 1.0
 max_used_fraction = 0.95
 
+# Optional: on no ladder by default. Add it to a ladder in your config/hub.toml.
 [providers.nearai]
 kind = "openai"
 label = "NEAR AI direct, Qwen3.8 27B"
@@ -94,9 +95,9 @@ model = "qwen3:4b-instruct-2507-q4_K_M"
 # Checking runs on the local verifier (PIPELINE_VERIFIER_MODEL) and is not laddered: when the
 # verifier is down, runs drop to explore strictness and claims are marked unverified.
 [ladders]
-planning = ["openrouter", "nearai", "local"]
-extraction = ["openrouter", "nearai", "local"]
-writing = ["openrouter", "nearai", "local"]
+planning = ["openrouter", "local"]
+extraction = ["openrouter", "local"]
+writing = ["openrouter", "local"]
 
 # Which step each model task belongs to.
 [steps]

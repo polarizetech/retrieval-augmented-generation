@@ -106,8 +106,7 @@ Neon's free plan is enough for this: 1 GB per project as of November 2026. Check
    export RECORDS_URL="https://<your-mac>.<your-tailnet>.ts.net:8892"
    ```
 
-6. **Make the record pages reachable from your other devices, on the tailnet only.** Run this on
-   the Mac's main Tailscale, not the `polarize-mcp` one:
+6. **Make the record pages reachable from your other devices, on the tailnet only.** Run this on the machine's main Tailscale node (not a separate node you may use for the public endpoint):
 
    ```bash
    tailscale serve --bg --https=8892 http://localhost:8891

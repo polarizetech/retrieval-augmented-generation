@@ -99,6 +99,8 @@ echo "PAPER_FETCH_EMBED_MODEL=bge-m3" >> ~/.config/paper-fetch/retrieval.env
 Reranking is paper-fetch's cross-encoder: install `paper-fetch[rerank]` and set
 `PAPER_FETCH_RERANK_MODEL` (see its README); without it passages are read in retrieval order.
 
+**Point the plugin at your gateway.** The plugin in `plugin/scientific-research-rag` ships with the placeholder URL `https://<your-gateway-host>/retrieval-augmented-generation`. Set it to your own gateway's public base URL (the same value as `MCP_PUBLIC_URL`, see [MCP clients](docs/mcp-clients.md)) with `python scripts/configure_plugin.py https://your-host/retrieval-augmented-generation`, or by putting `MCP_PUBLIC_URL` in `config/rag.env` and running the script with no argument, or by editing the `url` in both `plugin/scientific-research-rag/.mcp.json` and `mcp.json` by hand. The plugin will not connect until this is set. Local stdio use (the "As an MCP server" section) does not need it.
+
 ## Use
 
 ```bash
@@ -215,6 +217,7 @@ adapter. Through MCP the pipeline
 uses the calling model (Claude, ChatGPT) for its model steps by default: code runs every stage and
 hands the client batches of tasks with a JSON schema to answer, and Ollama is only needed for
 embeddings. See [MCP clients](docs/mcp-clients.md) for the workflow and the HTTP transport.
+Remote clients (claude.ai, ChatGPT) use the plugin or a connector pointed at your public URL; see "Point the plugin at your gateway" above.
 
 Every tool call is recorded in a hosted Postgres database, and each reply links to its record
 and to the page of any research doc it mentions, with every call that refers to that doc. See

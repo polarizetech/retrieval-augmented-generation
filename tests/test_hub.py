@@ -625,7 +625,7 @@ def test_the_relay_ends_with_the_request_id_and_usage_line(tmp_path: Path) -> No
     assert last.startswith(f"_Request `{out['request_id']}` · Usage: OpenRouter: $20.00 left")
 
 
-def test_the_hub_config_merges_the_operators_file_and_ships_the_agreed_ladders(
+def test_the_hub_config_merges_the_operators_file_and_ships_the_default_ladders(
     tmp_path: Path,
 ) -> None:
     local = tmp_path / "hub.toml"
@@ -634,7 +634,7 @@ def test_the_hub_config_merges_the_operators_file_and_ships_the_agreed_ladders(
     assert config["providers"]["openrouter"]["min_usd"] == 5.0
     assert config["providers"]["openrouter"]["max_used_fraction"] == 0.95
     for step in ("planning", "extraction", "writing"):
-        assert config["ladders"][step] == ["openrouter", "nearai", "local"]
+        assert config["ladders"][step] == ["openrouter", "local"]
     assert config["providers"]["local"]["model"].startswith("qwen3:4b-instruct-2507")
 
 

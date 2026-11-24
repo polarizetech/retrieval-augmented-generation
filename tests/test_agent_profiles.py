@@ -7,7 +7,7 @@ import pytest
 from research_pipeline.agent_profiles import catalogue, route
 from research_pipeline.prompts import Prompts
 
-# The frontmatter lines the polarize-agents briefs now carry for their keywords, by specialist.
+# The frontmatter lines the private extension briefs now carry for their keywords, by specialist.
 ANCHOR_LINES = {
     "auditory-evoked-potentials": (
         "anchors: abr, assr, auditory, binaural, cochlear, ffr, neurophonic, tinnitus\n"
