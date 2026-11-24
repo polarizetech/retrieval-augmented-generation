@@ -1,0 +1,11 @@
+{
+  "_comment": "Gateway config inside the cloud image: the paper library only. Its settings (Spaces bucket, index path, models) come from the environment; see cloud/Dockerfile.",
+  "upstreams": {
+    "papers": {
+      "command": "paper-fetch-mcp",
+      "args": [],
+      "write_tools": ["fetch"],
+      "open_world_tools": ["search", "fetch", "citations"]
+    }
+  }
+}

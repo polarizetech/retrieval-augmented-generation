@@ -1,0 +1,12 @@
+# Keep local state and secrets out of any image build context.
+.git
+.venv
+data
+runs
+benchmarks/results
+config/rag.env
+config/.mcp-token
+config/mcp-gateway.json
+**/__pycache__
+*.sqlite
+*.key
