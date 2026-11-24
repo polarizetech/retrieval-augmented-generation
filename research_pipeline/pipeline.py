@@ -567,7 +567,10 @@ class Pipeline:
         }
         flat = list(dict.fromkeys(q for qs in plans.values() for q in qs))
         res = await lib.retrieve(
-            flat, collection=self.collection, limit=self.s.candidates_per_subquestion
+            flat,
+            collection=self.collection,
+            limit=self.s.candidates_per_subquestion,
+            rerank=False if self.s.ranker == "client" else None,
         )
         self.index_stats = res.get("index") or self.index_stats
         self.library_reranker = res.get("reranker")
@@ -1184,7 +1187,12 @@ class Pipeline:
             "name": self.index_stats.get("embedding_model"),
             "via": "paper library",
         }
-        if not self.library_reranker:
+        if self.s.ranker == "client":
+            st.notes.append(
+                "Passages were ranked without the library's reranker (PIPELINE_RANKER=client); "
+                "the run's model judged their relevance while extracting."
+            )
+        elif not self.library_reranker:
             st.notes.append(
                 "The paper library has no reranking model (PAPER_FETCH_RERANK_MODEL); passages "
                 "were read in retrieval order."

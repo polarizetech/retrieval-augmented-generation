@@ -28,7 +28,10 @@ COVERAGE_NOTES = {
         "No passage in the library matched. Note it in the footer as `Library: no match`, "
         "not in the answer."
     ),
-    "unscored": "Passages were not reranked, so their relevance is unjudged.",
+    "unscored": (
+        "Passages were not reranked: judge each one's relevance to the question yourself, use "
+        "only those that bear on it, and say how well they cover it."
+    ),
 }
 
 # What the assistant does with the fresh leads: fetch and index them (delegate, the default), or
