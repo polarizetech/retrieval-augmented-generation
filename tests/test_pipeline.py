@@ -489,6 +489,47 @@ def test_the_field_and_the_collection_reach_the_library(
     assert log["evidence"]
 
 
+@pytest.mark.parametrize(("ranker", "expected"), [("client", False), ("library", None)])
+def test_the_ranker_setting_reaches_the_library_retrieval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ranker: str, expected: bool | None
+) -> None:
+    from research_pipeline import domains
+    from research_pipeline import pipeline as module
+
+    class RerankLibrary(FakeLibrary):
+        """Records the rerank argument the pipeline passes to the library's retrieve."""
+
+        reranks: list[Any] = []  # noqa: RUF012 - reset per test
+
+        async def retrieve(self, queries: list[str], **kw: Any) -> dict[str, Any]:
+            self.reranks.append(kw.get("rerank", "not passed"))
+            return await super().retrieve(queries, **kw)
+
+    lib = papers_library(tmp_path)
+    lib.create_collection("review")
+    RerankLibrary.reranks = []
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: RerankLibrary(lib))
+    monkeypatch.setattr(module.integrity, "check_all", lambda dois: {})
+    policy = domains.derive(
+        domains.GENERIC, slug="cardiology", label="Cardiology", profile="cardiovascular"
+    )
+    domain = domains.Domain("rag-domain-cardiology", "tests", "0.1.0", ">=0.1", "test", policy)
+    pipeline = Pipeline(
+        settings_for(tmp_path, max_fetch=5, ranker=ranker),
+        offline=False,
+        domain=domain,
+        collection="review",
+    )
+    pipeline.llm = PlanRecorder()  # type: ignore[assignment]
+    asyncio.run(pipeline.run(QUESTION))
+
+    assert RerankLibrary.reranks
+    if expected is None:
+        assert all(r is None or r == "not passed" for r in RerankLibrary.reranks)
+    else:
+        assert all(r is expected for r in RerankLibrary.reranks)
+
+
 def test_a_profile_the_library_lacks_is_noted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

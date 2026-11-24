@@ -108,6 +108,10 @@ class Settings:
     # endpoint below when one is configured, else the calling model; "client" = the calling model
     # fills in the forms; "endpoint"; "ollama" = local.
     mcp_llm: str = field(default_factory=lambda: os.environ.get("PIPELINE_MCP_LLM", "auto"))
+    # Who ranks the passages: "library" = the paper library's cross-encoder reranks passages (the
+    # default); "client" = the library's search without its reranker, and the run's model judges
+    # relevance.
+    ranker: str = field(default_factory=lambda: os.environ.get("PIPELINE_RANKER", "library"))
     # The CLI's and benchmarks' model: "auto" = your endpoint when configured, else "ollama".
     llm_backend: str = field(default_factory=lambda: os.environ.get("PIPELINE_LLM", "auto"))
 

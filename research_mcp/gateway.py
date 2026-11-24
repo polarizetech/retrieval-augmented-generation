@@ -401,6 +401,9 @@ def build_server(
             query, limit, max_chars, **{switches[component]: False}
         )
 
+    async def client_retrieve(query: str, limit: int = 8, max_chars: int = 1800) -> Any:
+        return await evidence_store.retrieve(query, limit, max_chars, rerank=False)
+
     async def scholarly_search(query: str, limit: int) -> dict[str, Any]:
         found = await papers_library().search(query, limit=limit)
         hits = found.get("hits", [])
@@ -426,7 +429,11 @@ def build_server(
         return await websearch.search(searxng, query, limit, categories=categories)
 
     asker = Asker(
-        retrieve=evidence_store.retrieve,
+        retrieve=(
+            client_retrieve
+            if settings.ranker == "client" and can_switch("reranker")
+            else evidence_store.retrieve
+        ),
         call_tool=call_for_ask,
         has_tool=lambda name: name in federation.tools,
         rules_paths=(ROOT / "config" / "routing.default.toml", ROOT / "config" / "routing.toml"),
