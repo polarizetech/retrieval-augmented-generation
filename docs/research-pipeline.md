@@ -374,6 +374,19 @@ python benchmarks/research/eval_pipeline.py --backend endpoint --model qwen/qwen
 python benchmarks/research/eval_pipeline.py --backend endpoint --model moonshotai/kimi-k3 --label kimi
 ```
 
+### Using the calling model for ranking and claim checks
+
+`PIPELINE_RANKER=library|client` chooses who ranks the passages. `library` (the default) keeps the
+paper library's cross-encoder reranker. `client` runs the library's search without its reranker,
+and the run's model judges each passage's relevance while extracting.
+
+Client-only claim checks are set with `PIPELINE_MCP_LLM=client` and an empty
+`PIPELINE_VERIFIER_MODEL`: the calling model checks the claims, with no local MiniCheck, and runs
+are marked "no independent verifier".
+
+The defaults keep the reranker and any configured verifier. Publication strictness
+(`PIPELINE_STRICTNESS=publication`) still requires an independent verifier.
+
 ## Alternatives considered (as of September 2026)
 
 - **An agent framework (PaperQA2 and similar).** These depend on the model sequencing tool calls,
