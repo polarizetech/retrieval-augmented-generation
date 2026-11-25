@@ -65,6 +65,8 @@ from .upstream import UpstreamError
 
 Progress = Callable[[str, str], None]
 WEB_CATEGORIES = ("science", "general")  # SearXNG categories each web query is asked in
+# Explore tier: the claims are checked; the summary and specialist sentences built from them not.
+EXPLORE_UNCHECKED = "explore: not checked"
 Model = Ollama | Endpoint | ClientLLM
 
 
@@ -958,13 +960,7 @@ class Pipeline:
         )
         by_id = {c.id: c for c in usable}
         rows = got.get("sentences", [])
-        bases = [" ".join(by_id[i].text for i in row["claim_ids"] if i in by_id) for row in rows]
-        verdicts = self._parallel(
-            [
-                partial(verify.judge, self.llm, verifier, row["text"], basis, self.prompts)
-                for row, basis in zip(rows, bases, strict=True)
-            ]
-        )
+        verdicts = self._judge_rows(st, rows, by_id, verifier)
         for row, (verdict, reason) in zip(rows, verdicts, strict=True):
             # A summary sentence that outruns its claims is dropped, not softened.
             st.summary.append(
@@ -973,9 +969,30 @@ class Pipeline:
                     "claim_ids": row["claim_ids"],
                     "verdict": verdict,
                     "reason": reason,
-                    "kept": verdict == "SUPPORTED",
+                    "kept": verdict in ("SUPPORTED", verify.SUMMARY_UNCHECKED),
                 }
             )
+
+    def _judge_rows(
+        self, st: State, rows: list[dict[str, Any]], by_id: dict[str, Claim], verifier: str
+    ) -> list[tuple[str, str]]:
+        """Each sentence's verdict against the claims it cites. The explore tier skips the
+        verifier here (the claims themselves were checked) and marks the sentences unchecked."""
+        if self.strictness.name == "explore":
+            note = (
+                "Explore tier: the bottom line and specialist views were written from the checked "
+                "claims but were not themselves checked against them."
+            )
+            if rows and note not in st.notes:
+                st.notes.append(note)
+            return [(verify.SUMMARY_UNCHECKED, EXPLORE_UNCHECKED)] * len(rows)
+        bases = [" ".join(by_id[i].text for i in row["claim_ids"] if i in by_id) for row in rows]
+        return self._parallel(
+            [
+                partial(verify.judge, self.llm, verifier, row["text"], basis, self.prompts)
+                for row, basis in zip(rows, bases, strict=True)
+            ]
+        )
 
     # -- the model panel (panel.py) ---------------------------------------------------------
     def panel_read(self, member: panel.Member, st: State) -> None:
@@ -1064,22 +1081,14 @@ class Pipeline:
                 self.prompts.view_schema([c.id for c in usable]),
             )
             rows = [r for r in got.get("sentences", []) if r.get("text", "").strip()]
-            bases = [
-                " ".join(by_id[i].text for i in row["claim_ids"] if i in by_id) for row in rows
-            ]
-            verdicts = self._parallel(
-                [
-                    partial(verify.judge, self.llm, verifier, row["text"], basis, self.prompts)
-                    for row, basis in zip(rows, bases, strict=True)
-                ]
-            )
+            verdicts = self._judge_rows(st, rows, by_id, verifier)
             st.views[name] = [
                 {
                     "text": row["text"].strip(),
                     "claim_ids": row["claim_ids"],
                     "verdict": verdict,
                     "reason": reason,
-                    "kept": verdict == "SUPPORTED",
+                    "kept": verdict in ("SUPPORTED", verify.SUMMARY_UNCHECKED),
                 }
                 for row, (verdict, reason) in zip(rows, verdicts, strict=True)
             ]

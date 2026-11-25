@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from . import replies, thin
 from .domains import GENERIC, DomainPolicy
 from .schema import source_status
-from .verify import VERDICT_NUMBERS, VERDICT_UNCHECKED
+from .verify import SUMMARY_UNCHECKED, VERDICT_NUMBERS, VERDICT_UNCHECKED
 
 if TYPE_CHECKING:
     from .companions import Companion
@@ -24,6 +24,9 @@ LABEL_TEXT = {
     "weak": "Weak",
     "insufficient": "Insufficient",
 }
+
+# After a bottom line or specialist view the explore tier did not check against its claims.
+UNCHECKED_NOTE = "Explore tier: not checked against the claims."
 
 
 def _cite(paper: dict[str, Any]) -> str:
@@ -134,6 +137,8 @@ def render(
         note = (
             f" *({dropped} sentence(s) dropped: not supported by the claims.)*" if dropped else ""
         )
+        if any(r.get("verdict") == SUMMARY_UNCHECKED for r in rows):
+            note += f" *({UNCHECKED_NOTE})*"
         body = " ".join(said) if said else "*Nothing in the verified claims bears on this field.*"
         out += [f"**{name}.** {body}{note}", ""]
     take("views")
@@ -366,7 +371,10 @@ def bottom_line(st: State) -> str:
     session capsule doesn't depend on how the answer is laid out."""
     bottom = [s for s in st.summary if s["kept"]]
     if bottom:
-        return " ".join(s["text"] for s in bottom)
+        text = " ".join(s["text"] for s in bottom)
+        if any(s.get("verdict") == SUMMARY_UNCHECKED for s in bottom):
+            text += f" *({UNCHECKED_NOTE})*"
+        return text
     if any(c.verdict in ("SUPPORTED", "DISPUTED") for c in st.claims):
         return (
             "The verified claims below could not be combined into a summary that itself passed "

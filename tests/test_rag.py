@@ -229,3 +229,25 @@ class TestIndexPapers:
 
     def test_stats_come_from_the_library(self, store: EvidenceStore) -> None:
         assert run(store.stats())["papers"] == 1
+
+
+def test_routes_reach_the_paper_library_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline.papers import PaperLibrary
+
+    sent: dict[str, Any] = {}
+
+    async def call(tool: str, **arguments: Any) -> dict[str, Any]:
+        sent.update(arguments)
+        return {"ok": True, "data": {"results": [{"query": "q", "passages": []}], "index": {}}}
+
+    lib = PaperLibrary.over(None)  # type: ignore[arg-type]
+    monkeypatch.setattr(lib, "_call", call)
+    store = EvidenceStore(lambda: lib, tmp_path / "runs")
+    asyncio.run(store.retrieve("q", rerank=True, rerank_route="mac", embed_route="modal"))
+    assert (sent["rerank"], sent["rerank_route"], sent["embed_route"]) == (True, "mac", "modal")
+    sent.clear()
+    asyncio.run(store.retrieve("q"))
+    assert "rerank_route" not in sent
+    assert "embed_route" not in sent

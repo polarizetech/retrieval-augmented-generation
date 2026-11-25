@@ -5,15 +5,17 @@ and a failed call moves the step to the next rung. The last rung is the free loc
 is tried whatever its meter says. Every move down is written to the run's notes and ladder log,
 so the run log and the relay name the provider each step used. Checking is not laddered: claim
 checks call the local verifier by name, which goes to Ollama as before.
+A request may pin a step, or the claim checks, to one provider (`providers`).
 """
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any, TypeVar
 
+from research_pipeline.client_llm import ClientLLM
 from research_pipeline.config import Settings
 from research_pipeline.llm import Endpoint, LLMError, ModelOutputError, Ollama
 from research_pipeline.usage import Breakers, Meters, _read_key, load_config
@@ -25,6 +27,83 @@ RUNG_RETRIES = 3
 # Model calls at once per provider, shared by every run in this process ([limits.providers]).
 _SLOTS: dict[str, threading.BoundedSemaphore] = {}
 _SLOTS_LOCK = threading.Lock()
+
+# The model steps a request may give its own provider (research_start's `providers`); the first
+# three are ladders, "verify" is the claim checks.
+STEPS = ("planning", "extraction", "writing", "verify")
+LADDER_STEPS = ("planning", "extraction", "writing")
+# Two more steps choose where an ask's passage retrieval runs (not a research run), each with its
+# own values, not [providers.*] names. modal and mac name the models router's upstream; droplet
+# runs paper-fetch's in-process ONNX cross-encoder (rerank only: the library has no in-process
+# embedding model); off skips reranking; llm reranks with the text model (research_mcp/
+# llm_rerank.py).
+RETRIEVAL_STEPS: dict[str, tuple[str, ...]] = {
+    "embed": ("modal", "mac"),
+    "rerank": ("modal", "mac", "droplet", "off", "llm"),
+}
+NEEDS_LADDER = (
+    "providers: per-step providers need the hub's ladder: set PIPELINE_ENDPOINT_URL and "
+    "PIPELINE_ENDPOINT_MODEL to one of config/hub.toml's [providers.*] (and leave "
+    "PIPELINE_LADDER on), or use 'client'"
+)
+
+
+def _retrieval_choice(step: str, raw: Any) -> str:
+    """A retrieval step's value, checked against RETRIEVAL_STEPS. Raises ValueError."""
+    value = str(raw).strip().lower()
+    if step == "embed" and value == "droplet":
+        raise ValueError(
+            "providers: embed = droplet is not available: the paper library has no in-process "
+            "embedding model; use modal or mac"
+        )
+    allowed = RETRIEVAL_STEPS[step]
+    if value not in allowed:
+        raise ValueError(f"providers: {step} must be one of {', '.join(allowed)}, not {value!r}")
+    return value
+
+
+def check_providers(
+    providers: Mapping[str, Any] | None, config: Mapping[str, Any]
+) -> dict[str, str]:
+    """A request's per-step providers, checked against the hub config: {step: provider}.
+
+    A provider is a [providers.*] name or "client" (the calling assistant). "client" for
+    planning, extraction or writing hands the whole run to the assistant, so those steps are
+    all "client" or none is. The retrieval steps (RETRIEVAL_STEPS) take their own values.
+    Raises ValueError with the reason."""
+    if not providers:
+        return {}
+    if not isinstance(providers, Mapping):
+        raise ValueError("providers must be an object: {step: provider}")
+    known = sorted(str(n) for n in config.get("providers", {}))
+    out: dict[str, str] = {}
+    for step, raw in providers.items():
+        if step in RETRIEVAL_STEPS:
+            out[str(step)] = _retrieval_choice(str(step), raw)
+            continue
+        if step not in STEPS:
+            every = ", ".join((*STEPS, *RETRIEVAL_STEPS))
+            raise ValueError(f"providers: unknown step {step!r}; the steps are {every}")
+        name = str(raw).strip()
+        if name != "client" and name not in known:
+            raise ValueError(
+                f"providers: unknown provider {name!r} for {step}; use 'client' or one of "
+                f"{', '.join(known) or '(none configured)'}"
+            )
+        out[str(step)] = name
+    client = [s for s in LADDER_STEPS if out.get(s) == "client"]
+    pinned = [s for s in LADDER_STEPS if s in out and out[s] != "client"]
+    if client and pinned:
+        raise ValueError(
+            "providers: 'client' for planning, extraction or writing hands the whole run to the "
+            f"calling assistant, so {', '.join(pinned)} cannot use another provider"
+        )
+    return out
+
+
+def model_steps(chosen: Mapping[str, str]) -> dict[str, str]:
+    """`chosen` without the retrieval steps: what a research run and its ladder take."""
+    return {k: v for k, v in chosen.items() if k not in RETRIEVAL_STEPS}
 
 
 def provider_slot(name: str, limit: int) -> threading.BoundedSemaphore:
@@ -54,6 +133,8 @@ class Ladder(Endpoint):
         meters: Meters | None = None,
         breakers: Breakers | None = None,
         rungs: dict[str, Endpoint | Ollama] | None = None,
+        overrides: Mapping[str, str] | None = None,
+        client_verifier: ClientLLM | None = None,
     ):
         super().__init__(settings)
         self.config = config
@@ -76,6 +157,22 @@ class Ladder(Endpoint):
         self.limits: dict[str, int] = {
             str(k): int(v) for k, v in config.get("limits", {}).get("providers", {}).items()
         }
+        # A request's own providers (check_providers): a pinned step uses that provider alone,
+        # with no fallback. "verify" pins the claim checks; "client" there is client_verifier.
+        self.overrides: dict[str, str] = {
+            str(k): str(v) for k, v in (overrides or {}).items() if str(v) != "client"
+        }
+        self.client_verifier = client_verifier
+        if client_verifier is not None:
+            client_verifier.calls = self.calls  # one call log per run
+        pinned = [f"{s} to {self.label(n)}" for s, n in self.overrides.items()]
+        if client_verifier is not None:
+            pinned.append("verify to the calling assistant")
+        if pinned:
+            self.notes.append(
+                "This request pinned " + ", ".join(pinned) + "; a pinned step does not fall "
+                "back to another provider."
+            )
 
     # -- rungs ---------------------------------------------------------------------------------
     def rung(self, name: str) -> Endpoint | Ollama:
@@ -104,10 +201,24 @@ class Ladder(Endpoint):
 
     def ladder_for(self, task: str) -> tuple[str, list[str]]:
         step = self.steps.get(task, task)
+        if step in self.overrides:
+            return step, [self.overrides[step]]
         return step, self.ladders.get(step) or [self.top]
 
     def label(self, name: str) -> str:
         return str(self.providers.get(name, {}).get("label", name))
+
+    def resolve(self, model: str) -> tuple[str, str | None]:
+        """The request's own verifier resolves where it runs; anything else as on Endpoint."""
+        if self.client_verifier is not None and model == self.client_verifier.name:
+            return self.client_verifier.resolve(model)
+        pinned = self.overrides.get("verify", "")
+        spec = self.providers.get(pinned, {})
+        if pinned and model == spec.get("model"):
+            if spec.get("kind") == "ollama":
+                return self.rung(pinned).resolve(model)
+            return model, None
+        return super().resolve(model)
 
     def climb(self, task: str, call: Callable[[Endpoint | Ollama], T]) -> T:
         step, names = self.ladder_for(task)
@@ -175,6 +286,19 @@ class Ladder(Endpoint):
         temperature: float = 0.0,
         timeout: float = 600.0,
     ) -> dict[str, Any]:
+        if (
+            task == "verify"
+            and self.client_verifier is not None
+            and model == self.client_verifier.name
+        ):
+            return self.client_verifier.chat_json(task, system, user, schema)
+        if task == "verify" and "verify" in self.overrides:
+            return self.climb(
+                task,
+                lambda rung: rung.chat_json(
+                    task, system, user, schema, temperature=temperature, timeout=timeout
+                ),
+            )
         if model and model not in self.text_models:
             return self.local.chat_json(task, system, user, schema, model=model)
         return self.climb(
@@ -187,21 +311,28 @@ class Ladder(Endpoint):
     def chat_text(
         self, task: str, model: str, user: str, *, num_predict: int = 8, timeout: float = 300.0
     ) -> str:
-        if model not in self.text_models:
-            return self.local.chat_text(task, model, user, num_predict=num_predict, timeout=timeout)
-
         def call(rung: Endpoint | Ollama) -> str:
             name = rung.name if isinstance(rung, Endpoint) else rung.s.text_model
             return rung.chat_text(task, name, user, num_predict=num_predict, timeout=timeout)
 
+        if task == "verify" and "verify" in self.overrides:
+            return self.climb(task, call)
+        if model not in self.text_models:
+            return self.local.chat_text(task, model, user, num_predict=num_predict, timeout=timeout)
         return self.climb(task, call)
 
 
-def make_ladder(settings: Settings) -> Ladder | None:
-    """A ladder when the configured endpoint is one of the hub's providers and it has ladders."""
+def make_ladder(
+    settings: Settings,
+    overrides: Mapping[str, str] | None = None,
+    *,
+    client_verifier: ClientLLM | None = None,
+) -> Ladder | None:
+    """A ladder when the configured endpoint is one of the hub's providers and it has ladders.
+    `overrides` and `client_verifier` pin a request's own providers (check_providers)."""
     if not (settings.endpoint_url and settings.endpoint_model) or not settings.ladder:
         return None
     config = load_config()
     if not config.get("ladders") or configured_provider(settings, config) is None:
         return None
-    return Ladder(settings, config)
+    return Ladder(settings, config, overrides=overrides, client_verifier=client_verifier)

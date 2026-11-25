@@ -279,3 +279,47 @@ def test_kind_and_key_file_come_from_the_environment(tmp_path: Path) -> None:
                 "MODELS_DIGITALOCEAN_KIND": "other",
             }
         )
+
+
+def test_a_route_header_sends_the_call_to_that_provider_only() -> None:
+    import httpx
+    from fastapi.testclient import TestClient
+
+    router = load("models_router")
+    seen = {"local": 0, "modal": 0}
+
+    def handler(name: str, status: int) -> Any:
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen[name] += 1
+            return httpx.Response(
+                status,
+                headers={"content-type": "application/json"},
+                stream=httpx.ByteStream(json.dumps({"scores": [1.0]}).encode()),
+            )
+
+        return handle
+
+    providers = [
+        router.Provider("local", "https://mac", ""),
+        router.Provider("modal", "https://modal", ""),
+    ]
+    transports = {
+        "local": httpx.MockTransport(handler("local", 200)),
+        "modal": httpx.MockTransport(handler("modal", 429)),
+    }
+    ps = router.Providers(providers, 900.0)
+    assert ps.named("mac") is providers[0]
+    assert ps.named("gpu") is None
+    client = TestClient(router.create_app(ps, transports=transports))
+    body = {"model": "x", "query": "q", "documents": ["a"]}
+    mac = client.post("/rerank", json=body, headers={"X-Models-Route": "mac"})
+    assert mac.json() == {"scores": [1.0]}
+    assert seen == {"local": 1, "modal": 0}
+    modal = client.post("/rerank", json=body, headers={"X-Models-Route": "modal"})
+    assert modal.status_code == 503
+    assert seen == {"local": 1, "modal": 1}  # no fallback to the Mac
+    unknown = client.post("/rerank", json=body, headers={"X-Models-Route": "gpu"})
+    assert unknown.status_code == 400
+    plain = client.post("/rerank", json=body)
+    assert plain.json() == {"scores": [1.0]}
+    assert seen == {"local": 2, "modal": 1}

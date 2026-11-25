@@ -174,7 +174,11 @@ class LibraryAdapter:
         per_paper: int = 0,
         rerank: bool | None = None,
         dense: bool | None = None,
+        rerank_route: str = "",
+        embed_route: str = "",
     ) -> dict[str, Any]:
+        # The routes only pick the models router's upstream; the pinned in-process library has
+        # no router, so they are accepted and not passed on.
         return self._run(
             "retrieve",
             lambda: self.lib.retrieve(

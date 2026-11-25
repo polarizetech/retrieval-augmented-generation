@@ -5,8 +5,11 @@ from typing import Any
 
 import pytest
 
-from research_mcp.ask import Asker, parse_tool_text
+from research_mcp import llm_rerank
+from research_mcp.ask import Asker, parse_tool_text, retrieval_choice
 from research_mcp.brief import compact, coverage
+from research_pipeline.ladder import check_providers, model_steps
+from tests.test_llm_rerank import FakeModel
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,7 +28,7 @@ def asker(tmp_path: Path, calls: list[tuple[str, Any]], local: str = "", **hooks
     brief(private, "noise-engineering", "noise colour pink brown", "Name the domain.")
     (tmp_path / "routing.toml").write_text(local)
 
-    async def retrieve(query: str, limit: int, max_chars: int) -> dict[str, Any]:
+    async def retrieve(query: str, limit: int, max_chars: int, **kw: Any) -> dict[str, Any]:
         calls.append(("retrieve", (query, limit)))
         return {
             "retrieval": "hybrid",
@@ -437,3 +440,147 @@ def test_a_failed_web_search_never_stops_the_answer(tmp_path: Path) -> None:
     assert out["status"] == "done"
     assert "web search: RuntimeError" in out["results"]["fresh"]["not_run"]
     assert out["results"]["evidence"]["results"]
+
+
+def test_providers_pass_through_to_the_research_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    calls: list[tuple[str, Any]] = []
+    chosen = {"writing": "local", "verify": "client"}
+    asyncio.run(asker(tmp_path, calls).ask("research: pink noise and sleep", providers=chosen))
+    assert calls == [
+        ("pipeline__research_start", {"question": "pink noise and sleep", "providers": chosen})
+    ]
+
+
+@pytest.mark.parametrize(
+    ("providers", "match"),
+    [
+        ({"drafting": "local"}, "unknown step 'drafting'"),
+        ({"writing": "acme"}, "unknown provider 'acme' for writing"),
+        ({"writing": "client", "planning": "local"}, "planning cannot use another provider"),
+    ],
+)
+def test_unknown_steps_and_providers_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, providers: dict[str, str], match: str
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    with pytest.raises(ValueError, match=match):
+        asyncio.run(asker(tmp_path, []).ask("research: pink noise", providers=providers))
+
+
+def test_retrieval_steps_are_checked_on_their_own_values() -> None:
+    hub = {"providers": {"openrouter": {}}}
+    assert check_providers({"embed": "Mac", "rerank": "llm"}, hub) == {
+        "embed": "mac",
+        "rerank": "llm",
+    }
+    with pytest.raises(ValueError, match="no in-process embedding model"):
+        check_providers({"embed": "droplet"}, hub)
+    with pytest.raises(ValueError, match="embed must be one of"):
+        check_providers({"embed": "off"}, hub)
+    with pytest.raises(ValueError, match="rerank must be one of"):
+        check_providers({"rerank": "openrouter"}, hub)
+    assert model_steps({"writing": "openrouter", "rerank": "off"}) == {"writing": "openrouter"}
+
+
+def test_retrieval_choices_map_to_library_arguments() -> None:
+    assert retrieval_choice({}) == ({}, False)
+    assert retrieval_choice({"rerank": "off"}) == ({"rerank": False}, False)
+    assert retrieval_choice({"rerank": "llm", "writing": "local"}) == ({"rerank": False}, True)
+    assert retrieval_choice({"embed": "mac", "rerank": "droplet"}) == (
+        {"embed_route": "mac", "rerank": True, "rerank_route": "droplet"},
+        False,
+    )
+
+
+def test_embed_and_rerank_choices_reach_the_library_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    calls: list[tuple[str, Any]] = []
+    ask = asker(tmp_path, calls)
+    sent: list[dict[str, Any]] = []
+
+    async def retrieve(query: str, limit: int, max_chars: int, **kw: Any) -> dict[str, Any]:
+        sent.append({"limit": limit, **kw})
+        return {"retrieval": "hybrid", "n": 0, "excluded": [], "results": []}
+
+    ask.retrieve = retrieve
+    choice = {"embed": "mac", "rerank": "modal"}
+    asyncio.run(ask.ask("What is pink noise?", providers=choice))
+    assert sent == [{"limit": 5, "embed_route": "mac", "rerank": True, "rerank_route": "modal"}]
+    asyncio.run(ask.ask("What is pink noise?"))
+    assert sent[-1] == {"limit": 5}
+
+
+def test_a_research_run_gets_only_the_model_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    calls: list[tuple[str, Any]] = []
+    chosen = {"writing": "local", "rerank": "llm", "embed": "mac"}
+    asyncio.run(asker(tmp_path, calls).ask("research: pink noise and sleep", providers=chosen))
+    assert calls == [
+        (
+            "pipeline__research_start",
+            {"question": "pink noise and sleep", "providers": {"writing": "local"}},
+        )
+    ]
+
+
+def test_llm_rerank_scores_with_the_text_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    answer = {
+        "scores": [
+            {"passage": 1, "score": 1},
+            {"passage": 2, "score": 9},
+            {"passage": 3, "score": 5},
+        ]
+    }
+    model = FakeModel(answer)
+    calls: list[tuple[str, Any]] = []
+    ask = asker(tmp_path, calls, text_model=lambda: model)
+    sent: list[dict[str, Any]] = []
+
+    async def retrieve(query: str, limit: int, max_chars: int, **kw: Any) -> dict[str, Any]:
+        sent.append({"limit": limit, **kw})
+        rows = [
+            {
+                "evidence_id": f"W{i}#p0.abcdef12",
+                "text": f"Passage {i} on pink noise.",
+                "title": "Colours of noise",
+                "year": 2017,
+                "doi": "10.1/x",
+                "score": 0.5,
+            }
+            for i in (1, 2, 3)
+        ]
+        return {"retrieval": "hybrid", "n": 3, "excluded": [], "results": rows, "reranker": None}
+
+    ask.retrieve = retrieve
+    out = asyncio.run(ask.ask("What is pink noise?", providers={"rerank": "llm"}))
+    assert sent == [{"limit": llm_rerank.CANDIDATES, "rerank": False}]
+    found = out["results"]["evidence"]
+    assert [r["evidence_id"][:2] for r in found["results"]] == ["W2", "W3"]
+    assert [r["score"] for r in found["results"]] == [4.0, 0.0]
+    assert found["reranker"] == "llm:fake"
+    assert found["below_floor"]["n"] == 1
+    assert coverage(found)["level"] == "strong"  # type: ignore[index]
+    assert len(model.calls) == 1
+
+
+def test_llm_rerank_failure_keeps_library_order_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    calls: list[tuple[str, Any]] = []
+    model = FakeModel(RuntimeError("model down"))
+    ask = asker(tmp_path, calls, text_model=lambda: model)
+    out = asyncio.run(ask.ask("What is pink noise?", providers={"rerank": "llm"}))
+    assert out["results"]["evidence"]["n"] == 1
+    assert out["problems"][0]["component"] == "reranker"
+    assert "model down" in out["problems"][0]["what_failed"]

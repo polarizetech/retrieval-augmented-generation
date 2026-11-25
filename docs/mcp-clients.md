@@ -68,11 +68,14 @@ there. It decides which parts of the server run, using trigger words rather than
 | Route | When | What runs |
 |---|---|---|
 | `quick` (default) | a question with no research or code trigger | one passage retrieval (five passages) |
-| `research` | an evidence question ("evidence", "studies", "is it true", ...) | the research pipeline, started on the gateway |
+| `research` | `research:` or `deep:`, or an evidence question ("is it true", "what does the evidence say", "meta-analysis", ...) | the research pipeline, started on the gateway |
 | `code` | a task on code ("fix the bug", "implement", "add a flag to the cli") or a code review | three passages for context; the assistant then edits through `repos__` tools or its checkout |
 
 A question never recruits the coder, even a question about code ("how does the hook work?"). A
 prefix decides outright: `quick:`, `research:`, `deep:`, `code:`, `review:`.
+
+A noun on its own is not a research trigger: "find papers on X" or "cite the study about X" is a
+quick retrieval. Start it with `research:` for a checked answer.
 
 Fetch mode gets a paper into the passage index without the research pipeline. It is recruited by
 `fetch:` or `paper:` at the start, a phrase such as "get the paper", "download the paper" or "index
@@ -257,6 +260,21 @@ until the run is `done`. To have the calling assistant do the writing for one ru
 when you ask Claude to run the pipeline itself, it passes `model="client"`; `"endpoint"` and
 `"ollama"` force those. Every reply carries `model_backend`.
 
+**Per-request providers.** `ask` and `pipeline__research_start` take an optional `providers`
+object that pins model steps to a provider for that request only, e.g.
+`{"writing": "nearai", "verify": "client"}`. Steps: `planning`, `extraction`, `writing` and
+`verify` (the claim checks). Providers: any `[providers.*]` name in `config/hub.toml`
+(`openrouter`, `nearai`, `local`, ...) or `client`, the calling assistant. A pinned step uses that
+provider alone, with no fallback down the ladder, and `ask` skips its ladder (or verifier) check
+for it. `client` for planning, extraction or writing hands the whole run to the assistant (as
+`model="client"`), so name it for all of those or none. `verify="client"` hands only the claim
+checks to the assistant: replies carry `tasks` for them while the provider writes. A provider
+named for `verify` checks the claims with that provider's model instead of
+`PIPELINE_VERIFIER_MODEL`; with `model="client"` it must be a local (`ollama`) provider. Pinning
+needs the hub's ladder (`PIPELINE_ENDPOINT_*` set to one of the hub's providers) unless the run is
+the client's. An unknown step or provider is refused with the valid names. Replies carry
+`providers`.
+
 ### With the client as its model
 
 Whenever a stage needs a model, the result has status `tasks`:
@@ -277,6 +295,10 @@ independent verifier; `PIPELINE_VERIFIER_MODEL` may name a local verifier even w
 the drafting model. The pipeline deterministically routes the question through the versioned
 scientific agent briefs. An optional domain policy is applied only when its package is installed;
 the suggested route and any generic-policy fallback are recorded.
+
+At `explore` the claims are checked as usual, but the bottom line and the specialist views are not
+checked against them: they are kept, marked `UNCHECKED` ("explore: not checked"), and the answer
+says so.
 
 Set `PIPELINE_AGENT_PROFILES_DIR` to the local scientific-research-agents checkout and, when you
 have a private specialist overlay, set `PIPELINE_AGENT_EXTENSIONS_DIR` to that checkout in the

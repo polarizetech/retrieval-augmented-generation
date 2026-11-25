@@ -84,6 +84,9 @@ VERDICT_NUMBERS = "NUMBER_NOT_IN_SOURCE"
 # A claim no verifier returned a verdict on. It is removed and counted, never kept unchecked.
 VERDICT_UNCHECKED = "VERIFIER_FAILED"
 CHECK_FAILED = "CHECK_FAILED"  # one verifier call that produced no verdict
+# A summary or specialist-view sentence the explore tier did not send to the verifier. It is kept
+# and labelled, never counted as checked.
+SUMMARY_UNCHECKED = "UNCHECKED"
 
 
 def _norm(text: str) -> str:
