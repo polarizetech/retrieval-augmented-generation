@@ -58,9 +58,12 @@ class EvidenceStore:
         *,
         rerank: bool | None = None,
         dense: bool | None = None,
+        rerank_route: str = "",
+        embed_route: str = "",
     ) -> dict[str, Any]:
         """Ranked passages. `rerank=False` or `dense=False` turn off a broken part of the
-        library's ranking, when its retrieve tool accepts them."""
+        library's ranking, when its retrieve tool accepts them. `rerank_route` and `embed_route`
+        choose where the library's reranking and embeddings run (ask's `providers`)."""
         query = query.strip()
         if not query:
             raise ValueError("query is required")
@@ -70,7 +73,12 @@ class EvidenceStore:
         # Not more: the library reranks three candidates per passage asked for, on the CPU, at
         # about 0.3 s each, and a client's MCP call times out after 60 s.
         res = await self.library().retrieve(
-            [query], limit=limit + OVERFETCH, rerank=rerank, dense=dense
+            [query],
+            limit=limit + OVERFETCH,
+            rerank=rerank,
+            dense=dense,
+            rerank_route=rerank_route,
+            embed_route=embed_route,
         )
         results, excluded = [], []
         for passage in (Passage.from_json(p) for p in res["results"][0]["passages"]):

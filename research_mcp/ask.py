@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from research_mcp import brief, extensions
+from research_mcp import brief, extensions, llm_rerank
 from research_mcp.extensions import Context, Extension, StepInput, StepSpec
 from research_mcp.hub.contract import (
     AUTONOMY,
@@ -45,7 +45,9 @@ from research_mcp.routing import (
     profile_override,
 )
 from research_pipeline import agent_profiles, replies
+from research_pipeline.ladder import check_providers, model_steps
 from research_pipeline.papers import PapersError
+from research_pipeline.usage import load_config
 
 # The library's reranker (a bge-reranker cross-encoder) scores each passage as a logit. Passages
 # under the floor are not shown, so a request the library cannot answer gets "nothing relevant"
@@ -78,7 +80,9 @@ PMID = re.compile(r"\bpmid:\s*(\d+)", re.IGNORECASE)
 FETCH_TRAILING = ".,;:)]}'\""
 INDEXED = ("indexed", "already_indexed")
 
-Retrieve = Callable[[str, int, int], Awaitable[dict[str, Any]]]
+# (query, limit, max_chars, **choices): choices are the library retrieve arguments that
+# retrieval_choice makes from ask's providers, passed only when a request makes one.
+Retrieve = Callable[..., Awaitable[dict[str, Any]]]
 # Retrieval with one part of the library's ranking off ("reranker" or "embeddings").
 PlainRetrieve = Callable[[str, int, int, str], Awaitable[dict[str, Any]]]
 Search = Callable[[str, int], Awaitable[dict[str, Any]]]
@@ -107,6 +111,9 @@ class Turn:
     ext_limits: str = ""
     brief_notes: dict[str, str] = field(default_factory=dict)
     autonomy: str = "strict"
+    providers: dict[str, str] = field(default_factory=dict)  # the request's pinned model steps
+    retrieval: dict[str, Any] = field(default_factory=dict)  # retrieval_choice's arguments
+    llm_rerank: bool = False  # the text model reranks this request's passages
 
 
 def paper_identifiers(text: str) -> list[str]:
@@ -162,10 +169,12 @@ class Asker:
         can_switch: Callable[[str], bool] = lambda _component: True,
         steps: Sequence[tuple[Extension, StepSpec, Context]] = (),
         default_autonomy: str = "delegate",
+        text_model: Callable[[], llm_rerank.JsonModel] | None = None,
     ):
         if default_autonomy not in AUTONOMY:
             raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY)}")
         self.default_autonomy = default_autonomy
+        self.text_model = text_model  # builds the model a request with rerank "llm" uses
         self.retrieve = retrieve
         self.call_tool = call_tool
         self.has_tool = has_tool
@@ -290,7 +299,7 @@ class Asker:
         if found.get("reranker"):
             seen["reranker"] = str(found["reranker"])
             self.hub.breakers["reranker"].success()
-        elif seen.get("reranker"):
+        elif seen.get("reranker") and "rerank" not in turn.retrieval:
             turn.problems.append(
                 Problem(
                     "degraded",
@@ -318,9 +327,15 @@ class Asker:
         """("evidence", passages), or after a failure the session's fallback ("search", hits)."""
         hub = self.hub
         if hub is None:
-            return "evidence", await self.retrieve(query, limit, 1800)
+            return "evidence", await self.retrieve(query, limit, 1800, **turn.retrieval)
+        skip_reranker = turn.retrieval.get("rerank") is False  # this request does not rerank
         paused = next(
-            (c for c in ("library", "embeddings", "reranker") if not hub.breakers[c].allow()), None
+            (
+                c
+                for c in ("library", "embeddings", "reranker")
+                if not hub.breakers[c].allow() and not (c == "reranker" and skip_reranker)
+            ),
+            None,
         )
         if paused:
             breaker = hub.breakers[paused]
@@ -335,7 +350,7 @@ class Asker:
                 # this request's turn comes.
                 async with hub.lanes.retrieval.slot(turn.rid):
                     found = await asyncio.wait_for(
-                        self.retrieve(query, limit, 1800), RETRIEVE_SECONDS
+                        self.retrieve(query, limit, 1800, **turn.retrieval), RETRIEVE_SECONDS
                     )
             except TimeoutError:
                 component = "reranker" if hub.seen.get("reranker") else "library"
@@ -347,7 +362,9 @@ class Asker:
                 hub.breakers["library"].success()
                 self._notice(turn, found)
                 return "evidence", found
-            hub.breakers[component].failure(error)
+            # A model service this request chose is not the library's health: no breaker count.
+            if not turn.retrieval:
+                hub.breakers[component].failure(error)
         if (
             component in ("reranker", "embeddings")
             and self.plain_retrieve is not None
@@ -390,6 +407,36 @@ class Asker:
                     retry_after=self._retry("library"),
                 )
             ) from exc
+
+    async def _llm_rerank(
+        self, turn: Turn, query: str, found: dict[str, Any], limit: int
+    ) -> dict[str, Any]:
+        """`found` scored by the text model (llm_rerank.py); in library order, labelled, when
+        the model fails."""
+        rows = list(found.get("results") or [])
+        if not rows:
+            return found
+        try:
+            if self.text_model is None:
+                raise RuntimeError("rerank 'llm' needs the pipeline's text model")
+            model = self.text_model()
+            given = await asyncio.wait_for(
+                asyncio.to_thread(llm_rerank.score, model, query, rows), llm_rerank.SECONDS
+            )
+        except (TimeoutError, *RETRIEVAL_ERRORS) as exc:
+            turn.problems.append(
+                Problem(
+                    "degraded",
+                    "reranker",
+                    f"The text model did not rerank the passages: {type(exc).__name__}: {exc}"[
+                        :400
+                    ],
+                    fallback_used=COMPONENTS["reranker"].fallback,
+                    decided="detected",
+                )
+            )
+            return {**found, "results": rows[:limit], "n": min(len(rows), limit)}
+        return llm_rerank.apply(found, given, limit, llm_rerank.label(model))
 
     async def _fresh(self, query: str, papers: bool) -> dict[str, Any]:
         """A fresh paper search (SearXNG's science engines) and a web search, run at once. Each
@@ -507,8 +554,16 @@ class Asker:
         args: dict[str, Any] = {"question": question}
         if strictness:
             args["strictness"] = strictness
+        pinned = model_steps(turn.providers)  # embed and rerank are this ask's retrieval only
+        if pinned:
+            args["providers"] = pinned
+            turn.notes.append(
+                "Providers for this request: "
+                + ", ".join(f"{step} = {name}" for step, name in pinned.items())
+            )
         hub = self.hub
-        if hub is not None and hub.settings.endpoint_url:
+        # A pinned writer is used alone: the ladder check below is for the ladder.
+        if hub is not None and hub.settings.endpoint_url and "writing" not in turn.providers:
             used, passed = await hub.first_usable("writing")
             ladder = hub.provider_ladder("writing")
             if used is None:
@@ -533,7 +588,7 @@ class Asker:
                 )
         if hub is not None:
             level = strictness or hub.settings.strictness
-            if level != "explore":
+            if level != "explore" and "verify" not in turn.providers:
                 check = await hub.check("verifier")
                 if check["state"] != "up":
                     self._broken(turn, "verifier", f"The verifier is down: {check['detail']}.")
@@ -677,6 +732,7 @@ class Asker:
         decisions: dict[str, str] | None = None,
         caller: dict[str, str] | None = None,
         autonomy: str = "",
+        providers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -689,6 +745,8 @@ class Asker:
                 raise ValueError(f"decisions: choice must be one of {', '.join(CHOICES)}")
         if autonomy and autonomy not in AUTONOMY:
             raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY)}")
+        chosen = check_providers(providers, self.hub.config if self.hub else load_config())
+        retrieval, llm_ranks = retrieval_choice(chosen)
         started = time.monotonic()
         rules = self.rules()
         route = classify(question, rules, mode, repo)
@@ -696,7 +754,14 @@ class Asker:
         if route.mode == "fetch":  # a fetch names no specialist
             spec = {**spec, "name": None, "specialists": [], "guidance": ""}
         sid = session.strip() or caller.get("session", "") or "unknown"
-        turn = Turn(sid, {}, autonomy=autonomy or self.default_autonomy)
+        turn = Turn(
+            sid,
+            {},
+            autonomy=autonomy or self.default_autonomy,
+            providers=chosen,
+            retrieval=retrieval,
+            llm_rerank=llm_ranks,
+        )
         rid = uuid.uuid4().hex[:12]
         touches = [t.strip("`'\"(),:;!?") for t in question.split() if _looks_like_code(t)]
         if self.hub is not None:
@@ -974,13 +1039,14 @@ class Asker:
             progress.append(f"Retrieval: skipped ({why})")
         if route.mode in ("quick", "code") and context:
             limit = QUICK_PASSAGES if route.mode == "quick" else CODE_PASSAGES
+            wanted = max(limit, llm_rerank.CANDIDATES) if turn.llm_rerank else limit
             t = time.monotonic()
             fresh: dict[str, Any] | None = None
             spent = 0.0
 
             async def evidence() -> tuple[str, dict[str, Any]]:
                 nonlocal spent
-                got = await self._evidence(turn, route.question, limit)
+                got = await self._evidence(turn, route.question, wanted)
                 spent = time.monotonic() - t
                 return got
 
@@ -990,6 +1056,14 @@ class Asker:
                 )
             else:
                 kind, found = await evidence()
+            if kind == "evidence" and turn.llm_rerank:
+                ranked_at = time.monotonic()
+                found = await self._llm_rerank(turn, route.question, found, limit)
+                if found.get("reranker"):
+                    progress.append(
+                        f"Reranked with the text model ({found['reranker']}) in "
+                        f"{time.monotonic() - ranked_at:.1f} s"
+                    )
             if kind == "evidence":
                 found = apply_relevance_floor(found)
             results[kind] = found
@@ -1031,6 +1105,11 @@ class Asker:
                     f"Started research run {run.get('run_id', '?')} ({run.get('status', '?')})"
                 )
             progress.extend(turn.notes)
+            if turn.retrieval or turn.llm_rerank:
+                progress.append(
+                    "Embed and rerank choices apply to passage retrieval (quick and code asks); "
+                    "the research run used its configured ranking"
+                )
         await self._extension_steps(
             turn,
             route,
@@ -1371,6 +1450,21 @@ def apply_relevance_floor(found: dict[str, Any]) -> dict[str, Any]:
         "n": len(kept),
         "below_floor": {"n": len(dropped), "floor": RELEVANCE_FLOOR, "best_score": best},
     }
+
+
+def retrieval_choice(chosen: dict[str, str]) -> tuple[dict[str, Any], bool]:
+    """The library retrieve arguments for a request's embed and rerank choices (already checked
+    by check_providers), and whether the text model reranks."""
+    embed, rerank = chosen.get("embed", ""), chosen.get("rerank", "")
+    args: dict[str, Any] = {}
+    if embed:
+        args["embed_route"] = embed
+    if rerank in {"off", "llm"}:
+        args["rerank"] = False
+    elif rerank:
+        args["rerank"] = True
+        args["rerank_route"] = rerank
+    return args, rerank == "llm"
 
 
 def _short(

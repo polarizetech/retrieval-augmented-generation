@@ -103,12 +103,19 @@ class PaperLibrary(Upstream):
         per_paper: int = 0,
         rerank: bool | None = None,
         dense: bool | None = None,
+        rerank_route: str = "",
+        embed_route: str = "",
     ) -> dict[str, Any]:
         """Passages that best answer each query: `{"results": [{"query", "passages"}], ...}`.
 
         `rerank` and `dense` are sent only when given: the hub's fallbacks switch off a broken
-        part of the library's ranking when its retrieve tool accepts them."""
+        part of the library's ranking when its retrieve tool accepts them. `rerank_route`
+        (modal, mac, droplet) and `embed_route` (modal, mac) choose where this call's reranking
+        and embeddings run; sent only when given."""
         switches = {k: v for k, v in (("rerank", rerank), ("dense", dense)) if v is not None}
+        routes = {
+            k: v for k, v in (("rerank_route", rerank_route), ("embed_route", embed_route)) if v
+        }
         return (
             await self._call(
                 "retrieve",
@@ -118,6 +125,7 @@ class PaperLibrary(Upstream):
                 limit=limit,
                 per_paper=per_paper,
                 **switches,
+                **routes,
             )
         )["data"]
 

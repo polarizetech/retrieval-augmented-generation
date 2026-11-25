@@ -23,6 +23,11 @@ a file holding that provider's key, sent in place of the caller's key. `MODELS_<
 `MODELS_<N>_RERANK_MODEL` name the models a `digitalocean` provider uses (`bge-m3` and
 `bge-reranker-v2-m3` by default). A `digitalocean` provider serves reranking and embeddings and
 hands every other call (chat, tags, ps) to the next provider.
+
+A call may choose its provider with the `X-Models-Route` header: `mac` (the `local` provider),
+`modal`, or any configured provider name. Only that provider is tried, even if it is out; when it
+does not answer the call gets 503, never another provider. An unknown name gets 400. Calls
+without the header use the order above.
 """
 
 import json
@@ -38,6 +43,10 @@ OUT_STATUSES = (402, 429)
 DO_OUT_STATUSES = (401, 402, 403, 429)
 DEFAULT_PROVIDERS = "local,modal"
 KINDS = ("ollama", "digitalocean")
+# The X-Models-Route header (paper-fetch sends it for a request's embed or rerank choice), and
+# the names it may use for a provider besides the provider's own.
+ROUTE_HEADER = "x-models-route"
+ROUTES = {"mac": "local", "modal": "modal"}
 
 
 @dataclass
@@ -81,6 +90,11 @@ class Providers:
 
     def mark_out(self, p: Provider) -> None:
         p.out_until = self.clock() + self.cooldown
+
+    def named(self, route: str) -> Provider | None:
+        """The provider a call's X-Models-Route names (`mac` is `local`), or None."""
+        name = ROUTES.get(route, route)
+        return next((p for p in self.providers if p.name == name), None)
 
     def status(self) -> dict[str, Any]:
         using = next((p for p in self.providers if not self.out(p)), self.providers[0])
@@ -190,7 +204,19 @@ def create_app(providers: Providers, transports: Mapping[str, Any] | None = None
         keep = ("authorization", "content-type")
         headers = {k: v for k, v in request.headers.items() if k in keep}
         last = "nothing was tried"
-        for p in providers.order():
+        route = request.headers.get(ROUTE_HEADER, "").strip().lower()
+        if route:
+            chosen = providers.named(route)
+            if chosen is None:
+                known = ", ".join(sorted({*ROUTES, *(p.name for p in providers.providers)}))
+                return JSONResponse(
+                    {"error": f"no model service is named {route!r} (known: {known})"},
+                    status_code=400,
+                )
+            order = [chosen]
+        else:
+            order = providers.order()
+        for p in order:
             client = clients[p.name]
             if p.kind == "digitalocean":
                 sent = digitalocean_request(request.method, path, body, p)

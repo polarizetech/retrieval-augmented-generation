@@ -53,6 +53,7 @@ from research_mcp.rag import EvidenceStore
 from research_mcp.routing import classify
 from research_pipeline import web as websearch
 from research_pipeline.config import ROOT, Settings, load_env
+from research_pipeline.llm import make_llm
 from research_pipeline.papers import PaperLibrary, PapersError
 from research_pipeline.usage import Meters, load_config
 
@@ -397,12 +398,15 @@ def build_server(
         return switches.get(component, "") in props
 
     async def plain_retrieve(query: str, limit: int, max_chars: int, component: str) -> Any:
-        return await evidence_store.retrieve(
-            query, limit, max_chars, **{switches[component]: False}
-        )
+        off: dict[str, Any] = {switches[component]: False}
+        return await evidence_store.retrieve(query, limit, max_chars, **off)
 
-    async def client_retrieve(query: str, limit: int = 8, max_chars: int = 1800) -> Any:
-        return await evidence_store.retrieve(query, limit, max_chars, rerank=False)
+    async def client_retrieve(
+        query: str, limit: int = 8, max_chars: int = 1800, **routing: Any
+    ) -> Any:
+        # The calling model ranks; a request's own rerank choice (ask's providers) wins.
+        chosen: dict[str, Any] = {"rerank": False, **routing}
+        return await evidence_store.retrieve(query, limit, max_chars, **chosen)
 
     async def scholarly_search(query: str, limit: int) -> dict[str, Any]:
         found = await papers_library().search(query, limit=limit)
@@ -446,6 +450,7 @@ def build_server(
         can_switch=can_switch,
         steps=ext_steps,
         default_autonomy=os.environ.get("ASK_AUTONOMY", "").strip() or "delegate",
+        text_model=lambda: make_llm(settings, "endpoint"),
     )
     quantities = QuantityStore(corpus_root(), settings.data_dir)
 
@@ -536,9 +541,15 @@ def build_server(
             "Pass repo when the request is about a repository, and "
             "a prefix such as research: or code: only when the person used one. "
             "Evidence-first literature research. Tools are namespaced <source>__<tool>. "
-            "For a literature question, prefer the full pipeline when pipeline__ tools are listed: "
-            "pipeline__research_start(question), then call pipeline__research_continue until "
-            "status is 'done'. Code runs the searches, checks and log; the model steps go to the "
+            "Research runs only when the person asked for it: a request starting research: or "
+            "deep:, or an evidence question ('is it true that ...', 'what does the evidence "
+            "say', a meta-analysis or systematic review). A request that only mentions papers, "
+            "studies or citations is not one: send it to ask, which answers it with one "
+            "retrieval. ask starts the run for a research request; start one yourself with "
+            "pipeline__research_start(question) only for such a request, then call "
+            "pipeline__research_continue until status is 'done'. Pass ask's providers only when "
+            "the person names a provider for a model step. Code runs the searches, checks and "
+            "log; the model steps go to the "
             "provider the user configured, and the calls just wait for it. Only when the user "
             "asks you to do the writing or run it yourself, pass model='client': then answer "
             "each batch of tasks it returns and send them with pipeline__research_continue. "
@@ -910,7 +921,9 @@ def build_server(
             "review. Picks the specialist brief the same way. Returns `brief` (each passage once, "
             "with a coverage level saying how well the library covers the question) and "
             "`answer_format`: write a short cited answer from the brief in that format. "
-            "detail='full' returns the whole reply instead."
+            "detail='full' returns the whole reply instead. Research runs only for research: / "
+            "deep: or an evidence question. Pass providers only when the person names a "
+            "provider for a model step."
         ),
         inputSchema={
             "type": "object",
@@ -942,7 +955,8 @@ def build_server(
                     "enum": ["", "explore", "grounded", "publication"],
                     "default": "",
                     "description": "explore: lenient prototyping; a code ask skips passage "
-                    "retrieval. grounded (default) and publication: full evidence rules.",
+                    "retrieval, and a research run checks its claims but not its bottom line or "
+                    "specialist views. grounded (default) and publication: full evidence rules.",
                 },
                 "session": {
                     "type": "string",
@@ -961,6 +975,21 @@ def build_server(
                     "description": "How to handle a broken component, when a reply asked: "
                     '{"<component>": "fallback" | "stop"}. It holds for the rest of the session.',
                     "additionalProperties": {"type": "string", "enum": ["fallback", "stop"]},
+                },
+                "providers": {
+                    "type": "object",
+                    "description": "Only when the person names a provider for a model step, for "
+                    "this request only: {step: provider}. Steps: planning, extraction, writing, "
+                    "verify (the claim checks). Providers: a [providers.*] name in "
+                    "config/hub.toml (openrouter, nearai, local, ...) or 'client' (you). A pinned "
+                    "step uses that provider alone, with no fallback. 'client' for planning, "
+                    "extraction or writing hands the whole run to you (name it for all three or "
+                    "none); verify='client' hands you only the claim checks. An unknown step or "
+                    "provider is refused. Two more steps choose where a quick or code ask's "
+                    "passage retrieval runs (not a research run): embed = modal | mac, and "
+                    "rerank = modal | mac | droplet | off | llm (llm: the pipeline's text model "
+                    "scores the passages).",
+                    "additionalProperties": {"type": "string"},
                 },
             },
             "required": ["question"],
@@ -1129,6 +1158,7 @@ def build_server(
                     decisions=arguments.get("decisions") or None,
                     caller=caller(),
                     autonomy=arguments.get("autonomy", ""),
+                    providers=arguments.get("providers") or None,
                 )
             except (ValueError, KeyError) as exc:
                 return _tool_error(f"ask refused: {exc}", status="refused")

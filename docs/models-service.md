@@ -17,6 +17,17 @@ gives (default `local,modal`). A provider that answers 402 or 429, or can't be r
 still tried in order. `GET /router/status` shows the order, the provider in use and each provider's
 remaining cooldown; each switch is logged to the router's journal.
 
+A call can choose its provider with the `X-Models-Route` header: `mac` (the `local` provider),
+`modal`, or a provider's name. Only that provider is tried; when it does not answer the call
+gets 503, not the next provider. paper-fetch sends the header when `ask` is given
+`providers={"embed": "modal"|"mac", "rerank": "modal"|"mac"}`. `rerank: "droplet"` runs the
+library's ONNX cross-encoder in paper-fetch's own process (`PAPER_FETCH_RERANK_LOCAL_MODEL`),
+`"off"` skips reranking, and `"llm"` has the pipeline's text model score the passages
+(research_mcp/llm_rerank.py). There is no droplet embedding model. These two steps apply to a
+quick or code ask's retrieval only; a research run ignores them. To keep reranking off by default
+while allowing it per request, set the rerank variables in `~/.config/paper-fetch/retrieval.env`
+and add `PAPER_FETCH_RERANK_DEFAULT=off`.
+
 ## The Mac
 
 - Ollama with `bge-m3` and `bespoke-minicheck` pulled, serving on 127.0.0.1:11434 (the

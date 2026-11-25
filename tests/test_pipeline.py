@@ -265,6 +265,41 @@ def test_a_run_with_no_specialist_has_no_views_section(run_log: dict[str, Any]) 
     assert "## Specialist views" not in run_log["answer"]
 
 
+def test_explore_checks_the_claims_but_not_the_summary_or_views(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_pipeline import pipeline as module
+
+    lib = papers_library(tmp_path)
+    hold_w1(lib)
+    lib.index_works()
+    monkeypatch.setattr(module, "PaperLibrary", lambda *_: LibraryAdapter(lib))
+    route = {
+        "specialist": "cardiology",
+        "specialists": ["cardiology"],
+        "guidances": {},
+        "guidance": "",
+    }
+    pipeline = Pipeline(
+        settings_for(tmp_path), offline=True, strictness="explore", agent_route=route
+    )
+    model = SpecialistModel()
+    pipeline.llm = model  # type: ignore[assignment]
+    log = asyncio.run(pipeline.run(QUESTION))
+    tasks = [c["task"] for c in model.calls]
+    first = tasks.index("summarise")
+    assert "verify" in tasks[:first]  # the claims were still checked
+    assert "verify" not in tasks[first:]  # the summary and the views were not
+    unchecked = ("UNCHECKED", "explore: not checked", True)
+    assert [(r["verdict"], r["reason"], r["kept"]) for r in log["summary"]] == [unchecked]
+    view = log["specialist_views"]["cardiology"]
+    assert [(r["verdict"], r["reason"], r["kept"]) for r in view] == [unchecked, unchecked]
+    assert "Explore tier: not checked against the claims." in log["bottom_line"]
+    section = log["answer"].split("## Specialist views")[1].split("\n## ")[0]
+    assert "Explore tier: not checked against the claims." in section
+    assert "dropped" not in section
+
+
 class FakeLibrary(LibraryAdapter):
     """A real library whose search is scripted: one provider never answers."""
 

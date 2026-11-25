@@ -32,6 +32,14 @@ RULES = load_rules(ROOT / "config" / "routing.default.toml")
         ("What does the evidence say about stochastic resonance in hearing?", "research"),
         ("Is it true that pink noise improves sleep?", "research"),
         ("What do papers say about binaural beats?", "research"),
+        # A noun alone is not an evidence request: it gets one retrieval.
+        ("Find papers on pink noise", "quick"),
+        ("Cite the study about pink noise and sleep", "quick"),
+        ("Is there a mechanism for stochastic resonance?", "quick"),
+        ("is it true that pink noise improves sleep", "research"),
+        ("Is there a meta-analysis of binaural beats?", "research"),
+        ("research: find papers on pink noise", "research"),
+        ("deep: pink noise", "research"),
         # Asking for a paper to be fetched and indexed skips the pipeline.
         ("get the paper 10.1038/xyz", "fetch"),
         ("fetch: some title", "fetch"),
@@ -74,7 +82,7 @@ def test_local_words_extend_the_defaults_and_pick_a_specialist(tmp_path: Path) -
     rules = load_rules(ROOT / "config" / "routing.default.toml", local)
     assert classify("lit: tinnitus maskers", rules).mode == "research"
     assert classify("What do we know about tape hiss?", rules).mode == "research"
-    assert "evidence" in rules.research  # the defaults stay
+    assert "is it true" in rules.research  # the defaults stay
     picked = profile_override("Where does tape hiss come from?", rules)
     assert picked == ("noise-engineering", "hiss")
     assert profile_override("What is a mixer?", rules) is None

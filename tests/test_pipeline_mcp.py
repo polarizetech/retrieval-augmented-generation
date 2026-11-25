@@ -21,6 +21,8 @@ from research_pipeline.llm import Ollama
 from tests.conftest import PAPER, LibraryAdapter, hold, hold_w1, papers_library
 from tests.test_pipeline import QUESTION, ScriptedModel
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class NoChat(Ollama):
     """In client mode nothing may reach Ollama: the client writes, the library embeds."""
@@ -343,3 +345,85 @@ def test_without_a_configured_provider_the_calling_model_answers(env: Library) -
 def test_an_unknown_model_choice_is_refused(env: Library) -> None:
     reply = json.loads(asyncio.run(mcp_server.research_start(QUESTION, model="gpt-9")))
     assert "unknown model backend" in reply["error"]
+
+
+@pytest.mark.parametrize(
+    ("providers", "match"),
+    [
+        ({"drafting": "local"}, "unknown step 'drafting'"),
+        ({"writing": "acme"}, "unknown provider 'acme'"),
+        ({"writing": "openrouter"}, "writing can only be 'client'"),
+        ({"verify": "openrouter"}, "verify takes 'client' or a local"),
+    ],
+)
+def test_per_step_providers_are_checked_before_a_run_starts(
+    env: Library, monkeypatch: pytest.MonkeyPatch, providers: dict[str, str], match: str
+) -> None:
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    reply = json.loads(asyncio.run(mcp_server.research_start(QUESTION, providers=providers)))
+    assert match in reply["error"]
+    assert mcp_server.RUNS == {}
+
+
+def test_a_request_can_pin_a_step_and_have_the_assistant_check_claims(
+    env: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key, value in ENDPOINT.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    seen: dict[str, Any] = {}
+
+    def fake_make_ladder(
+        settings: Any, overrides: Any = None, *, client_verifier: Any = None
+    ) -> ScriptedModel:
+        seen.update(
+            verifier=settings.verifier_model, overrides=dict(overrides), client=client_verifier
+        )
+        return ScriptedModel()
+
+    monkeypatch.setattr(mcp_server, "make_ladder", fake_make_ladder)
+    chosen = {"writing": "local", "verify": "client"}
+
+    async def run() -> dict[str, Any]:
+        reply = json.loads(
+            await mcp_server.research_start(QUESTION, offline=True, providers=chosen)
+        )
+        while reply["status"] == "working":
+            reply = json.loads(await mcp_server.research_continue(reply["run_id"], []))
+        return reply
+
+    final = asyncio.run(run())
+    assert final["status"] == "done", final
+    assert final["providers"] == chosen
+    assert seen["overrides"] == chosen
+    assert seen["client"] is not None
+    assert seen["verifier"] == seen["client"].name
+
+
+def test_a_run_ignores_the_retrieval_steps(env: Library, monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in ENDPOINT.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("HUB_CONFIG", str(ROOT / "config" / "hub.default.toml"))
+    seen: dict[str, Any] = {}
+
+    def fake_make_ladder(
+        settings: Any, overrides: Any = None, *, client_verifier: Any = None
+    ) -> ScriptedModel:
+        seen.update(overrides=dict(overrides))
+        return ScriptedModel()
+
+    monkeypatch.setattr(mcp_server, "make_ladder", fake_make_ladder)
+    chosen = {"writing": "local", "embed": "mac", "rerank": "llm"}
+
+    async def run() -> dict[str, Any]:
+        reply = json.loads(
+            await mcp_server.research_start(QUESTION, offline=True, providers=chosen)
+        )
+        while reply["status"] == "working":
+            reply = json.loads(await mcp_server.research_continue(reply["run_id"], []))
+        return reply
+
+    final = asyncio.run(run())
+    assert final["status"] == "done", final
+    assert final["providers"] == {"writing": "local"}
+    assert seen["overrides"] == {"writing": "local"}

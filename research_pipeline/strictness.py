@@ -21,8 +21,8 @@ class Strictness:
 PROFILES = {
     "explore": Strictness(
         "explore",
-        "Broad discovery with the normal citation and number guards; "
-        "conclusions remain exploratory.",
+        "Broad discovery with the normal citation and number guards; the bottom line and "
+        "specialist views are not checked against the claims; conclusions remain exploratory.",
     ),
     "grounded": Strictness(
         "grounded",

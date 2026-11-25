@@ -24,7 +24,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +33,13 @@ from mcp.server.fastmcp import Context, FastMCP
 from . import agent_profiles, replies
 from .client_llm import ClientLLM, Request
 from .config import Settings, load_env
-from .llm import LLMError, Ollama, make_llm, resolve_backend
+from .ladder import LADDER_STEPS, NEEDS_LADDER, check_providers, make_ladder, model_steps
+from .llm import Endpoint, LLMError, Ollama, make_llm, resolve_backend
 from .papers import PaperLibrary, PapersError
 from .pipeline import Pipeline, route_question
 from .sessions import SessionStore
 from .strictness import resolve as resolve_strictness
+from .usage import load_config
 
 load_env()
 
@@ -82,6 +84,7 @@ class Run:
     agent_route: dict[str, Any] = field(default_factory=dict)
     capsule_path: str = ""
     backend: str = ""  # who does the model steps: client, endpoint or ollama
+    providers: dict[str, str] = field(default_factory=dict)  # the request's pinned steps
 
 
 RUNS: dict[str, Run] = {}
@@ -135,6 +138,38 @@ async def _execute(run_id: str, run: Run, pipeline: Pipeline, sessions: SessionS
             run.client.close("run ended")
 
 
+def _verifier_settings(
+    settings: Settings, backend: str, chosen: dict[str, str], config: dict[str, Any]
+) -> Settings:
+    """`settings` with the request's verifier (providers["verify"]) as the verifier model.
+
+    Raises LLMError when this run's backend cannot honour the request's providers."""
+    pinned = [s for s in LADDER_STEPS if s in chosen and chosen[s] != "client"]
+    verify = chosen.get("verify", "")
+    if backend == "client":
+        if pinned:
+            raise LLMError(
+                "providers: the calling assistant does this run's model steps, so "
+                f"{', '.join(pinned)} can only be 'client'"
+            )
+        if verify == "client":
+            return replace(settings, verifier_model="")
+        if verify:
+            spec = config["providers"][verify]
+            if spec.get("kind") != "ollama":
+                raise LLMError(
+                    "providers: with the calling assistant as the model, verify takes 'client' "
+                    f"or a local (ollama) provider, not {verify!r}"
+                )
+            return replace(settings, verifier_model=str(spec["model"]))
+        return settings
+    if (pinned or verify) and backend != "endpoint":
+        raise LLMError(NEEDS_LADDER)
+    if verify and verify != "client":
+        return replace(settings, verifier_model=str(config["providers"][verify]["model"]))
+    return settings
+
+
 @mcp.tool()
 async def research_start(
     question: str,
@@ -146,6 +181,7 @@ async def research_start(
     session_id: str = "",
     project: str = "",
     model: str = "",
+    providers: dict[str, str] | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Start a research run and return its first step.
@@ -165,10 +201,32 @@ async def research_start(
             with (the user's default). Pass "client" only when the user asks you, the calling
             assistant, to do the writing or run the pipeline yourself: the replies then hand you
             tasks to answer. "endpoint" or "ollama" force those providers.
+        providers: optional, only when the user names a provider for a model step, for this run
+            only: {step: provider}. Steps: planning, extraction, writing, verify (the claim
+            checks). Providers: a [providers.*] name in config/hub.toml (openrouter, nearai,
+            local, ...) or "client" (you). A pinned step uses that provider alone, no fallback.
+            "client" for planning, extraction or writing makes this a model="client" run (name it
+            for all three or none); verify="client" hands you only the claim checks.
     """
     settings = Settings()
+    config = load_config()
+    try:
+        # embed and rerank choose where an ask's passage retrieval runs; a run does not use them.
+        chosen = model_steps(check_providers(providers, config))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if any(chosen.get(step) == "client" for step in LADDER_STEPS):
+        if model and model.strip().lower() != "client":
+            return json.dumps(
+                {
+                    "error": "providers: 'client' for a model step needs model='client', "
+                    f"not {model!r}"
+                }
+            )
+        model = "client"
     try:
         backend = resolve_backend(settings, model or settings.mcp_llm, otherwise="client")
+        settings = _verifier_settings(settings, backend, chosen, config)
     except LLMError as exc:
         return json.dumps({"error": str(exc)})
     _tidy(settings)
@@ -192,11 +250,24 @@ async def research_start(
         strictness=policy.name,
         agent_route=routed,
         backend=backend,
+        providers=chosen,
     )
-    if backend == "client":
+    if backend == "client" or chosen.get("verify") == "client":
         run.client = ClientLLM(Ollama(settings), _client_name(ctx), settings.client_timeout)
+    if backend != "client" and run.client is not None:
+        # Only the claim checks go to the calling assistant; the model steps stay on the ladder.
+        settings = replace(settings, verifier_model=run.client.name)
+    llm: Ollama | Endpoint | ClientLLM
     try:
-        llm = run.client or make_llm(settings, backend)
+        if backend == "client" and run.client is not None:
+            llm = run.client
+        elif chosen:
+            ladder = make_ladder(settings, chosen, client_verifier=run.client)
+            if ladder is None:
+                raise LLMError(NEEDS_LADDER)
+            llm = ladder
+        else:
+            llm = make_llm(settings, backend)
     except LLMError as exc:
         return json.dumps({"error": str(exc)})
 
@@ -282,6 +353,8 @@ async def _turn(run_id: str, run: Run, errors: list[str], wait: float) -> dict[s
     }
     if errors:
         base["errors"] = errors
+    if run.providers:
+        base["providers"] = run.providers
     if run.done:
         if run.failed:
             return base | {"status": "failed", "error": run.failed}

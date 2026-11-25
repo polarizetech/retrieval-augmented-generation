@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import urllib.error
 from dataclasses import replace
 from pathlib import Path
@@ -22,8 +23,9 @@ from research_mcp.ask import Asker
 from research_mcp.hub.contract import COMPONENTS, Problem, error_result, restart_hint
 from research_mcp.hub.health import Hub
 from research_mcp.hub.ledger import Ledger, fingerprint
+from research_pipeline.client_llm import ClientLLM
 from research_pipeline.config import Settings
-from research_pipeline.ladder import Ladder, make_ladder
+from research_pipeline.ladder import Ladder, check_providers, make_ladder
 from research_pipeline.llm import LLMError, ModelOutputError, Ollama
 from research_pipeline.papers import PapersError
 from research_pipeline.usage import Breaker, Meters, load_config, read_nearai, read_openrouter
@@ -745,6 +747,81 @@ def test_a_ladder_is_used_only_for_an_endpoint_the_hub_knows(
     assert isinstance(make_ladder(known), Ladder)
     assert make_ladder(replace(known, endpoint_url="http://localhost:9/v1")) is None
     assert make_ladder(replace(known, ladder=False)) is None
+
+
+def pinned_ladder(tmp_path: Path, **kw: Any) -> tuple[Ladder, dict[str, Rung]]:
+    config = hub_config(tmp_path)
+    settings = replace(
+        Settings(),
+        endpoint_url="https://openrouter.ai/api/v1",
+        endpoint_model="qwen/qwen3.8-27b",
+        endpoint_key="k",
+    )
+    rungs = {n: Rung(settings, n) for n in ("openrouter", "nearai", "local")}
+    meters = Meters(config, settings, fetch=World().fetch)
+    return Ladder(settings, config, meters=meters, rungs=dict(rungs), **kw), rungs
+
+
+def test_per_step_providers_are_checked_against_the_hub_config(tmp_path: Path) -> None:
+    config = hub_config(tmp_path)
+    assert check_providers(None, config) == {}
+    chosen = {"writing": "local", "verify": "client"}
+    assert check_providers(chosen, config) == chosen
+    for bad, match in (
+        ({"drafting": "local"}, "unknown step 'drafting'"),
+        ({"writing": "acme"}, "unknown provider 'acme' for writing"),
+        ({"writing": "client", "planning": "nearai"}, "planning cannot use another provider"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            check_providers(bad, config)
+
+
+def test_a_request_can_pin_a_step_and_its_claim_checks(tmp_path: Path) -> None:
+    model, rungs = pinned_ladder(tmp_path, overrides={"writing": "local", "verify": "nearai"})
+    assert model.chat_json("synthesise", "s", "u", {}) == {"by": "local"}
+    assert model.chat_json("plan", "s", "u", {}) == {"by": "openrouter"}  # not pinned
+    assert model.chat_json("verify", "s", "u", {}, model="Qwen/Qwen3.8-27B") == {"by": "nearai"}
+    assert model.resolve("Qwen/Qwen3.8-27B") == ("Qwen/Qwen3.8-27B", None)
+    assert "pinned writing to local qwen3:4b" in model.notes[0]
+    assert rungs["nearai"].asked == 1
+
+
+def test_a_request_can_hand_only_the_claim_checks_to_the_assistant(tmp_path: Path) -> None:
+    config_settings = replace(Settings(), endpoint_url="", endpoint_model="")
+    client = ClientLLM(Ollama(config_settings), "tester", 5.0)
+    model, rungs = pinned_ladder(tmp_path, overrides={"verify": "client"}, client_verifier=client)
+    got: dict[str, Any] = {}
+    worker = threading.Thread(
+        target=lambda: got.update(
+            model.chat_json("verify", "s", "u", {"type": "object"}, model=client.name)
+        )
+    )
+    worker.start()
+    [request] = client.take(5.0)
+    assert client.answer(request.id, {"verdict": "SUPPORTED"}) is None
+    worker.join(5.0)
+    assert got == {"verdict": "SUPPORTED"}
+    assert all(r.asked == 0 for r in rungs.values())
+    assert model.resolve(client.name) == (client.name, None)
+    assert model.calls[-1]["model"] == client.name  # one call log for the run
+
+
+def test_a_request_that_pins_its_writer_skips_the_ladder_check(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    rig.world.balance = 0.5  # OpenRouter is low: an unpinned run would ask first
+    out = rig.ask("research: does pink noise improve sleep?", providers={"writing": "local"})
+    assert out["status"] == "working"
+    start = [a for n, a in rig.calls if n == "pipeline__research_start"][-1]
+    assert start["providers"] == {"writing": "local"}
+
+
+def test_a_request_with_its_own_verifier_skips_the_local_verifier_check(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    rig.world.models.remove("bespoke-minicheck:latest")
+    out = rig.ask("research: is pink noise safe?", providers={"verify": "client"})
+    assert out["status"] == "working"
+    start = [a for n, a in rig.calls if n == "pipeline__research_start"][-1]
+    assert "strictness" not in start  # not dropped to explore
 
 
 # -- the gateway's hub tools ------------------------------------------------------------------

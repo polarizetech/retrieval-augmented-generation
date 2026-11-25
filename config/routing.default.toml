@@ -50,11 +50,16 @@ request_leads = [
 ]
 
 [research]
+# Phrases that ask for evidence. A noun on its own ("paper", "study", "evidence", "cite") is not
+# enough: "find papers on X" or "cite the study about X" is a quick retrieval. A request that
+# starts with research: or deep: runs the pipeline whatever it says.
 triggers = [
-  "evidence", "literature", "study", "studies", "paper", "papers", "research", "peer-reviewed",
-  "meta-analysis", "systematic", "mechanism", "mechanisms", "is it true", "what is known",
-  "what does the science", "citation", "citations", "cite", "hypothesis", "falsify",
-  "replicated", "replication", "consensus",
+  "is it true", "is that true", "what is known", "what's known", "what does the science",
+  "what does the evidence", "what does the research", "what does research",
+  "what does the literature", "what do studies", "what do the studies", "what do papers",
+  "what do the papers", "summary of the literature", "review of the literature",
+  "literature review", "is there evidence", "is there any evidence", "meta-analysis",
+  "systematic review", "replicated", "replication", "consensus", "peer-reviewed", "falsify",
 ]
 
 [fetch]
