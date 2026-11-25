@@ -278,6 +278,10 @@ the research and GitHub tools can create branches and pull requests, but cannot 
 default branch. Retrieved papers and repository contents are untrusted input, and profile Markdown
 is hashed and routed as data rather than executed as instructions.
 
+Agents can be sandboxed with [OpenShell](docs/openshell.md). OpenShell's telemetry must be off
+from the gateway's first start. That is a hard requirement: `scripts/openshell-telemetry-check.sh`
+checks it.
+
 ## License
 
 [MIT](LICENSE)
