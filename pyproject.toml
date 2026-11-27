@@ -41,7 +41,7 @@ dev = [
   # itself talks to paper-fetch over MCP and does not import it.
   "fastapi>=0.115",
   "httpx>=0.28",
-  "paper-fetch[retrieval] @ git+https://github.com/polarizetech/paper-fetch@7001d7882e4669ace263209de91e2f970ab15fe2",
+  "paper-fetch[retrieval] @ git+https://github.com/polarizetech/paper-fetch@f7c674661edf735822bd2c7f4e1c3250494b950e",
   "pyright>=1.1.400",
   "pytest>=8",
   "pytest-cov>=5",

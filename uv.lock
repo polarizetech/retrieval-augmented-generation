@@ -742,7 +742,7 @@ wheels = [
 [[package]]
 name = "paper-fetch"
 version = "0.1.0"
-source = { git = "https://github.com/polarizetech/paper-fetch?rev=7001d7882e4669ace263209de91e2f970ab15fe2#7001d7882e4669ace263209de91e2f970ab15fe2" }
+source = { git = "https://github.com/polarizetech/paper-fetch?rev=f7c674661edf735822bd2c7f4e1c3250494b950e#f7c674661edf735822bd2c7f4e1c3250494b950e" }
 dependencies = [
     { name = "fonttools" },
     { name = "pypdf" },
@@ -1148,7 +1148,7 @@ provides-extras = ["calllog"]
 dev = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
-    { name = "paper-fetch", extras = ["retrieval"], git = "https://github.com/polarizetech/paper-fetch?rev=7001d7882e4669ace263209de91e2f970ab15fe2" },
+    { name = "paper-fetch", extras = ["retrieval"], git = "https://github.com/polarizetech/paper-fetch?rev=f7c674661edf735822bd2c7f4e1c3250494b950e" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=5" },
