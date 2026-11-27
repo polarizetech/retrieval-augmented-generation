@@ -60,6 +60,7 @@ class Rules:
     fetch: tuple[str, ...] = ()
     profiles: dict[str, tuple[str, ...]] = field(default_factory=dict)
     profiles_list: tuple[str, ...] = ()
+    chatter: tuple[str, ...] = ()
     # Config [extensions."<extension name>"]: extra trigger words for each extension's steps.
     extensions: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
 
@@ -105,6 +106,7 @@ def load_rules(default: Path, local: Path | None = None) -> Rules:
         fetch=tuple(words("fetch", "triggers")),
         profiles=profiles,
         profiles_list=tuple(words("profiles_list", "triggers")),
+        chatter=tuple(words("fresh", "chatter")),
         extensions=_extension_words(data.get("extensions", {}), extra.get("extensions", {})),
     )
 
@@ -131,6 +133,16 @@ def _words(text: str) -> list[str]:
 def _has(text: str, phrase: str) -> bool:
     """`phrase` occurs in `text` as whole words."""
     return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text) is not None
+
+
+def is_chatter(text: str, rules: Rules) -> bool:
+    """`text` is made only of the [fresh] chatter phrases and punctuation ("approved, go ahead")."""
+    if not rules.chatter:
+        return False
+    low = text.lower()
+    for phrase in sorted(rules.chatter, key=len, reverse=True):
+        low = re.sub(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", " ", low)
+    return re.search(r"[a-z0-9]", low) is None
 
 
 def _request_verbs(low: str, rules: Rules) -> list[str]:

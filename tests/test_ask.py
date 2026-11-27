@@ -418,6 +418,22 @@ def test_every_quick_question_also_searches_the_indexes_and_the_web(tmp_path: Pa
     assert "fresh" not in sent.get("tool_results", {})
 
 
+def test_chatter_gets_no_fresh_search(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    out = asyncio.run(asker(tmp_path, calls, web=_web).ask("approved, go ahead"))
+    assert "fresh" not in out["results"]
+    assert "Fresh search: skipped (chatter)" in out["progress"]
+
+
+def test_a_question_about_a_repository_gets_no_fresh_search(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    out = asyncio.run(
+        asker(tmp_path, calls, web=_web).ask("What is pink noise?", repo="polarizetech/x")
+    )
+    assert "fresh" not in out["results"]
+    assert "Fresh search: skipped (about a repository)" in out["progress"]
+
+
 def test_fresh_leads_are_offered_when_the_library_falls_short(tmp_path: Path) -> None:
     calls: list[tuple[str, Any]] = []
     a = asker(tmp_path, calls, web=_web)

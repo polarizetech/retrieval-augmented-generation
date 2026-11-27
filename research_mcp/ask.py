@@ -41,6 +41,7 @@ from research_mcp.routing import (
     _has,
     _looks_like_code,
     classify,
+    is_chatter,
     load_rules,
     profile_override,
 )
@@ -1050,12 +1051,23 @@ class Asker:
                 spent = time.monotonic() - t
                 return got
 
-            if route.mode == "quick":
+            # Chatter ("approved, go ahead") and questions about a repository get no fresh search:
+            # their words only find junk outside the library.
+            no_fresh = (
+                "chatter"
+                if is_chatter(route.question, rules)
+                else "about a repository"
+                if repo
+                else ""
+            )
+            if route.mode == "quick" and not no_fresh:
                 (kind, found), fresh = await asyncio.gather(
                     evidence(), self._fresh(route.question, papers=True)
                 )
             else:
                 kind, found = await evidence()
+            if route.mode == "quick" and no_fresh:
+                progress.append(f"Fresh search: skipped ({no_fresh})")
             if kind == "evidence" and turn.llm_rerank:
                 ranked_at = time.monotonic()
                 found = await self._llm_rerank(turn, route.question, found, limit)
