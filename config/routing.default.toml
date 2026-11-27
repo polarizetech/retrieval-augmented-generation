@@ -89,3 +89,12 @@ triggers = [
 # adds words to an extension's steps the same way.
 # [extensions."rag-ext-example"]
 # hello = ["extra words"]
+
+[fresh]
+# A quick message made only of these phrases (and punctuation) is chatter: it gets no fresh
+# search outside the library, since a search for "approved, go ahead" only returns junk.
+chatter = [
+  "approved", "approve", "go ahead", "ok", "okay", "yes", "yep", "yeah", "no", "nope",
+  "thanks", "thank you", "sounds good", "do it", "lgtm", "continue", "proceed", "sure",
+  "great", "nice", "perfect", "good", "cool", "please", "and", "go", "done",
+]
